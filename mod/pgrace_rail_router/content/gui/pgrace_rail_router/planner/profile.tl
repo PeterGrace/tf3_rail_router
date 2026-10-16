@@ -7,14 +7,14 @@ local type Result = PgraceRailRouterProfile.Result
 local MIN_SPAN = 75.0
 
 -- Merges spans shorter than MIN_SPAN, shortest first: one between two of the same kind takes that kind, any other
--- joins its longer neighbour.
-local function mergeShort(spans : {Span}) : {Span}
+-- joins its longer neighbour. Spans over water (wet[k]) are never merged away, though they may absorb others.
+local function mergeShort(spans : {Span}, wet : {boolean}) : {Span}
 	while #spans > 1 do
 		local shortest : integer = nil
 		local shortestLen = MIN_SPAN
 		for k, span in ipairs(spans) do
 			local l = span.s1 - span.s0
-			if l < shortestLen then
+			if l < shortestLen and not wet[k] then
 				shortest, shortestLen = k, l
 			end
 		end
@@ -25,15 +25,16 @@ local function mergeShort(spans : {Span}) : {Span}
 		local prev, next = spans[k - 1], spans[k + 1]
 		if prev ~= nil and next ~= nil and prev.kind == next.kind then
 			prev.s1 = next.s1
+			wet[k - 1] = wet[k - 1] or wet[k + 1]
 			table.remove(spans, k + 1)
-			table.remove(spans, k)
+			table.remove(wet, k + 1)
 		elseif next == nil or (prev ~= nil and prev.s1 - prev.s0 >= next.s1 - next.s0) then
 			prev.s1 = spans[k].s1
-			table.remove(spans, k)
 		else
 			next.s0 = spans[k].s0
-			table.remove(spans, k)
 		end
+		table.remove(spans, k)
+		table.remove(wet, k)
 	end
 	return spans
 end
@@ -118,6 +119,7 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 		end
 	end
 	local spans : {Span} = {}
+	local wet : {boolean} = {}
 	local start = 1
 	for k = 2, n + 1 do
 		if k > n or kinds[k] ~= kinds[start] then
@@ -126,10 +128,15 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 				stop = s[k]
 			end
 			table.insert(spans, { kind = kinds[start], s0 = s[start], s1 = stop })
+			local anyWater = false
+			for m = start, k - 1 do
+				anyWater = anyWater or water[m]
+			end
+			table.insert(wet, anyWater)
 			start = k
 		end
 	end
-	return { z = z, spans = mergeShort(spans), maxGrade = maxG, feasible = feasible }
+	return { z = z, spans = mergeShort(spans, wet), maxGrade = maxG, feasible = feasible }
 end
 
 return profile

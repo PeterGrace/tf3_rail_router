@@ -120,3 +120,11 @@ t.test("profile: ground hovering at the bridge threshold isn't split into many s
 	t.near(r.spans[1].s0, 0, 1e-9, "starts at 0")
 	t.near(r.spans[#r.spans].s1, 1500, 1e-9, "covers the route")
 end)
+
+t.test("profile: a 50 m river keeps its bridge", function()
+	local inRiver = function(x) return x >= 475 and x <= 500 end
+	local s, ground, water = line(function() return 0 end, inRiver)
+	local r = profile.fit(s, ground, water, 0.025, 8, 12)
+	t.eq(spanAt(r, 487.5), "bridge", "over the river")
+	t.eq(#r.spans, 3, "ground, bridge, ground")
+end)
