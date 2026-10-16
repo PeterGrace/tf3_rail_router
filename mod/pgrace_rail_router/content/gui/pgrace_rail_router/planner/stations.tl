@@ -11,7 +11,8 @@ local type Site = PgraceRailRouterStations.Site
 local TURNS : {number} = { 0, math.rad(15), -math.rad(15), math.rad(30), -math.rad(30) }
 
 -- Whether the run is inside, dry and unblocked, and then (the dearer test, done only for runs that pass) flat.
-local function clear(g : Grid, centre : Pt, dir : Pt, runLength : number, maxRelief : number) : boolean
+local function clear(g : Grid, centre : Pt, dir : Pt, runLength : number, maxRelief : number,
+		taken : {integer : boolean}) : boolean
 	local step = g.cell / 2
 	local half = runLength / 2 + 1e-6
 	local d = -runLength / 2
@@ -22,7 +23,7 @@ local function clear(g : Grid, centre : Pt, dir : Pt, runLength : number, maxRel
 		end
 		local ix, iy = grid.cellOf(g, p)
 		local i = grid.index(g, ix, iy)
-		if g.blocked[i] or g.water[i] then
+		if g.blocked[i] or g.water[i] or (taken ~= nil and taken[i]) then
 			return false
 		end
 		d = d + step
@@ -45,7 +46,8 @@ local function clear(g : Grid, centre : Pt, dir : Pt, runLength : number, maxRel
 	return true
 end
 
-function stations.find(g : Grid, town : Pt, dir : Pt, runLength : number, maxRelief : number, maxRadius : number) : Site
+function stations.find(g : Grid, town : Pt, dir : Pt, runLength : number, maxRelief : number, maxRadius : number,
+		taken ?: {integer : boolean}) : Site
 	local unit = geo.norm(dir)
 	local step = g.cell / 2
 	local r = 0.0
@@ -60,7 +62,7 @@ function stations.find(g : Grid, town : Pt, dir : Pt, runLength : number, maxRel
 			local centre : Pt = { x = town.x + r * offset.x, y = town.y + r * offset.y }
 			for __, turn in ipairs(TURNS) do
 				local d = geo.rotate(unit, turn)
-				if clear(g, centre, d, runLength, maxRelief) then
+				if clear(g, centre, d, runLength, maxRelief, taken) then
 					return { centre = centre, dir = d, distance = r }
 				end
 			end

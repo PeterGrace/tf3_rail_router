@@ -190,3 +190,37 @@ t.test("route: a leg is built in a step of its own, after its search", function(
 	end
 	t.eq(#job.result.legs, 2, "legs")
 end)
+
+t.test("route: a second station facing back towards the first is too close", function()
+	-- B's platforms point from A towards C, which lies back past A.
+	local plan = run(flatGrid(), { town(1, "A", 2000, 0), town(2, "B", 5000, 0), town(3, "C", 0, 0) })
+	t.eq(plan.failure, "too_close", "reason")
+	t.eq(plan.failureTowns[1], "A", "first")
+	t.eq(plan.failureTowns[2], "B", "second")
+end)
+
+t.test("route: planning leaves the grid unchanged", function()
+	local g = flatGrid()
+	local n = 81 * 31
+	for i = 1, n do
+		g.blocked[i] = (i % 97 == 0) or false
+	end
+	local before = {}
+	for i = 1, n do
+		before[i] = g.blocked[i]
+	end
+	local function same(label)
+		for i = 1, n do
+			if g.blocked[i] ~= before[i] then
+				error(label .. ": cell " .. i .. " was " .. tostring(before[i]) .. ", is " .. tostring(g.blocked[i]))
+			end
+		end
+	end
+	-- Cancelled after two steps (two sites placed), then a full run.
+	local job = route.start({ grid = g, stops = ABC, weights = W, platformLength = 160 })
+	route.step(job, 500)
+	route.step(job, 500)
+	same("cancelled")
+	run(g, ABC)
+	same("finished")
+end)

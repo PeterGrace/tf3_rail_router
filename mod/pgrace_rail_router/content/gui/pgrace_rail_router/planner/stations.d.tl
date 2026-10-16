@@ -12,7 +12,8 @@ global record PgraceRailRouterStations
 
 	-- Searches rings around `town`, nearest first, for a centre where a straight run of `runLength` metres along
 	-- `dir` (or up to 30° off it) is inside the grid, dry, unblocked and within `maxRelief` metres of height. nil if
-	-- none lies within maxRadius.
+	-- none lies within maxRadius. `taken` (optional) marks more cells, by grid index, to treat as blocked (other
+	-- stations' platforms); the grid itself is never changed.
 	find : function(g : PgraceRailRouterGrid.Grid, town : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt,
-		runLength : number, maxRelief : number, maxRadius : number) : Site
+		runLength : number, maxRelief : number, maxRadius : number, taken ?: {integer : boolean}) : Site
 end

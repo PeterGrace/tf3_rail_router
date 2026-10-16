@@ -59,7 +59,8 @@ global record PgraceRailRouterRoute
 	record Plan
 		ok : boolean
 		-- Why the plan failed: "no_stops", "no_site", "too_close" (two consecutive stations' platforms, with their
-		-- approaches, don't fit between them, or the second is behind the first) or "no_path"; nil when ok.
+		-- approaches, don't fit between them, or the second isn't ahead of the first along both stations'
+		-- directions) or "no_path"; nil when ok.
 		failure : string
 		-- The town for no_site; the two towns for too_close and no_path.
 		failureTowns : {string}
@@ -79,8 +80,9 @@ global record PgraceRailRouterRoute
 		search : PgraceRailRouterGrid.Search
 		-- A finished search's path, waiting for the next step to build its leg.
 		path : {PgraceRailRouterGeo.Pt}
-		-- Cells blocked for the earlier platforms during the site search, with their old values.
-		saved : {integer : boolean}
+		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
+		-- is never changed.
+		taken : {integer : boolean}
 		result : Plan
 	end
 

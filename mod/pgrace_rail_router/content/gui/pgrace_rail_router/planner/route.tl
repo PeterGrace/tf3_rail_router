@@ -62,37 +62,17 @@ local function stationEnds(input : Input, station : Station, forward : boolean) 
 	return platformEnd, approach, approach
 end
 
--- Marks a station's platform cells blocked, so later sites don't overlap it; the cells' old values go into `saved`.
-local function blockPlatforms(input : Input, station : Station, saved : {integer : boolean})
+-- Adds a station's platform cells (by grid index) to `taken`, so later sites keep off them.
+local function takePlatforms(input : Input, station : Station, taken : {integer : boolean})
 	local g = input.grid
 	local half = input.platformLength / 2
 	local c, dir = station.site.centre, station.site.dir
 	local d = -half
 	while d <= half + 1e-6 do
 		local ix, iy = grid.cellOf(g, geo.add(c, geo.scale(dir, d)))
-		local i = grid.index(g, ix, iy)
-		if saved[i] == nil then
-			saved[i] = g.blocked[i] == true
-		end
-		g.blocked[i] = true
+		taken[grid.index(g, ix, iy)] = true
 		d = d + g.cell / 2
 	end
-end
-
--- Puts back the cells blockPlatforms marked.
-local function unblockPlatforms(job : Job)
-	if job.saved == nil then
-		return
-	end
-	local g = job.input.grid
-	for i, was in pairs(job.saved) do
-		if was then
-			g.blocked[i] = true
-		else
-			g.blocked[i] = nil
-		end
-	end
-	job.saved = nil
 end
 
 local function fail(job : Job, failure : string, towns : {string}) : boolean
@@ -100,7 +80,6 @@ local function fail(job : Job, failure : string, towns : {string}) : boolean
 	job.result.failure = failure
 	job.result.failureTowns = towns
 	job.phase = "done"
-	unblockPlatforms(job)
 	return true
 end
 
@@ -187,7 +166,7 @@ local function summarise(input : Input, plan : Plan) : Summary
 end
 
 function route.start(input : Input) : Job
-	local job : Job = { input = input, phase = "sites", siteIndex = 1, legIndex = 1,
+	local job : Job = { input = input, phase = "sites", siteIndex = 1, legIndex = 1, taken = {},
 		result = { ok = true, failureTowns = {}, platformLength = input.platformLength, stations = {}, legs = {} } }
 	if #input.stops < 2 then
 		fail(job, "no_stops", {})
@@ -205,25 +184,24 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		local town = input.stops[i]
 		local prev = plan.stations[i - 1]
 		if prev ~= nil then
-			-- Keep the next site off the earlier platforms (put back once all sites are found).
-			job.saved = job.saved or {}
-			blockPlatforms(input, prev, job.saved)
+			-- Keep the next site off the earlier platforms.
+			takePlatforms(input, prev, job.taken)
 		end
 		local site = stations.find(input.grid, town.pos, stopDir(input.stops, i),
-			input.platformLength + 2 * APPROACH, MAX_STATION_RELIEF, MAX_STATION_RADIUS)
+			input.platformLength + 2 * APPROACH, MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken)
 		if site == nil then
 			return fail(job, "no_site", { town.name })
 		end
 		if prev ~= nil then
 			local apart = geo.sub(site.centre, prev.site.centre)
-			if geo.len(apart) < input.platformLength + 2 * APPROACH or geo.dot(apart, prev.site.dir) <= 0 then
+			if geo.len(apart) < input.platformLength + 2 * APPROACH or geo.dot(apart, prev.site.dir) <= 0
+				or geo.dot(apart, site.dir) <= 0 then
 				return fail(job, "too_close", { prev.town.name, town.name })
 			end
 		end
 		table.insert(plan.stations, { town = town, site = site, z = grid.heightAt(input.grid, site.centre) })
 		job.siteIndex = i + 1
 		if job.siteIndex > #input.stops then
-			unblockPlatforms(job)
 			job.phase = "legs"
 		end
 		return false
