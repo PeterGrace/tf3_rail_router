@@ -12,7 +12,7 @@ global record PgraceRailRouterProfile
 		-- Track height per sample.
 		z : {number}
 		-- Consecutive runs of one kind, covering the route; none shorter than 75 m unless the route is, or it's a
-		-- bridge over water.
+		-- bridge over water or a crossing.
 		spans : {Span}
 		-- Steepest grade between samples.
 		maxGrade : number
@@ -25,8 +25,11 @@ global record PgraceRailRouterProfile
 	-- water. The track follows the ground as closely as maxGrade allows, and runs straight between the banks over
 	-- water. Water, and track more than bridgeAbove over the ground, are bridges; track more than tunnelBelow under
 	-- it is a tunnel. Runs shorter than 75 m are merged into their neighbours (between two of the same kind it takes
-	-- theirs, else it joins the longer one), so noise doesn't split a bridge; a run over water is always kept. zStart and zEnd pin the track's height
-	-- at the first and last sample (nil: free, following the ground).
+	-- theirs, else it joins the longer one), so noise doesn't split a bridge; a run over water or a crossing is always
+	-- kept. zStart and zEnd pin the track's height at the first and last sample (nil: free, following the ground).
+	-- `crossing` (optional) marks samples over a road or track to cross: they are bridges, and the track is lifted
+	-- (ramping up and down within maxGrade) to at least 7 m above the ground there. Pinned ends win over that
+	-- clearance when a crossing is too near them to climb to it.
 	fit : function(s : {number}, ground : {number}, water : {boolean}, maxGrade : number, bridgeAbove : number,
-		tunnelBelow : number, zStart ?: number, zEnd ?: number) : Result
+		tunnelBelow : number, zStart ?: number, zEnd ?: number, crossing ?: {boolean}) : Result
 end

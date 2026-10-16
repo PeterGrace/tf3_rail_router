@@ -128,3 +128,34 @@ t.test("profile: a 50 m river keeps its bridge", function()
 	t.eq(spanAt(r, 487.5), "bridge", "over the river")
 	t.eq(#r.spans, 3, "ground, bridge, ground")
 end)
+
+t.test("profile: a crossing on flat ground is bridged with clearance", function()
+	-- Existing line under samples 20..23 (500..575 m).
+	local s, ground, water = line(function() return 0 end)
+	local crossing = {}
+	for i = 1, #s do
+		crossing[i] = s[i] >= 500 and s[i] <= 575
+	end
+	local r = profile.fit(s, ground, water, 0.025, 8, 12, nil, nil, crossing)
+	for i = 1, #s do
+		if crossing[i] then
+			t.ok(r.z[i] - ground[i] >= 7 - 1e-9, "clearance at " .. s[i] .. ": " .. (r.z[i] - ground[i]))
+			t.eq(spanAt(r, s[i]), "bridge", "bridge at " .. s[i])
+		end
+	end
+	t.ok(gradesWithin(r, s, 0.025), "grades")
+	t.near(r.z[1], 0, 1e-9, "back on the ground at the start")
+	t.near(r.z[#s], 0, 1e-9, "back on the ground at the end")
+end)
+
+t.test("profile: a one-sample crossing keeps its bridge", function()
+	local s, ground, water = line(function() return 0 end)
+	local crossing = {}
+	for i = 1, #s do
+		crossing[i] = s[i] == 500
+	end
+	local r = profile.fit(s, ground, water, 0.025, 8, 12, 0, 0, crossing)
+	t.eq(spanAt(r, 500), "bridge", "over the line")
+	t.ok(r.z[21] >= 7 - 1e-9, "clearance " .. r.z[21])
+	t.ok(gradesWithin(r, s, 0.025), "grades")
+end)

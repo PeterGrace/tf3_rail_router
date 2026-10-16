@@ -5,16 +5,19 @@ local type Result = PgraceRailRouterProfile.Result
 
 -- Bridges, tunnels and stretches of ground shorter than this are merged into their neighbours (metres).
 local MIN_SPAN = 75.0
+-- Over a crossed road or track, the track runs at least this far above the ground (metres).
+local CLEARANCE = 7.0
 
 -- Merges spans shorter than MIN_SPAN, shortest first: one between two of the same kind takes that kind, any other
--- joins its longer neighbour. Spans over water (wet[k]) are never merged away, though they may absorb others.
-local function mergeShort(spans : {Span}, wet : {boolean}) : {Span}
+-- joins its longer neighbour. Spans over water or a crossing (keep[k]) are never merged away, though they may absorb
+-- others.
+local function mergeShort(spans : {Span}, keep : {boolean}) : {Span}
 	while #spans > 1 do
 		local shortest : integer = nil
 		local shortestLen = MIN_SPAN
 		for k, span in ipairs(spans) do
 			local l = span.s1 - span.s0
-			if l < shortestLen and not wet[k] then
+			if l < shortestLen and not keep[k] then
 				shortest, shortestLen = k, l
 			end
 		end
@@ -25,23 +28,24 @@ local function mergeShort(spans : {Span}, wet : {boolean}) : {Span}
 		local prev, next = spans[k - 1], spans[k + 1]
 		if prev ~= nil and next ~= nil and prev.kind == next.kind then
 			prev.s1 = next.s1
-			wet[k - 1] = wet[k - 1] or wet[k + 1]
+			keep[k - 1] = keep[k - 1] or keep[k + 1]
 			table.remove(spans, k + 1)
-			table.remove(wet, k + 1)
+			table.remove(keep, k + 1)
 		elseif next == nil or (prev ~= nil and prev.s1 - prev.s0 >= next.s1 - next.s0) then
 			prev.s1 = spans[k].s1
 		else
 			next.s0 = spans[k].s0
 		end
 		table.remove(spans, k)
-		table.remove(wet, k)
+		table.remove(keep, k)
 	end
 	return spans
 end
 
 function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrade : number, bridgeAbove : number,
-		tunnelBelow : number, zStart ?: number, zEnd ?: number) : Result
+		tunnelBelow : number, zStart ?: number, zEnd ?: number, crossing ?: {boolean}) : Result
 	local n = #s
+	crossing = crossing or {}
 	-- What the track would like to follow: the ground, and over water a straight line between the banks.
 	local target : {number} = {}
 	local i = 1
@@ -72,7 +76,31 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 			i = i + 1
 		end
 	end
-	-- Pinned ends are where the track must be, whatever the ground.
+	-- Over a crossing the track must clear the crossed line: a floor of CLEARANCE over the ground there, spread to the
+	-- neighbours at the grade limit (forward, then backward), so the track can climb to it in time. The grade passes
+	-- below never take the track under a floor that is itself within the grade limit.
+	local floor : {number} = {}
+	local anyCrossing = false
+	for k = 1, n do
+		if crossing[k] then
+			floor[k] = ground[k] + CLEARANCE
+			anyCrossing = true
+		else
+			floor[k] = -math.huge
+		end
+	end
+	if anyCrossing then
+		for k = 2, n do
+			floor[k] = math.max(floor[k], floor[k - 1] - maxGrade * (s[k] - s[k - 1]))
+		end
+		for k = n - 1, 1, -1 do
+			floor[k] = math.max(floor[k], floor[k + 1] - maxGrade * (s[k + 1] - s[k]))
+		end
+		for k = 1, n do
+			target[k] = math.max(target[k], floor[k])
+		end
+	end
+	-- Pinned ends are where the track must be, whatever the ground (and whatever a crossing next to them needs).
 	if n > 0 and zStart ~= nil then
 		target[1] = zStart
 	end
@@ -107,7 +135,7 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 	local kinds : {string} = {}
 	local maxG = 0.0
 	for k = 1, n do
-		if water[k] or z[k] - ground[k] > bridgeAbove then
+		if water[k] or crossing[k] or z[k] - ground[k] > bridgeAbove then
 			kinds[k] = "bridge"
 		elseif ground[k] - z[k] > tunnelBelow then
 			kinds[k] = "tunnel"
@@ -119,7 +147,7 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 		end
 	end
 	local spans : {Span} = {}
-	local wet : {boolean} = {}
+	local keep : {boolean} = {}
 	local start = 1
 	for k = 2, n + 1 do
 		if k > n or kinds[k] ~= kinds[start] then
@@ -128,15 +156,15 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 				stop = s[k]
 			end
 			table.insert(spans, { kind = kinds[start], s0 = s[start], s1 = stop })
-			local anyWater = false
+			local kept = false
 			for m = start, k - 1 do
-				anyWater = anyWater or water[m]
+				kept = kept or water[m] or crossing[m] == true
 			end
-			table.insert(wet, anyWater)
+			table.insert(keep, kept)
 			start = k
 		end
 	end
-	return { z = z, spans = mergeShort(spans, wet), maxGrade = maxG, feasible = feasible }
+	return { z = z, spans = mergeShort(spans, keep), maxGrade = maxG, feasible = feasible }
 end
 
 return profile
