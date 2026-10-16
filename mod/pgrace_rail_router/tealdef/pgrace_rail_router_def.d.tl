@@ -2,3 +2,4 @@
 require "gui.pgrace_rail_router.planner.geo"
 require "gui.pgrace_rail_router.planner.modes"
 require "gui.pgrace_rail_router.planner.corridor"
+require "gui.pgrace_rail_router.planner.grid"
