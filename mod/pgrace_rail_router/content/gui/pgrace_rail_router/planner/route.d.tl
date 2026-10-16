@@ -18,7 +18,8 @@ global record PgraceRailRouterRoute
 	end
 
 	-- From one station's platform end to the next one's: a straight approach of 100 m at each end, then room for a
-	-- 45° turn at full radius before the searched path.
+	-- 45° turn at full radius before the searched path (less where buildings or the grid edge are in the way, which
+	-- may leave a curve tighter than the radius).
 	record Leg
 		pieces : {PgraceRailRouterSmooth.Piece}
 		samples : {PgraceRailRouterSmooth.Sample}

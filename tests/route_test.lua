@@ -268,3 +268,29 @@ t.test("route: roads are bridged only when the weights say so", function()
 	t.ok(bridged.ok, "ok bridged")
 	t.ok(bridged.summary.bridges >= 1, "bridges " .. bridged.summary.bridges)
 end)
+
+t.test("route: the straight beyond a station's approach stops short of a building", function()
+	local g = flatGrid()
+	-- A's approach ends at x = 180; with a 1500 m radius the room to turn would run on to x = 801. A building in the
+	-- cell at x = 450..550 on the line, 300 m beyond the approach.
+	g.blocked[grid.index(g, 16, 16)] = true
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 5000, 0) },
+		weights = withWeights({ minRadius = 1500 }), platformLength = 160 })
+	local start = nil
+	local steps = 0
+	while not route.step(job, 500) do
+		if job.path ~= nil and start == nil then
+			start = job.path[1]
+		end
+		steps = steps + 1
+		assert(steps < 100000, "runaway")
+	end
+	t.ok(route.plan(job).ok, "ok")
+	t.ok(start ~= nil, "searched")
+	-- The leg's search starts where the straight from the approach ends: before the building, and clear all the way.
+	t.ok(start.x < 450, "search starts before the building: x " .. start.x)
+	t.ok(start.x > 180 - 1e-6, "and not behind the approach: x " .. start.x)
+	for x = 180, start.x, 5 do
+		t.ok(not g.blocked[grid.index(g, grid.cellOf(g, { x = x, y = 0 }))], "straight clear at x " .. x)
+	end
+end)

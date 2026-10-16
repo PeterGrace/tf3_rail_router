@@ -37,25 +37,65 @@ local function stopDir(stops : {Town}, i : integer) : Pt
 	return geo.norm(geo.sub(next.pos, prev.pos))
 end
 
+-- Grid cells (by index) under a station's platforms.
+local function platformCells(input : Input, station : Station) : {integer : boolean}
+	local g = input.grid
+	local cells : {integer : boolean} = {}
+	local half = input.platformLength / 2
+	local c, dir = station.site.centre, station.site.dir
+	local d = -half
+	while d <= half + 1e-6 do
+		local ix, iy = grid.cellOf(g, geo.add(c, geo.scale(dir, d)))
+		cells[grid.index(g, ix, iy)] = true
+		d = d + g.cell / 2
+	end
+	return cells
+end
+
+-- Whether the straight from `a` to `b` is inside the grid and off blocked cells and other stations' platforms
+-- (`taken`, less this station's own `own`), checked every quarter cell and at `b`.
+local function straightClear(input : Input, a : Pt, b : Pt, taken : {integer : boolean},
+		own : {integer : boolean}) : boolean
+	local g = input.grid
+	local length = geo.len(geo.sub(b, a))
+	local dir = geo.scale(geo.sub(b, a), 1 / math.max(length, 1e-9))
+	local step = g.cell / 4
+	local d = 0.0
+	while true do
+		local p = geo.add(a, geo.scale(dir, math.min(d, length)))
+		if not grid.inside(g, p) then
+			return false
+		end
+		local ix, iy = grid.cellOf(g, p)
+		local i = grid.index(g, ix, iy)
+		if g.blocked[i] or (taken ~= nil and taken[i] and not own[i]) then
+			return false
+		end
+		if d >= length then
+			return true
+		end
+		d = d + step
+	end
+end
+
 -- Where a station's platforms end, where its straight approach ends, and where the room to turn beyond it ends
 -- (minRadius × tan 22.5°: a 45° turn at full radius), on its leaving side (forward = true) or its arriving side.
--- The leg's search starts or ends at the last, so it is pulled back (half a cell at a time, at most to the
--- approach point) while it lies outside the grid or on a blocked cell.
-local function stationEnds(input : Input, station : Station, forward : boolean) : Pt, Pt, Pt
+-- The leg's search starts or ends at the last, and the track runs straight to it, so it is pulled back (half a cell
+-- at a time, at most to the approach point) until that straight is inside the grid and clear of blocked cells and
+-- other stations' platforms (`taken`). Where it's pulled back, the curve beyond may be tighter than minRadius.
+local function stationEnds(input : Input, station : Station, forward : boolean, taken : {integer : boolean}) : Pt, Pt, Pt
 	local g = input.grid
 	local sign = forward and 1 or -1
 	local half = input.platformLength / 2
 	local c, d = station.site.centre, station.site.dir
 	local platformEnd = geo.add(c, geo.scale(d, sign * half))
 	local approach = geo.add(c, geo.scale(d, sign * (half + APPROACH)))
+	local own = platformCells(input, station)
 	local ext = input.weights.minRadius * math.tan(math.pi / 8)
 	while ext > 0 do
 		local extension = geo.add(c, geo.scale(d, sign * (half + APPROACH + ext)))
-		if grid.inside(g, extension) then
-			local ix, iy = grid.cellOf(g, extension)
-			if not g.blocked[grid.index(g, ix, iy)] then
-				return platformEnd, approach, extension
-			end
+		if straightClear(input, approach, extension, taken, own) then
+			return platformEnd, approach, extension
 		end
 		ext = ext - g.cell / 2
 	end
@@ -64,14 +104,8 @@ end
 
 -- Adds a station's platform cells (by grid index) to `taken`, so later sites keep off them.
 local function takePlatforms(input : Input, station : Station, taken : {integer : boolean})
-	local g = input.grid
-	local half = input.platformLength / 2
-	local c, dir = station.site.centre, station.site.dir
-	local d = -half
-	while d <= half + 1e-6 do
-		local ix, iy = grid.cellOf(g, geo.add(c, geo.scale(dir, d)))
-		taken[grid.index(g, ix, iy)] = true
-		d = d + g.cell / 2
+	for i in pairs(platformCells(input, station)) do
+		taken[i] = true
 	end
 end
 
@@ -83,10 +117,10 @@ local function fail(job : Job, failure : string, towns : {string}) : boolean
 	return true
 end
 
-local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}) : Leg
+local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, taken : {integer : boolean}) : Leg
 	local g, w = input.grid, input.weights
-	local aEnd, aApproach = stationEnds(input, a, true)
-	local bEnd, bApproach = stationEnds(input, b, false)
+	local aEnd, aApproach = stationEnds(input, a, true, taken)
+	local bEnd, bApproach = stationEnds(input, b, false, taken)
 	-- path runs from a's extension point to b's; add the platform ends and approach points, and keep all of them
 	-- fixed so the line leaves and enters the platforms straight and has room to turn at full radius beyond.
 	-- (Where an extension point is its approach point, fillet merges the two.)
@@ -211,7 +245,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	end
 	local a, b = plan.stations[job.legIndex], plan.stations[job.legIndex + 1]
 	if job.path ~= nil then
-		table.insert(plan.legs, buildLeg(input, a, b, job.path))
+		table.insert(plan.legs, buildLeg(input, a, b, job.path, job.taken))
 		job.path = nil
 		job.legIndex = job.legIndex + 1
 		if job.legIndex > #plan.stations - 1 then
@@ -222,8 +256,8 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		return false
 	end
 	if job.search == nil then
-		local aExtension = select(3, stationEnds(input, a, true))
-		local bExtension = select(3, stationEnds(input, b, false))
+		local aExtension = select(3, stationEnds(input, a, true, job.taken))
+		local bExtension = select(3, stationEnds(input, b, false, job.taken))
 		job.search = grid.startSearch(input.grid, aExtension, bExtension, a.site.dir, b.site.dir, input.weights)
 		return false
 	end
