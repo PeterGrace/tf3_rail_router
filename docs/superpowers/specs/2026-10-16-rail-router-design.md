@@ -108,6 +108,12 @@ mode and about 6 s and 90 MB in Fastest mode, spread over frames. If that's too 
 Turns the grid path into straights and arcs, every arc at least the mode's minimum radius, keeping the direction at
 each station end.
 
+**Guard:** simplifying and filleting are checked against the ground the grid path chose, every quarter cell: track
+must stay inside the grid and off blocked cells, may be over water only where the nearest path point is, and must be
+within 4 m (a starting value, tuned in-game) of the ground under that point. A straight that fails keeps an extra path
+point, a point whose removal would leave a failing straight is kept, and an arc that fails has its radius halved until
+it passes (down to the check spacing); `guarded` in the plan's summary counts these, and the log shows it.
+
 ### Height profile (`profile.tl`)
 
 Fits the track's height to the terrain under the grade limit, smoothing forwards and backwards. Where the track is
@@ -204,12 +210,11 @@ Each ends with one in-game test by the user.
 
 ## Known issues after milestone 1 (to settle with in-game data)
 
-- **Smoothing ignores obstacles.** `smooth.fillet` drops grid-path points whose curves don't fit the radius and fits
-  arcs without looking at blocked cells, so curves can cut corners through buildings. The window warns ("the curves cut
-  across buildings in places"). It shows most in Fastest mode with high-speed track (3 km radius) next to built-up
-  edges, and the shortened station extensions add tight-curve warnings there. Candidate fixes: an obstacle-aware
-  fillet (shrink or split an arc that crosses blocked cells), or a search with a coarser turn model so the grid path
-  already fits the radius. A rotation penalty on station sites gave mixed results in simulation and was not adopted.
+- **Curves near obstacles can be tight.** The smoothing guard keeps the track on the grid path's ground (off water,
+  hillsides and buildings it went round), so where the path turns close to an obstacle the curve is tightened below
+  the mode's radius instead (a tight-curve warning). It shows most in Fastest mode (radii up to 3 km): there the grid
+  path, not the radius, decides the line. Candidate fix: a search with a coarser turn model, so the grid path already
+  fits the radius. A rotation penalty on station sites gave mixed results in simulation and was not adopted.
 
 ## Out of scope for version 1
 
