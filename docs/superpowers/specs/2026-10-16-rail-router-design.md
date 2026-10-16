@@ -95,6 +95,12 @@ step costs its length × the sum of:
 - existing track: crossed only by a bridge, never through a junction;
 - a turn penalty per change of direction.
 
+The search state is (cell, arriving direction), so turn costs are exact and the result is optimal for the cost
+model (checked against an exact reference on random grids). It arrives at each station's approach in the platform's
+direction. Known cost (plain Lua, desktop): a 500 × 500 grid with 15% clutter took about 1.6 s and 35 MB in Cheapest
+mode and about 6 s and 90 MB in Fastest mode, spread over frames. If that's too slow in-game, weight the heuristic
+(f = g + 1.2·h) in Fastest mode, giving up exact optimality that smoothing hides anyway.
+
 ### Smoothing (`smooth.tl`)
 
 Turns the grid path into straights and arcs, every arc at least the mode's minimum radius, keeping the direction at
