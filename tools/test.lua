@@ -29,6 +29,32 @@ function t.eq(actual, expected, label)
 	end
 end
 
+function t.near(actual, expected, tolerance, label)
+	if type(actual) ~= "number" or math.abs(actual - expected) > tolerance then
+		error(("%s: expected %s ± %s, got %s"):format(label or "near", tostring(expected), tostring(tolerance),
+			tostring(actual)), 2)
+	end
+end
+
+function t.ok(value, label)
+	if not value then
+		error((label or "ok") .. ": expected a true value, got " .. tostring(value), 2)
+	end
+end
+
+-- Pure modules load each other with ug_require "<modId>::/<path>", as in the game. Map that onto requireTl, once
+-- per file, so tests can load modules that depend on others.
+local loaded = {}
+function ug_require(path)
+	local prefix = modId .. "::/"
+	assert(path:sub(1, #prefix) == prefix, "the test runner only loads this mod's files: " .. path)
+	local rel = path:sub(#prefix + 1)
+	if loaded[rel] == nil then
+		loaded[rel] = t.requireTl(rel)
+	end
+	return loaded[rel]
+end
+
 function t.test(name, fn)
 	local ok, err = pcall(fn)
 	if ok then
