@@ -198,6 +198,12 @@ local function mapGameContext(base : GameContext) : GameContext
 	} as GameContext
 end
 
+-- The map while the window is open and no route is shown: the game's own HUD (town names, station and vehicle icons)
+-- and click-to-select. A tool window that sets no action gets an empty map, without town names.
+function preview.makeMapAction(baseCtx : GameContext) : function() : TreeNodeId
+	return selector_react_util.makeDefaultSelectorAction(mapGameContext(baseCtx))
+end
+
 local record Cache
 	key : string
 	action : function() : TreeNodeId

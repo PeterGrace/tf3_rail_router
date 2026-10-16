@@ -10,4 +10,6 @@ global record PgraceRailRouterPreview
 	end
 
 	RouteAction : Recipe<Params>
+	-- The map action for the window itself: the game's HUD (town names) and selector, no route.
+	makeMapAction : function(baseCtx : GameContext) : function() : TreeNodeId
 end

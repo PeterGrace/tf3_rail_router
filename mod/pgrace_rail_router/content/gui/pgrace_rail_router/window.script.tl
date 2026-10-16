@@ -573,16 +573,24 @@ local function makeToolParam() : ToolParam
 end
 
 local RailRouterWindow = react.RegisterWrapperRecipe("PgraceRailRouterWindow", builtin.Window, function(params : ToolReactUtil.IToolWindowParam<ToolParam>) : TreeNodeId
+	local gameCtx = params.payload ~= nil and params.payload.toolParam ~= nil and params.payload.toolParam.gameCtx
+		or makeToolParam().gameCtx
+	-- Without an action of its own, the tool leaves the map bare (no town names). Set the game's default, built
+	-- once and passed on every render as the Music Player does.
+	local mapActionRef : ReactRefT<function() : TreeNodeId> = react.useRef(nil)
+	if mapActionRef:get() == nil then
+		mapActionRef:set(preview.makeMapAction(gameCtx))
+	end
+	if params.payload ~= nil and params.payload.setActionFn ~= nil then
+		params.payload.setActionFn(mapActionRef:get())
+	end
 	return builtin.Window{
 		meta = { class = "pgrace-rail-router" },
 		id = WINDOW_ID,
 		title = MOD_NAME,
 		closable = true,
 		onClose = params.onClose,
-		content = Content{
-			gameCtx = params.payload ~= nil and params.payload.toolParam ~= nil and params.payload.toolParam.gameCtx
-				or makeToolParam().gameCtx,
-		},
+		content = Content{ gameCtx = gameCtx },
 	}
 end)
 
