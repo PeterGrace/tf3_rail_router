@@ -50,17 +50,16 @@ function grid.centre(g : Grid, ix : integer, iy : integer) : Pt
 end
 
 function grid.heightAt(g : Grid, p : Pt) : number
-	local fx = math.max(0, math.min(g.nx - 1, (p.x - g.x0) / g.cell))
+	local nx = g.nx
+	local fx = math.max(0, math.min(nx - 1, (p.x - g.x0) / g.cell))
 	local fy = math.max(0, math.min(g.ny - 1, (p.y - g.y0) / g.cell))
 	local cx, cy = math.floor(fx), math.floor(fy)
 	local tx, ty = fx - cx, fy - cy
-	local cx1, cy1 = math.min(cx + 1, g.nx - 1), math.min(cy + 1, g.ny - 1)
-	-- Zero-based cell coordinates.
-	local function h(x : integer, y : integer) : number
-		return g.height[y * g.nx + x + 1]
-	end
-	local top = h(cx, cy) * (1 - tx) + h(cx1, cy) * tx
-	local bottom = h(cx, cy1) * (1 - tx) + h(cx1, cy1) * tx
+	local cx1, cy1 = math.min(cx + 1, nx - 1), math.min(cy + 1, g.ny - 1)
+	-- Zero-based cell coordinates; the height list is one-based.
+	local height = g.height
+	local top = height[cy * nx + cx + 1] * (1 - tx) + height[cy * nx + cx1 + 1] * tx
+	local bottom = height[cy1 * nx + cx + 1] * (1 - tx) + height[cy1 * nx + cx1 + 1] * tx
 	return top * (1 - ty) + bottom * ty
 end
 
@@ -112,15 +111,35 @@ local function pop(s : Search) : integer
 	return top
 end
 
-local function cellXY(g : Grid, node : integer) : integer, integer
-	return (node - 1) % g.nx + 1, math.floor((node - 1) / g.nx) + 1
+-- Search states are (cell, arriving direction): node = (cell - 1) * 16 + k, with k the index into DIRS of the move
+-- that entered the cell. Tracking the direction lets a cell be entered several ways, so a costly turn now can be
+-- traded for a cheaper path later. FINISH is a virtual node past the goal, reached from a state at the goal cell
+-- through the final turn onto the asked arrival direction.
+local NDIRS = 16
+local FINISH = 0
+
+local function cellOfNode(node : integer) : integer
+	return math.floor((node - 1) / NDIRS) + 1
 end
 
--- Straight-line metres to the goal: no step costs less than its length, so this never overestimates.
-local function heuristic(s : Search, node : integer) : number
-	local ax, ay = cellXY(s.g, node)
-	local gx, gy = cellXY(s.g, s.goal)
-	return s.g.cell * math.sqrt((gx - ax) * (gx - ax) + (gy - ay) * (gy - ay))
+local function cellXY(g : Grid, cell : integer) : integer, integer
+	return (cell - 1) % g.nx + 1, math.floor((cell - 1) / g.nx) + 1
+end
+
+local SQRT2, SQRT5 = math.sqrt(2), math.sqrt(5)
+
+-- The length of the shortest path from a cell to the goal cell over empty, flat ground, in metres: the offset split
+-- between the two move directions either side of it. No step costs less than its length and turns only add, so
+-- this never overestimates; it is a distance, so it never drops by more than a step's cost either.
+local function heuristic(s : Search, ax : integer, ay : integer) : number
+	local dx, dy = math.abs(s.gx - ax), math.abs(s.gy - ay)
+	local long, short = math.max(dx, dy), math.min(dx, dy)
+	if 2 * short <= long then
+		-- Straight moves and knight moves.
+		return s.g.cell * ((long - 2 * short) + short * SQRT5)
+	end
+	-- Knight moves and diagonals.
+	return s.g.cell * ((long - short) * SQRT5 + (2 * short - long) * SQRT2)
 end
 
 local function nearestDir(d : Pt) : integer
@@ -138,8 +157,27 @@ local function nearestDir(d : Pt) : integer
 	return best
 end
 
--- The cost of moving from cell a (at ax, ay) in direction k, or nil if the move isn't allowed.
-local function stepCost(s : Search, a : integer, ax : integer, ay : integer, k : integer) : number
+-- 22.5° steps between directions a and b (0 to 8).
+local function turnSteps(a : integer, b : integer) : integer
+	local t = math.abs(a - b)
+	if t > 8 then
+		t = 16 - t
+	end
+	return t
+end
+
+-- The least turn penalty still to pay from a state arriving in direction k: the turns from k round to the goal
+-- direction add up to at least turnSteps(k, goalDir) steps, and a turn of n steps costs n² ≥ n. Each move's own turn
+-- pays for any drop in this, so with the distance it stays a consistent heuristic.
+local function turnBound(s : Search, k : integer) : number
+	if s.goalDir == 0 then
+		return 0
+	end
+	return s.w.turnPenalty * turnSteps(k, s.goalDir)
+end
+
+-- The cost of moving from cell a (at ax, ay) in direction k, turns not included, or nil if the move isn't allowed.
+local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k : integer) : number
 	local g, w = s.g, s.w
 	local d = DIRS[k]
 	local bx, by = ax + d[1], ay + d[2]
@@ -160,17 +198,6 @@ local function stepCost(s : Search, a : integer, ax : integer, ay : integer, k :
 		end
 		overWater = overWater or g.water[m1] or g.water[m2]
 	end
-	local turnSteps = 0
-	local prev = s.dir[a] or 0
-	if prev ~= 0 then
-		turnSteps = math.abs(k - prev)
-		if turnSteps > 8 then
-			turnSteps = 16 - turnSteps
-		end
-		if turnSteps > MAX_TURN_STEPS then
-			return nil
-		end
-	end
 	local length = g.cell * math.sqrt(d[1] * d[1] + d[2] * d[2])
 	local factor = 1.0
 	if overWater then
@@ -181,7 +208,7 @@ local function stepCost(s : Search, a : integer, ax : integer, ay : integer, k :
 			factor = 1 + w.slopePenalty * (grade - w.maxGrade) / w.maxGrade
 		end
 	end
-	local cost = length * factor + w.turnPenalty * turnSteps * turnSteps
+	local cost = length * factor
 	if g.road[b] and not g.road[a] then
 		cost = cost + w.roadCrossing
 	end
@@ -191,15 +218,28 @@ local function stepCost(s : Search, a : integer, ax : integer, ay : integer, k :
 	return cost
 end
 
-function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, w : Weights) : Search
+function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights) : Search
 	local sx, sy = grid.cellOf(g, from)
 	local gx, gy = grid.cellOf(g, to)
-	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), done = false,
-		found = false, expansions = 0, heap = {}, heapF = {}, cost = {}, parent = {}, dir = {}, closed = {} }
+	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
+		goalDir = nearestDir(goalDir), done = false, found = false, expansions = 0, h0 = 0, bestH = 0, heap = {},
+		heapF = {}, cost = {}, parent = {}, closed = {} }
 	local start = grid.index(g, sx, sy)
-	s.cost[start] = 0
-	s.dir[start] = nearestDir(startDir)
-	push(s, start, heuristic(s, start))
+	s.h0 = heuristic(s, sx, sy)
+	s.bestH = s.h0
+	if g.blocked[s.goal] then
+		s.done = true
+		return s
+	end
+	-- Without a start direction, every direction is a start state, so the first move may go any way, unpenalised.
+	local k0 = nearestDir(startDir)
+	for k = 1, NDIRS do
+		if k0 == 0 or k == k0 then
+			local node = (start - 1) * NDIRS + k
+			s.cost[node] = 0
+			push(s, node, s.h0 + turnBound(s, k))
+		end
+	end
 	return s
 end
 
@@ -207,32 +247,55 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 	if s.done then
 		return true
 	end
-	local g = s.g
+	local g, w = s.g, s.w
+	local cost, closed = s.cost, s.closed
 	local budget = maxExpansions
 	while budget > 0 do
 		if #s.heap == 0 then
 			s.done = true
 			return true
 		end
-		local a = pop(s)
-		if not s.closed[a] then
-			s.closed[a] = true
-			s.expansions = s.expansions + 1
-			budget = budget - 1
-			if a == s.goal then
+		local node = pop(s)
+		if not closed[node] then
+			closed[node] = true
+			if node == FINISH then
 				s.done, s.found = true, true
 				return true
 			end
+			s.expansions = s.expansions + 1
+			budget = budget - 1
+			local a = cellOfNode(node)
+			local prev = node - (a - 1) * NDIRS
+			local base = cost[node]
 			local ax, ay = cellXY(g, a)
-			for k = 1, #DIRS do
-				local c = stepCost(s, a, ax, ay, k)
+			local h = heuristic(s, ax, ay)
+			if h < s.bestH then
+				s.bestH = h
+			end
+			if a == s.goal then
+				local turn = 0
+				if s.goalDir ~= 0 then
+					turn = turnSteps(prev, s.goalDir)
+				end
+				if turn <= MAX_TURN_STEPS then
+					local fc = base + w.turnPenalty * turn * turn
+					if cost[FINISH] == nil or fc < cost[FINISH] then
+						cost[FINISH], s.parent[FINISH] = fc, node
+						push(s, FINISH, fc)
+					end
+				end
+			end
+			for turn = -MAX_TURN_STEPS, MAX_TURN_STEPS do
+				local k = (prev - 1 + turn) % NDIRS + 1
+				local c = moveCost(s, a, ax, ay, k)
 				if c ~= nil then
 					local d = DIRS[k]
-					local b = grid.index(g, ax + d[1], ay + d[2])
-					local nc = s.cost[a] + c
-					if not s.closed[b] and (s.cost[b] == nil or nc < s.cost[b]) then
-						s.cost[b], s.parent[b], s.dir[b] = nc, a, k
-						push(s, b, nc + heuristic(s, b))
+					local bx, by = ax + d[1], ay + d[2]
+					local nb = (grid.index(g, bx, by) - 1) * NDIRS + k
+					local nc = base + c + w.turnPenalty * turn * turn
+					if not closed[nb] and (cost[nb] == nil or nc < cost[nb]) then
+						cost[nb], s.parent[nb] = nc, node
+						push(s, nb, nc + heuristic(s, bx, by) + turnBound(s, k))
 					end
 				end
 			end
@@ -242,10 +305,10 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 end
 
 function grid.progress(s : Search) : number
-	if s.done then
+	if s.done or s.h0 <= 0 then
 		return 1
 	end
-	return math.min(1, s.expansions / (s.g.nx * s.g.ny))
+	return math.max(0, math.min(1, 1 - s.bestH / s.h0))
 end
 
 function grid.path(s : Search) : {Pt}
@@ -254,9 +317,9 @@ function grid.path(s : Search) : {Pt}
 	end
 	local g = s.g
 	local cells : {integer} = {}
-	local node = s.goal
+	local node = s.parent[FINISH]
 	while node ~= nil do
-		table.insert(cells, 1, node)
+		table.insert(cells, 1, cellOfNode(node))
 		node = s.parent[node]
 	end
 	if #cells < 2 then

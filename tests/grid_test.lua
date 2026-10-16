@@ -12,8 +12,10 @@ local function with(changes)
 	return w
 end
 
-local function run(g, from, to, w, stepSize)
-	local s = grid.startSearch(g, from, to, { x = 1, y = 0 }, w or W)
+local EAST = { x = 1, y = 0 }
+
+local function run(g, from, to, w, stepSize, startDir, goalDir)
+	local s = grid.startSearch(g, from, to, startDir or EAST, goalDir or EAST, w or W)
 	while not grid.stepSearch(s, stepSize or 1000) do end
 	return grid.path(s), s
 end
@@ -119,6 +121,65 @@ t.test("grid: small steps give the same path as one big step", function()
 		t.eq(a[i].x, b[i].x, "x " .. i)
 		t.eq(a[i].y, b[i].y, "y " .. i)
 	end
+end)
+
+local function angleBetween(a, b)
+	local c = (a.x * b.x + a.y * b.y) / (math.sqrt(a.x * a.x + a.y * a.y) * math.sqrt(b.x * b.x + b.y * b.y))
+	return math.acos(math.max(-1, math.min(1, c)))
+end
+
+local function segment(path, i)
+	return { x = path[i + 1].x - path[i].x, y = path[i + 1].y - path[i].y }
+end
+
+t.test("grid: arrives in the asked direction", function()
+	local g = grid.new(0, 0, 100, 21, 21)
+	local west = { x = -1, y = 0 }
+	local path = run(g, { x = 1000, y = 1000 }, { x = 1000, y = 1800 }, W, 1000, EAST, west)
+	t.ok(path ~= nil, "found")
+	t.ok(angleBetween(segment(path, 1), EAST) <= math.pi / 2 + 1e-6, "leaves within 90° of the start direction")
+	t.ok(angleBetween(segment(path, #path - 1), west) <= math.pi / 2 + 1e-6, "arrives within 90° of the goal direction")
+	-- Arriving southwards at a goal due north means looping round past it: without the goal direction the path
+	-- would arrive heading north.
+	local south = { x = 0, y = -1 }
+	local loop = run(g, { x = 1000, y = 1000 }, { x = 1000, y = 1800 }, W, 1000, EAST, south)
+	t.ok(loop ~= nil, "found the loop")
+	t.ok(angleBetween(segment(loop, #loop - 1), south) <= math.pi / 2 + 1e-6, "arrives heading south")
+end)
+
+t.test("grid: a blocked goal fails at once", function()
+	local g = grid.new(0, 0, 100, 21, 21)
+	g.blocked[cellIndex(g, { x = 2000, y = 1000 })] = true
+	local s = grid.startSearch(g, { x = 0, y = 1000 }, { x = 2000, y = 1000 }, EAST, EAST, W)
+	t.ok(s.done, "done after startSearch")
+	t.ok(grid.stepSearch(s, 1), "stepSearch reports done")
+	t.eq(s.expansions, 0, "no expansions")
+	t.eq(grid.path(s), nil, "no path")
+end)
+
+t.test("grid: no move turns more than 90°", function()
+	for __, w in ipairs({ W, with({ turnPenalty = 0 }), with({ bridgeFactor = 1.5 }) }) do
+		local path = run(lakeGrid(), { x = 0, y = 800 }, { x = 3000, y = 800 }, w)
+		t.ok(path ~= nil, "found")
+		for i = 1, #path - 2 do
+			local angle = angleBetween(segment(path, i), segment(path, i + 1))
+			t.ok(angle <= math.pi / 2 + 1e-6, "turn at point " .. (i + 1) .. ": " .. math.deg(angle) .. "°")
+		end
+	end
+end)
+
+t.test("grid: progress rises steadily to 1", function()
+	local g = lakeGrid()
+	local s = grid.startSearch(g, { x = 0, y = 800 }, { x = 3000, y = 800 }, EAST, EAST, W)
+	t.near(grid.progress(s), 0, 1e-9, "starts at 0")
+	local last, steps = 0, 0
+	while not grid.stepSearch(s, 20) do
+		local p = grid.progress(s)
+		t.ok(p >= last, "never falls")
+		last, steps = p, steps + 1
+	end
+	t.ok(steps > 3, "several steps")
+	t.near(grid.progress(s), 1, 1e-9, "ends at 1")
 end)
 
 t.test("grid: heightAt interpolates and clamps", function()

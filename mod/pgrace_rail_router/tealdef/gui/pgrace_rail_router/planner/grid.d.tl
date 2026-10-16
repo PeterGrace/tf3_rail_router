@@ -19,20 +19,32 @@ global record PgraceRailRouterGrid
 	end
 
 	-- A search in progress. The fields other than done, found and expansions are internal.
+	-- Its states are (cell, arriving direction): node id (cell - 1) * 16 + k, k = 1..16 the move direction that
+	-- entered the cell; node 0 is the virtual finish, past the goal cell.
 	record Search
 		g : Grid
 		w : PgraceRailRouterModes.Weights
 		startPt : PgraceRailRouterGeo.Pt
 		goalPt : PgraceRailRouterGeo.Pt
+		-- The goal cell's index, and its column and row.
 		goal : integer
+		gx : integer
+		gy : integer
+		-- The asked arrival direction (1..16), or 0 for any.
+		goalDir : integer
 		done : boolean
 		found : boolean
+		-- States expanded so far.
 		expansions : integer
+		-- Distance to the goal cell over empty ground (metres): from the start cell, and the least of any expanded
+		-- state (for progress).
+		h0 : number
+		bestH : number
 		heap : {integer}
 		heapF : {number}
+		-- Keyed by node id. cost[0] is the finished path's cost.
 		cost : {integer : number}
 		parent : {integer : integer}
-		dir : {integer : integer}
 		closed : {integer : boolean}
 	end
 
@@ -49,13 +61,16 @@ global record PgraceRailRouterGrid
 	-- Whether the cell nearest to p is water.
 	waterAt : function(g : Grid, p : PgraceRailRouterGeo.Pt) : boolean
 
-	-- Starts a search from `from` to `to`; startDir is the direction the track leaves `from` in (turns are counted
-	-- from it).
+	-- Starts a search from `from` to `to`. startDir is the direction the track leaves `from` in (turns are counted
+	-- from it; zero-length = any). goalDir is the direction it must arrive at `to` in: the last move may turn at most
+	-- 90° from it, and that final turn is charged like any other (zero-length = any). A blocked goal cell finishes the
+	-- search at once, not found.
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
-		startDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights) : Search
-	-- Expands up to maxExpansions cells; true once the search is finished (found or not).
+		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights) : Search
+	-- Expands up to maxExpansions states; true once the search is finished (found or not).
 	stepSearch : function(s : Search, maxExpansions : integer) : boolean
-	-- Rough share of the work done, 0 to 1 (cells expanded / all cells).
+	-- Rough share of the work done, 0 to 1, never falling: how much nearer to the goal (in distance over empty
+	-- ground) the search has reached than the start was; 1 once done.
 	progress : function(s : Search) : number
 	-- The path as points from `from` to `to` (cell centres in between); nil if there is none.
 	path : function(s : Search) : {PgraceRailRouterGeo.Pt}
