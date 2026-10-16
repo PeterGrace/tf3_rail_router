@@ -24,9 +24,12 @@ local BUTTON_ICON = "::/gui/game_bar/icons/vehicle_train_30.tga"
 -- Microseconds of survey or planning work per frame.
 local BUDGET_US = 6000
 -- Cells a leg's search expands per call between clock checks.
-local EXPANSIONS_PER_CALL = 400
+local EXPANSIONS_PER_CALL = 150
 local CELL = 100.0
+-- The surveyed area is the stops' bounding box grown by this share of its larger side; when a leg finds no path,
+-- the work starts over with it doubled, up to MAX_RETRIES times (0.25, 0.5, 1.0).
 local SURVEY_MARGIN = 0.25
+local MAX_RETRIES = 2
 -- Towns adding at most this share of the direct distance are offered as stops.
 local DETOUR_BUDGET = 0.15
 local PLATFORMS : {integer} = { 80, 120, 160, 240, 320 }
@@ -60,6 +63,9 @@ local record Work
 	stops : {Town}
 	weights : PgraceRailRouterModes.Weights
 	platform : integer
+	-- The survey margin in use, and how many times the work was started over with a wider one.
+	margin : number
+	retries : integer
 	surveyJob : PgraceRailRouterSurvey.Job
 	routeJob : PgraceRailRouterRoute.Job
 	-- Timing diagnostics for the planning part (after the survey), logged when the plan is done: the slowest single
@@ -73,6 +79,8 @@ local record Progress
 	-- "survey" or "plan"
 	stage : string
 	percent : integer
+	-- A retry with a wider survey after "no path".
+	widening : boolean
 end
 
 local nextGeneration = 0
@@ -298,18 +306,20 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			end
 		end
 		workRef:set({ stops = corridor.order(fromTown, toTown, picked), weights = modes.weights(settings.mode, track),
-			platform = settings.platform, slowestStepUs = { sites = 0, legs = 0 }, planUs = 0, planFrames = 0 })
+			platform = settings.platform, margin = SURVEY_MARGIN, retries = 0, slowestStepUs = { sites = 0, legs = 0 },
+			planUs = 0, planFrames = 0 })
 		planState:set(nil)
 		showState:set(false)
 		errorState:set(false)
 		progressState:set({ stage = "survey", percent = 0 })
 	end
 
-	local function setProgress(stage : string, share : number)
+	local function setProgress(work : Work, stage : string, share : number)
 		local percent = math.floor(100 * share)
+		local widening = work.retries > 0
 		local old = progressState:old()
-		if old == nil or old.stage ~= stage or old.percent ~= percent then
-			progressState:set({ stage = stage, percent = percent })
+		if old == nil or old.stage ~= stage or old.percent ~= percent or old.widening ~= widening then
+			progressState:set({ stage = stage, percent = percent, widening = widening })
 		end
 	end
 
@@ -318,7 +328,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local function advance(work : Work)
 		local clock = api.type.Clock.new()
 		if work.surveyJob == nil then
-			work.surveyJob = survey.start(work.stops, CELL, SURVEY_MARGIN)
+			work.surveyJob = survey.start(work.stops, CELL, work.margin)
 			if work.surveyJob == nil then
 				error("survey: no area to survey")
 			end
@@ -327,9 +337,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			if survey.step(work.surveyJob, BUDGET_US) then
 				work.routeJob = route.start({ grid = survey.grid(work.surveyJob), stops = work.stops,
 					weights = work.weights, platformLength = work.platform })
-				setProgress("plan", 0)
+				setProgress(work, "plan", 0)
 			else
-				setProgress("survey", survey.progress(work.surveyJob))
+				setProgress(work, "survey", survey.progress(work.surveyJob))
 			end
 			return
 		end
@@ -358,14 +368,23 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				.. tostring(math.floor(work.planUs / 1000)) .. " ms over " .. tostring(work.planFrames)
 				.. " frames; slowest step sites " .. tostring(work.slowestStepUs.sites or 0) .. " us, legs "
 				.. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
-				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0))
+				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0) .. ", survey margin " .. tostring(work.margin))
+			if not plan.ok and plan.failure == "no_path" and work.retries < MAX_RETRIES then
+				-- Perhaps the way round lies outside the surveyed area: start over on a wider one.
+				work.retries = work.retries + 1
+				work.margin = 2 * work.margin
+				work.surveyJob = nil
+				work.routeJob = nil
+				setProgress(work, "survey", 0)
+				return
+			end
 			nextGeneration = nextGeneration + 1
 			generationState:set(nextGeneration)
 			planState:set(plan)
 			workRef:set(nil)
 			progressState:set(nil)
 		else
-			setProgress("plan", route.progress(work.routeJob))
+			setProgress(work, "plan", route.progress(work.routeJob))
 		end
 	end
 
@@ -503,6 +522,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local progress = progressState:old()
 	if progress ~= nil then
 		local template = progress.stage == "survey" and _("Surveying… {percent}%") or _("Planning… {percent}%")
+		if progress.widening then
+			-- The same words for a retry's survey and its planning: the player only needs to know it's trying wider.
+			template = _("Widening the search… {percent}%")
+		end
 		table.insert(body, textRow(fill(template, { percent = tostring(progress.percent) }), "font-scale-annotation"))
 	end
 	if errorState:old() then
