@@ -2359,7 +2359,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	if job.search == nil then
 		local __, aApproach = stationEnds(input, a, true)
 		local ___, bApproach = stationEnds(input, b, false)
-		job.search = grid.startSearch(input.grid, aApproach, bApproach, a.site.dir, input.weights)
+		job.search = grid.startSearch(input.grid, aApproach, bApproach, a.site.dir, b.site.dir, input.weights)
 		return false
 	end
 	if not grid.stepSearch(job.search, maxExpansions) then
