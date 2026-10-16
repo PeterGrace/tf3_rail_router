@@ -202,6 +202,16 @@ Each ends with one in-game test by the user.
 3. **Build:** stations, then track chunks, with Retry.
 4. **Tuning and polish:** thresholds and weights from real maps, translations, release.
 
+## Known issues after milestone 1 (to settle with in-game data)
+
+- **Smoothing ignores obstacles.** `smooth.fillet` drops grid-path points whose curves don't fit the radius and fits
+  arcs without looking at blocked cells, so curves can cut corners through buildings. The window warns ("the curves cut
+  across buildings in places"). It shows most in Fastest mode with high-speed track (3 km radius) next to built-up
+  edges, and the shortened station extensions add tight-curve warnings there. Candidate fixes: an obstacle-aware
+  fillet (shrink or split an arc that crosses blocked cells), or a search with a coarser turn model so the grid path
+  already fits the radius. A rotation penalty on station sites gave mixed results in simulation and was not adopted.
+- **One-sided ridge profile.** See "Height profile".
+
 ## Out of scope for version 1
 
 Signals; creating lines or buying trains; routes that join existing track; terminus stations; single track.
