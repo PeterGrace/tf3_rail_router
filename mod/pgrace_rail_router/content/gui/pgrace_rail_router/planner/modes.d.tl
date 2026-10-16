@@ -22,6 +22,8 @@ global record PgraceRailRouterModes
 		-- 0 means no limit.
 		yearFrom : integer
 		yearTo : integer
+		-- The electrified variant's resource name; nil if none.
+		catenary : string
 	end
 
 	-- What the planner works with. Extra costs are in metres of plain track.
