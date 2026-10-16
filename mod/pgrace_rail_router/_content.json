@@ -17,6 +17,8 @@
         "gui/pgrace_rail_router/planner/smooth.tl",
         "gui/pgrace_rail_router/planner/stations.d.tl",
         "gui/pgrace_rail_router/planner/stations.tl",
+        "gui/pgrace_rail_router/preview.d.tl",
+        "gui/pgrace_rail_router/preview.tl",
         "gui/pgrace_rail_router/survey.d.tl",
         "gui/pgrace_rail_router/survey.tl"
     ]
