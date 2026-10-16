@@ -23,12 +23,6 @@ local CAMERA_FACTOR = 1.2
 local CAMERA_MIN = 500.0
 local CAMERA_MAX = 4000.0
 
-local GROUND : {number} = { 0.35, 0.8, 0.35 }
-local BRIDGE : {number} = { 0.3, 0.6, 1.0 }
-local TUNNEL : {number} = { 1.0, 0.6, 0.2 }
-local STATION : {number} = { 1.0, 1.0, 1.0 }
-local KIND_COLOURS : {string : {number}} = { ground = GROUND, bridge = BRIDGE, tunnel = TUNNEL }
-
 -- The base cargo-flow colours are a gradient with this many stops; ours repeat one colour as often.
 local layerColors = api.gui.genericRep.get(api.gui.genericRep.find("::/gui/layers/layer_colors.gres")).data as LayerColors
 -- (Counted through color_util.toArray4, as Jam Session reads them: the gres array itself may not support #.)
@@ -49,46 +43,87 @@ local function safeJoin(fn : function(), scope : string)
 	end, scope)
 end
 
-local function colours(rgb : {number}) : {Vec4f}
+local function colours(r : number, g : number, b : number) : {Vec4f}
 	local list : {Vec4f} = {}
 	for i = 1, GRADIENT_STOPS do
-		list[i] = api.type.Vec4f.new(rgb[1], rgb[2], rgb[3], 1.0)
+		list[i] = api.type.Vec4f.new(r, g, b, 1.0)
 	end
 	return list
 end
 
-local function kindAt(leg : Leg, s : number) : string
-	for __, span in ipairs(leg.spans) do
-		if s >= span.s0 and s <= span.s1 then
-			return span.kind
+-- Built once: green on the ground, blue on bridges, orange in tunnels, white along platforms.
+local GROUND = colours(0.35, 0.8, 0.35)
+local STATION = colours(1.0, 1.0, 1.0)
+local KIND_COLOURS : {string : {Vec4f}} = {
+	ground = GROUND,
+	bridge = colours(0.3, 0.6, 1.0),
+	tunnel = colours(1.0, 0.6, 0.2),
+}
+
+-- The kind of each stretch between samples i and i + 1: a bridge or tunnel span overlapping it wins over ground, so
+-- one shorter than the sample spacing still shows. Spans are in order along the leg; one pass over both lists.
+local function segmentKinds(leg : Leg) : {string}
+	local kinds : {string} = {}
+	local spans = leg.spans
+	local first = 1
+	for i = 1, #leg.samples - 1 do
+		local a, b = leg.samples[i].s, leg.samples[i + 1].s
+		while first <= #spans and spans[first].s1 < a do
+			first = first + 1
 		end
+		local kind = "ground"
+		local k = first
+		while k <= #spans and spans[k].s0 <= b do
+			if spans[k].kind ~= "ground" then
+				kind = spans[k].kind
+				break
+			end
+			k = k + 1
+		end
+		kinds[i] = kind
 	end
-	return "ground"
+	return kinds
 end
 
 local function makeLayerConfig(plan : Plan) : LayerConfig
 	local passenger = api.res.cargoTypeRep.getPassengerCargoTypeId()
 	local flows : {FlowData} = {}
-	local function add(ax : number, ay : number, az : number, bx : number, by : number, bz : number, rgb : {number})
+	local function add(ax : number, ay : number, az : number, bx : number, by : number, bz : number, arrowColors : {Vec4f})
 		local flow = api.type.LayerConfig.CargoFlowRenderableConfig.FlowData.new()
 		flow.from = api.type.Vec3f.new(ax, ay, az + LIFT)
 		flow.to = api.type.Vec3f.new(bx, by, bz + LIFT)
 		flow.speed = 0
-		flow.arrowColors = colours(rgb)
+		flow.arrowColors = arrowColors
 		flow.cargoIconAlpha = 0
 		flow.cargoTypes = { passenger }
 		table.insert(flows, flow)
 	end
 	for __, leg in ipairs(plan.legs) do
-		local n = #leg.samples
+		local samples = leg.samples
+		local n = #samples
+		local kinds = segmentKinds(leg)
 		local i = 1
 		while i < n do
-			local j = i
-			while j < n and leg.samples[j].s - leg.samples[i].s < CHORD do
+			-- A chord runs up to CHORD metres, and ends early where the kind changes, so every span gets its colour.
+			local kind = kinds[i]
+			local j = i + 1
+			while j < n and samples[j].s - samples[i].s < CHORD and kinds[j] == kind do
 				j = j + 1
 			end
-			local p, q = leg.samples[i].p, leg.samples[j].p
-			local kind = kindAt(leg, 0.5 * (leg.samples[i].s + leg.samples[j].s))
+			-- Take a short tail of the same kind into this chord rather than leaving a stub arrow.
+			if j < n and samples[n].s - samples[j].s < CHORD / 2 then
+				local same = true
+				for k = j, n - 1 do
+					if kinds[k] ~= kind then
+						same = false
+						break
+					end
+				end
+				if same then
+					j = n
+				end
+			end
+			local p, q = samples[i].p, samples[j].p
 			add(p.x, p.y, leg.z[i], q.x, q.y, leg.z[j], KIND_COLOURS[kind] or GROUND)
 			i = j
 		end
@@ -108,15 +143,23 @@ end
 -- Main thread only.
 local function frameCamera(plan : Plan)
 	local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
-	local z = 0.0
-	for __, station in ipairs(plan.stations) do
-		local c = station.site.centre
+	local function include(c : PgraceRailRouterGeo.Pt)
 		minX, maxX = math.min(minX, c.x), math.max(maxX, c.x)
 		minY, maxY = math.min(minY, c.y), math.max(maxY, c.y)
+	end
+	local z = 0.0
+	for __, station in ipairs(plan.stations) do
+		include(station.site.centre)
 		z = z + station.z / #plan.stations
 	end
 	if #plan.stations == 0 then
 		return
+	end
+	-- The whole track, not just the stations: a detour can swing well outside them.
+	for __, leg in ipairs(plan.legs) do
+		for __, sample in ipairs(leg.samples) do
+			include(sample.p)
+		end
 	end
 	local extent = math.max(maxX - minX, maxY - minY)
 	local distance = math.min(CAMERA_MAX, math.max(CAMERA_MIN, extent * CAMERA_FACTOR))
@@ -214,7 +257,12 @@ preview.RouteAction = react.RegisterRecipe("PgraceRailRouterRouteAction", functi
 
 	react.onMount(activate)
 	if changed and selfRef:get() ~= nil then
-		activate()
+		if cacheRef:get().action ~= nil then
+			activate()
+		else
+			-- The rebuild failed: hand the map back rather than leave the previous plan's override in place.
+			setOverride(false)
+		end
 	end
 	react.onUnmount(function()
 		setOverride(false)
