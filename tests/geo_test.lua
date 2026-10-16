@@ -1,0 +1,31 @@
+local t = ...
+local geo = t.requireTl("gui/pgrace_rail_router/planner/geo.tl")
+
+t.test("geo: add, sub, scale, dist", function()
+	local p = geo.add(geo.pt(1, 2), geo.scale(geo.pt(3, 4), 2))
+	t.eq(p.x, 7, "x")
+	t.eq(p.y, 10, "y")
+	t.near(geo.dist(geo.pt(0, 0), geo.pt(3, 4)), 5, 1e-9, "dist")
+	t.eq(geo.sub(geo.pt(5, 5), geo.pt(2, 1)).x, 3, "sub")
+end)
+
+t.test("geo: norm keeps a zero vector at zero", function()
+	local z = geo.norm(geo.pt(0, 0))
+	t.eq(z.x, 0, "x")
+	t.eq(z.y, 0, "y")
+	t.near(geo.len(geo.norm(geo.pt(3, 4))), 1, 1e-9, "unit")
+end)
+
+t.test("geo: cross is positive for a left turn", function()
+	t.ok(geo.cross(geo.pt(1, 0), geo.pt(0, 1)) > 0, "left")
+	t.ok(geo.cross(geo.pt(1, 0), geo.pt(0, -1)) < 0, "right")
+end)
+
+t.test("geo: rotate and turnAngle", function()
+	local r = geo.rotate(geo.pt(1, 0), math.pi / 2)
+	t.near(r.x, 0, 1e-9, "x")
+	t.near(r.y, 1, 1e-9, "y")
+	t.near(geo.turnAngle(geo.pt(1, 0), geo.pt(0, 5)), math.pi / 2, 1e-9, "right angle")
+	t.near(geo.turnAngle(geo.pt(2, 0), geo.pt(1, 0)), 0, 1e-9, "same direction")
+	t.near(geo.turnAngle(geo.pt(1, 0), geo.pt(-1, 0)), math.pi, 1e-9, "reverse")
+end)

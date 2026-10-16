@@ -1,4 +1,7 @@
 {
     "archives": null,
-    "files": []
+    "files": [
+        "gui/pgrace_rail_router/planner/geo.d.tl",
+        "gui/pgrace_rail_router/planner/geo.tl"
+    ]
 }
