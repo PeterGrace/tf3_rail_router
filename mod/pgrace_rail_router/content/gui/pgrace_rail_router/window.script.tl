@@ -327,6 +327,36 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 	end
 
+	-- PROBE (remove before release): writes the planner's whole input to the log, so a route can be replayed and
+	-- tuned offline on the player's own map. Heights in metres; flags per cell as a hex digit (1 blocked, 2 water,
+	-- 4 road, 8 track).
+	local function captureProbe(work : Work, g : PgraceRailRouterGrid.Grid)
+		local tag = LOG_PREFIX .. "CAPTURE "
+		debugPrint(tag .. "begin " .. string.format("%.3f %.3f %.3f %d %d", g.x0, g.y0, g.cell, g.nx, g.ny))
+		local fields : {string} = {}
+		for k, v in pairs(work.weights as {string : any}) do
+			table.insert(fields, tostring(k) .. "=" .. tostring(v))
+		end
+		debugPrint(tag .. "weights " .. table.concat(fields, ";"))
+		debugPrint(tag .. "platform " .. tostring(work.platform))
+		for __, stop in ipairs(work.stops) do
+			debugPrint(tag .. "stop " .. string.format("%d %.3f %.3f ", stop.id, stop.pos.x, stop.pos.y) .. stop.name)
+		end
+		for iy = 1, g.ny do
+			local heights : {string} = {}
+			local flags : {string} = {}
+			for ix = 1, g.nx do
+				local i = (iy - 1) * g.nx + ix
+				table.insert(heights, string.format("%.1f", g.height[i] or 0))
+				local f = (g.blocked[i] and 1 or 0) + (g.water[i] and 2 or 0) + (g.road[i] and 4 or 0)
+					+ (g.track[i] and 8 or 0)
+				table.insert(flags, string.format("%x", f))
+			end
+			debugPrint(tag .. "row " .. iy .. " " .. table.concat(heights, ",") .. " " .. table.concat(flags))
+		end
+		debugPrint(tag .. "end")
+	end
+
 	-- Engine reads (terrain, octree) and the planner run in joins on the main thread, BUDGET_US per frame, as Jam
 	-- Session's scan: the window stays responsive and the game doesn't freeze.
 	local function advance(work : Work)
@@ -339,6 +369,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		if work.routeJob == nil then
 			if survey.step(work.surveyJob, BUDGET_US) then
+				pcall(captureProbe, work, survey.grid(work.surveyJob)) -- PROBE (remove before release)
 				work.routeJob = route.start({ grid = survey.grid(work.surveyJob), stops = work.stops,
 					weights = work.weights, platformLength = work.platform })
 				setProgress(work, "plan", 0)
