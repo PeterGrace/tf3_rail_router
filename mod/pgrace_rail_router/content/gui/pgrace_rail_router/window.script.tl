@@ -68,8 +68,9 @@ local record Work
 	retries : integer
 	surveyJob : PgraceRailRouterSurvey.Job
 	routeJob : PgraceRailRouterRoute.Job
-	-- Timing diagnostics for the planning part (after the survey), logged when the plan is done: the slowest single
-	-- route.step per phase ("sites", "legs") and the total, microseconds, and the frames it took.
+	-- Timing diagnostics for the planning part (after the survey) of the current attempt, logged when the plan is
+	-- done: the slowest single route.step per phase ("sites", "legs") and the total, microseconds, and the frames it
+	-- took. Reset on each retry.
 	slowestStepUs : {string : integer}
 	planUs : integer
 	planFrames : integer
@@ -368,13 +369,17 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				.. tostring(math.floor(work.planUs / 1000)) .. " ms over " .. tostring(work.planFrames)
 				.. " frames; slowest step sites " .. tostring(work.slowestStepUs.sites or 0) .. " us, legs "
 				.. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
-				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0) .. ", survey margin " .. tostring(work.margin))
+				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0) .. ", survey margin " .. tostring(work.margin)
+				.. ", retries " .. tostring(work.retries))
 			if not plan.ok and plan.failure == "no_path" and work.retries < MAX_RETRIES then
 				-- Perhaps the way round lies outside the surveyed area: start over on a wider one.
 				work.retries = work.retries + 1
 				work.margin = 2 * work.margin
 				work.surveyJob = nil
 				work.routeJob = nil
+				work.slowestStepUs = { sites = 0, legs = 0 }
+				work.planUs = 0
+				work.planFrames = 0
 				setProgress(work, "survey", 0)
 				return
 			end
