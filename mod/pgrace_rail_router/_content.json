@@ -8,6 +8,8 @@
         "gui/pgrace_rail_router/planner/grid.d.tl",
         "gui/pgrace_rail_router/planner/grid.tl",
         "gui/pgrace_rail_router/planner/modes.d.tl",
-        "gui/pgrace_rail_router/planner/modes.tl"
+        "gui/pgrace_rail_router/planner/modes.tl",
+        "gui/pgrace_rail_router/planner/stations.d.tl",
+        "gui/pgrace_rail_router/planner/stations.tl"
     ]
 }
