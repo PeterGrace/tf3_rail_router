@@ -45,7 +45,12 @@ global record PgraceRailRouterGrid
 		-- Keyed by node id. cost[0] is the finished path's cost.
 		cost : {integer : number}
 		parent : {integer : integer}
-		closed : {integer : boolean}
+		-- The reachability flood fill over cells that runs first: true while it runs; its queue of cell indices,
+		-- the next one to take, and the cells queued so far (queue and seen are dropped once it ends).
+		filling : boolean
+		fillQueue : {integer}
+		fillHead : integer
+		fillSeen : {integer : boolean}
 	end
 
 	-- A flat (height 0), dry, empty grid.
@@ -64,10 +69,12 @@ global record PgraceRailRouterGrid
 	-- Starts a search from `from` to `to`. startDir is the direction the track leaves `from` in (turns are counted
 	-- from it; zero-length = any). goalDir is the direction it must arrive at `to` in: the last move may turn at most
 	-- 90° from it, and that final turn is charged like any other (zero-length = any). A blocked goal cell finishes the
-	-- search at once, not found.
+	-- search at once, not found. The first stepSearch calls flood-fill the cells from the start (about one cell per
+	-- unit of budget, no expansions counted) and finish, not found, if the goal can't be reached at all.
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
 		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights) : Search
-	-- Expands up to maxExpansions states; true once the search is finished (found or not).
+	-- Expands up to maxExpansions states (or fills that many cells first); true once the search is finished (found
+	-- or not). Gives up, not found, after 12 expansions per cell (a goal cut off only by the turn limit).
 	stepSearch : function(s : Search, maxExpansions : integer) : boolean
 	-- Rough share of the work done, 0 to 1, never falling: how much nearer to the goal (in distance over empty
 	-- ground) the search has reached than the start was; 1 once done.

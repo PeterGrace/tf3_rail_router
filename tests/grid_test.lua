@@ -157,6 +157,23 @@ t.test("grid: a blocked goal fails at once", function()
 	t.eq(grid.path(s), nil, "no path")
 end)
 
+t.test("grid: a walled-in goal fails at once", function()
+	local g = grid.new(0, 0, 100, 21, 21)
+	-- The goal cell (16, 11) is free, inside a closed ring of blocked cells (knight moves can't jump it either).
+	for iy = 10, 12 do
+		for ix = 15, 17 do
+			if ix ~= 16 or iy ~= 11 then
+				g.blocked[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+	local s = grid.startSearch(g, { x = 0, y = 1000 }, { x = 1500, y = 1000 }, EAST, EAST, W)
+	-- The reachability fill runs first, one cell per unit of budget: 21 × 21 cells fit in one call.
+	t.ok(grid.stepSearch(s, 21 * 21), "done after the fill")
+	t.eq(s.expansions, 0, "no expansions")
+	t.eq(grid.path(s), nil, "no path")
+end)
+
 t.test("grid: no move turns more than 90°", function()
 	for __, w in ipairs({ W, with({ turnPenalty = 0 }), with({ bridgeFactor = 1.5 }) }) do
 		local path = run(lakeGrid(), { x = 0, y = 800 }, { x = 3000, y = 800 }, w)

@@ -84,10 +84,10 @@ local function push(s : Search, node : integer, f : number)
 	end
 end
 
-local function pop(s : Search) : integer
+local function pop(s : Search) : integer, number
 	local heap, keys = s.heap, s.heapF
 	local n = #heap
-	local top = heap[1]
+	local top, topKey = heap[1], keys[1]
 	heap[1], keys[1] = heap[n], keys[n]
 	heap[n], keys[n] = nil, nil
 	n = n - 1
@@ -108,7 +108,7 @@ local function pop(s : Search) : integer
 		keys[smallest], keys[i] = keys[i], keys[smallest]
 		i = smallest
 	end
-	return top
+	return top, topKey
 end
 
 -- Search states are (cell, arriving direction): node = (cell - 1) * 16 + k, with k the index into DIRS of the move
@@ -116,6 +116,11 @@ end
 -- traded for a cheaper path later. FINISH is a virtual node past the goal, reached from a state at the goal cell
 -- through the final turn onto the asked arrival direction.
 local NDIRS = 16
+-- Metres: smaller cost differences are rounding noise.
+local EPSILON = 1e-6
+-- Give up after this many expansions per cell (there are 16 states per cell). Random small grids with many
+-- obstacles needed up to 9.7 before finding their path; 8 cut off 0.3% of them.
+local MAX_EXPANSIONS_PER_CELL = 12
 local FINISH = 0
 
 local function cellOfNode(node : integer) : integer
@@ -218,13 +223,66 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 	return cost
 end
 
+-- Before the search proper, a flood fill over cells from the start (the same moves, turns, water and costs aside)
+-- checks that the goal can be reached at all: otherwise the search would try every (cell, direction) state before
+-- giving up. Fills up to `budget` cells; returns the budget left.
+local function fillStep(s : Search, budget : integer) : integer
+	local g = s.g
+	local nx, ny, blocked = g.nx, g.ny, g.blocked
+	local seen, queue = s.fillSeen, s.fillQueue
+	local head, tail = s.fillHead, #queue
+	while budget > 0 and head <= tail do
+		local a = queue[head]
+		head = head + 1
+		budget = budget - 1
+		local ax = (a - 1) % nx + 1
+		local ay = math.floor((a - 1) / nx) + 1
+		for k = 1, NDIRS do
+			local d = DIRS[k]
+			local dx, dy = d[1], d[2]
+			local bx, by = ax + dx, ay + dy
+			if bx >= 1 and bx <= nx and by >= 1 and by <= ny then
+				local b = (by - 1) * nx + bx
+				if not seen[b] and not blocked[b] then
+					local open = true
+					-- A knight move passes between two cells: both must be passable.
+					if dx * dx + dy * dy == 5 then
+						open = not blocked[(ay + math.floor(dy / 2) - 1) * nx + ax + math.floor(dx / 2)]
+							and not blocked[(ay + math.ceil(dy / 2) - 1) * nx + ax + math.ceil(dx / 2)]
+					end
+					if open then
+						if b == s.goal then
+							s.filling, s.fillSeen, s.fillQueue = false, nil, nil
+							return budget
+						end
+						seen[b] = true
+						tail = tail + 1
+						queue[tail] = b
+					end
+				end
+			end
+		end
+	end
+	s.fillHead = head
+	if head > tail then
+		-- Nothing left to fill and the goal not met: unreachable.
+		s.filling, s.fillSeen, s.fillQueue = false, nil, nil
+		s.done = true
+	end
+	return budget
+end
+
 function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights) : Search
 	local sx, sy = grid.cellOf(g, from)
 	local gx, gy = grid.cellOf(g, to)
 	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
 		goalDir = nearestDir(goalDir), done = false, found = false, expansions = 0, h0 = 0, bestH = 0, heap = {},
-		heapF = {}, cost = {}, parent = {}, closed = {} }
+		heapF = {}, cost = {}, parent = {}, filling = true, fillQueue = {}, fillHead = 1, fillSeen = {} }
 	local start = grid.index(g, sx, sy)
+	s.fillQueue[1], s.fillSeen[start] = start, true
+	if start == s.goal then
+		s.filling, s.fillSeen, s.fillQueue = false, nil, nil
+	end
 	s.h0 = heuristic(s, sx, sy)
 	s.bestH = s.h0
 	if g.blocked[s.goal] then
@@ -247,55 +305,73 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 	if s.done then
 		return true
 	end
-	local g, w = s.g, s.w
-	local cost, closed = s.cost, s.closed
 	local budget = maxExpansions
+	if s.filling then
+		budget = fillStep(s, budget)
+		if s.done or s.filling then
+			return s.done
+		end
+	end
+	local g, w = s.g, s.w
+	local cost = s.cost
+	-- A backstop for goals that only the turn limit cuts off: by then the search has gone far past any sensible path.
+	local maxTotal = MAX_EXPANSIONS_PER_CELL * g.nx * g.ny
 	while budget > 0 do
 		if #s.heap == 0 then
 			s.done = true
 			return true
 		end
-		local node = pop(s)
-		if not closed[node] then
-			closed[node] = true
-			if node == FINISH then
+		local node, f = pop(s)
+		if node == FINISH then
+			if f <= cost[FINISH] then
 				s.done, s.found = true, true
 				return true
 			end
-			s.expansions = s.expansions + 1
-			budget = budget - 1
+		else
 			local a = cellOfNode(node)
 			local prev = node - (a - 1) * NDIRS
 			local base = cost[node]
 			local ax, ay = cellXY(g, a)
 			local h = heuristic(s, ax, ay)
-			if h < s.bestH then
-				s.bestH = h
-			end
-			if a == s.goal then
-				local turn = 0
-				if s.goalDir ~= 0 then
-					turn = turnSteps(prev, s.goalDir)
+			-- An entry pushed before the state's cost last fell carries a higher f: skip it. With a consistent
+			-- heuristic, a state's first pop is final, so no other check for closed states is needed.
+			if f <= base + h + turnBound(s, prev) then
+				if s.expansions >= maxTotal then
+					s.done = true
+					return true
 				end
-				if turn <= MAX_TURN_STEPS then
-					local fc = base + w.turnPenalty * turn * turn
-					if cost[FINISH] == nil or fc < cost[FINISH] then
-						cost[FINISH], s.parent[FINISH] = fc, node
-						push(s, FINISH, fc)
+				s.expansions = s.expansions + 1
+				budget = budget - 1
+				if h < s.bestH then
+					s.bestH = h
+				end
+				if a == s.goal then
+					local turn = 0
+					if s.goalDir ~= 0 then
+						turn = turnSteps(prev, s.goalDir)
+					end
+					if turn <= MAX_TURN_STEPS then
+						local fc = base + w.turnPenalty * turn * turn
+						if cost[FINISH] == nil or fc < cost[FINISH] then
+							cost[FINISH], s.parent[FINISH] = fc, node
+							push(s, FINISH, fc)
+						end
 					end
 				end
-			end
-			for turn = -MAX_TURN_STEPS, MAX_TURN_STEPS do
-				local k = (prev - 1 + turn) % NDIRS + 1
-				local c = moveCost(s, a, ax, ay, k)
-				if c ~= nil then
-					local d = DIRS[k]
-					local bx, by = ax + d[1], ay + d[2]
-					local nb = (grid.index(g, bx, by) - 1) * NDIRS + k
-					local nc = base + c + w.turnPenalty * turn * turn
-					if not closed[nb] and (cost[nb] == nil or nc < cost[nb]) then
-						cost[nb], s.parent[nb] = nc, node
-						push(s, nb, nc + heuristic(s, bx, by) + turnBound(s, k))
+				for turn = -MAX_TURN_STEPS, MAX_TURN_STEPS do
+					local k = (prev - 1 + turn) % NDIRS + 1
+					local c = moveCost(s, a, ax, ay, k)
+					if c ~= nil then
+						local d = DIRS[k]
+						local bx, by = ax + d[1], ay + d[2]
+						local nb = (grid.index(g, bx, by) - 1) * NDIRS + k
+						local nc = base + c + w.turnPenalty * turn * turn
+						-- Gains below EPSILON are rounding (the same cost summed in another order): taking them would
+						-- expand a finished state again.
+						if cost[nb] == nil or nc < cost[nb] - EPSILON then
+							cost[nb], s.parent[nb] = nc, node
+							push(s, nb, nc + heuristic(s, bx, by) + turnBound(s, k))
+						end
 					end
 				end
 			end
