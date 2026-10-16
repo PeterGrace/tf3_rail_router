@@ -281,8 +281,13 @@ local function markEdge(job : Job, entity : Engine.Entity)
 	else
 		job.trackEdges = job.trackEdges + 1
 	end
-	local p0, p1, t0, t1 = edge.position0, edge.position1, edge.tangent0, edge.tangent1
-	if p0 ~= nil and p1 ~= nil and t0 ~= nil and t1 ~= nil and not (isZero(p0) and isZero(p1)) then
+	-- These fields are unverified on a live component: a read that throws falls back to the nodes.
+	local p0, p1, t0, t1 : Vec3f, Vec3f, Vec3f, Vec3f = nil, nil, nil, nil
+	local read = pcall(function() : boolean
+		p0, p1, t0, t1 = edge.position0, edge.position1, edge.tangent0, edge.tangent1
+		return true
+	end)
+	if read and p0 ~= nil and p1 ~= nil and t0 ~= nil and t1 ~= nil and not (isZero(p0) and isZero(p1)) then
 		markCurve(job.grid, { x = p0.x, y = p0.y }, { x = t0.x, y = t0.y }, { x = p1.x, y = p1.y },
 			{ x = t1.x, y = t1.y }, cells)
 		return
