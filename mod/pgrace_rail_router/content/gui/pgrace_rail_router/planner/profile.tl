@@ -78,7 +78,10 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 	end
 	-- Over a crossing the track must clear the crossed line: a floor of CLEARANCE over the ground there, spread to the
 	-- neighbours at the grade limit (forward, then backward), so the track can climb to it in time. The grade passes
-	-- below never take the track under a floor that is itself within the grade limit.
+	-- below never take the track under a floor that is itself within the grade limit. The spread floor is: it's the
+	-- highest of the raw ground + CLEARANCE values less maxGrade × distance, so even a run of crossing samples on
+	-- ground steeper than the limit keeps its clearance (the track is lifted higher there instead, more than
+	-- CLEARANCE above the lower samples). Only the pinned ends can break it, when a crossing is too near them.
 	local floor : {number} = {}
 	local anyCrossing = false
 	for k = 1, n do
