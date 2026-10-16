@@ -32,6 +32,13 @@ global record PgraceRailRouterGrid
 		gy : integer
 		-- The asked arrival direction (1..16), or 0 for any.
 		goalDir : integer
+		-- The curve radius the turns are spaced for (metres), and the turn model it gives: the most 22.5° steps one
+		-- move may turn, and per direction (1..16) how many steps a move that turns onto it runs straight.
+		radius : number
+		maxTurn : integer
+		straightSteps : {integer}
+		-- Paths costing more are not wanted (math.huge: no limit).
+		maxCost : number
 		done : boolean
 		found : boolean
 		-- States expanded so far.
@@ -45,6 +52,10 @@ global record PgraceRailRouterGrid
 		-- Keyed by node id. cost[0] is the finished path's cost.
 		cost : {integer : number}
 		parent : {integer : integer}
+		-- How the finish is reached from parent[0]: this many steps on in direction finishDir (0 steps when that
+		-- state is at the goal cell).
+		finishDir : integer
+		finishSteps : integer
 		-- The reachability flood fill over cells that runs first: true while it runs; its queue of cell indices,
 		-- the next one to take, and the cells queued so far (queue and seen are dropped once it ends).
 		filling : boolean
@@ -74,14 +85,22 @@ global record PgraceRailRouterGrid
 		fn : function(i : integer) : boolean) : boolean
 
 	-- Starts a search from `from` to `to`. startDir is the direction the track leaves `from` in (turns are counted
-	-- from it; zero-length = any). goalDir is the direction it must arrive at `to` in: the last move may turn at most
-	-- 90° from it, and that final turn is charged like any other (zero-length = any). A blocked goal cell finishes the
-	-- search at once, not found. The first stepSearch calls flood-fill the cells from the start (about one cell per
-	-- unit of budget, no expansions counted) and finish, not found, if the goal can't be reached at all. Entering a
-	-- road or track cell costs w.roadCrossing or w.trackCrossing; a step from road to road costs 1.5 × its length, so
-	-- the path doesn't run along roads.
+	-- from it; zero-length = any). goalDir is the direction it must arrive at `to` in: the last move may turn from it
+	-- as far as any other move may, and that final turn is charged like any other (zero-length = any).
+	-- Turns are spaced for curves of `radius` (default w.minRadius): a 22.5° turn needs a straight of
+	-- L = 2 · radius · tan(11.25°) before the next one, so consecutive arcs fit. Where L is at most a cell, any move
+	-- may turn by up to 90°. Otherwise a move may turn by one 22.5° step only, and a move that turns carries on
+	-- straight in its new direction for ceil(L / step length) steps in all, each checked and costed as a move of
+	-- its own; passing through the goal cell part-way along, heading in goalDir, finishes there. The start state
+	-- (startDir) may turn at once (the station's extension gives room behind it), as may every state the search
+	-- reaches. With maxCost, the search finishes, not found, once every path left would cost more. A blocked goal
+	-- cell finishes the search at once, not found. The first stepSearch calls flood-fill the cells from the start
+	-- (about one cell per unit of budget, no expansions counted) and finish, not found, if the goal can't be reached
+	-- at all. Entering a road or track cell costs w.roadCrossing or w.trackCrossing; a step from road to road costs
+	-- 1.5 × its length, so the path doesn't run along roads.
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
-		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights) : Search
+		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights,
+		radius ?: number, maxCost ?: number) : Search
 	-- Expands up to maxExpansions states (or fills that many cells first); true once the search is finished (found
 	-- or not). Gives up, not found, after 12 expansions per cell (a goal cut off only by the turn limit).
 	stepSearch : function(s : Search, maxExpansions : integer) : boolean

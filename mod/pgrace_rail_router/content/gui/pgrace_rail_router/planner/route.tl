@@ -34,6 +34,13 @@ local MAX_GROUND_DIFF = 4.0
 local LEG_WEIGHT = 10
 -- Share of a leg's work that is its search; building it is the rest.
 local SEARCH_SHARE = 0.99
+-- A leg's search with its turns spaced for a wide radius is taken if its path costs at most this share more than the
+-- fallback's (turns spaced for the Cheapest radius); otherwise the radius doesn't fit that leg (station ends misaligned
+-- or close together, a narrow passage), and the paths that do fit loop or wander: on the captured Fastest map they
+-- cost 2.2 to 6 times as much. The limit also stops a hopeless search early, which unlimited took up to 290 ms (86k
+-- expansions) to give up. Limits from 10% to 50% gave the same plans there, the lower with half the expansions; a
+-- starting value, to tune with more maps.
+local MAX_RADIUS_EXTRA = 0.1
 
 -- The direction of travel at stop i: from the previous stop towards the next.
 local function stopDir(stops : {Town}, i : integer) : Pt
@@ -101,6 +108,22 @@ local function takePlatforms(input : Input, station : Station, taken : {integer 
 	for i in pairs(platformCells(input, station)) do
 		taken[i] = true
 	end
+end
+
+-- The curve radii a leg's search tries, in order: the fallback (weights.minSearchRadius) first, then from the full
+-- radius halving down while still above it; just the full radius where it is no wider than the fallback.
+local function searchRadii(w : PgraceRailRouterModes.Weights) : {number}
+	local floor = w.minSearchRadius or w.minRadius
+	if w.minRadius <= floor + 1e-6 then
+		return { w.minRadius }
+	end
+	local radii : {number} = { floor }
+	local r = w.minRadius
+	while r > floor + 1e-6 do
+		table.insert(radii, r)
+		r = r / 2
+	end
+	return radii
 end
 
 local function fail(job : Job, failure : string, towns : {string}) : boolean
@@ -341,7 +364,7 @@ local function summarise(input : Input, plan : Plan) : Summary
 end
 
 function route.start(input : Input) : Job
-	local job : Job = { input = input, phase = "sites", siteIndex = 1, legIndex = 1, taken = {},
+	local job : Job = { input = input, phase = "sites", siteIndex = 1, legIndex = 1, taken = {}, searchExpansions = 0,
 		result = { ok = true, failureTowns = {}, platformLength = input.platformLength, stations = {}, legs = {} } }
 	if #input.stops < 2 then
 		fail(job, "no_stops", {})
@@ -383,8 +406,11 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	end
 	local a, b = plan.stations[job.legIndex], plan.stations[job.legIndex + 1]
 	if job.path ~= nil then
-		table.insert(plan.legs, buildLeg(input, a, b, job.path, job.taken))
+		local leg = buildLeg(input, a, b, job.path, job.taken)
+		leg.searchRadius, leg.searchExpansions = job.searchRadius, job.searchExpansions
+		table.insert(plan.legs, leg)
 		job.path = nil
+		job.searchRadius, job.searchExpansions = nil, 0
 		job.legIndex = job.legIndex + 1
 		if job.legIndex > #plan.stations - 1 then
 			plan.summary = summarise(input, plan)
@@ -396,17 +422,47 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	if job.search == nil then
 		local aExtension = select(3, stationEnds(input, a, true, job.taken))
 		local bExtension = select(3, stationEnds(input, b, false, job.taken))
-		job.search = grid.startSearch(input.grid, aExtension, bExtension, a.site.dir, b.site.dir, input.weights)
+		if job.radii == nil then
+			job.radii, job.tryIndex, job.searchExpansions = searchRadii(input.weights), 1, 0
+		end
+		-- After the first try, only a path within reach of the fallback's cost will do.
+		local maxCost : number = nil
+		if job.tryIndex > 1 then
+			maxCost = job.fallbackCost * (1 + MAX_RADIUS_EXTRA)
+		end
+		job.search = grid.startSearch(input.grid, aExtension, bExtension, a.site.dir, b.site.dir, input.weights,
+			job.radii[job.tryIndex], maxCost)
 		return false
 	end
 	if not grid.stepSearch(job.search, maxExpansions) then
 		return false
 	end
 	-- The leg is built on the next step, so no step does both.
-	job.path = grid.path(job.search)
+	local search = job.search
+	local path = grid.path(search)
 	job.search = nil
-	if job.path == nil then
-		return fail(job, "no_path", { a.town.name, b.town.name })
+	job.searchExpansions = job.searchExpansions + search.expansions
+	local function accept(p : {Pt}, radius : number)
+		job.path, job.searchRadius = p, radius
+		job.radii, job.fallback = nil, nil
+	end
+	if job.tryIndex == 1 then
+		if path == nil then
+			-- The fallback radius turns most freely: no wider one finds a way either.
+			job.radii = nil
+			return fail(job, "no_path", { a.town.name, b.town.name })
+		end
+		if #job.radii == 1 then
+			accept(path, job.radii[1])
+		else
+			job.fallback, job.fallbackCost, job.tryIndex = path, search.cost[0], 2
+		end
+	elseif path ~= nil then
+		accept(path, job.radii[job.tryIndex])
+	elseif job.tryIndex < #job.radii then
+		job.tryIndex = job.tryIndex + 1
+	else
+		accept(job.fallback, job.radii[1])
 	end
 	return false
 end
@@ -420,10 +476,15 @@ function route.progress(job : Job) : number
 	local done : number = job.siteIndex - 1
 	if job.phase == "legs" then
 		done = n + LEG_WEIGHT * (job.legIndex - 1)
+		-- Each of the leg's tries has an equal share of its search; one that succeeds takes the rest.
+		local tries = job.radii ~= nil and #job.radii or 1
+		local tried = job.radii ~= nil and job.tryIndex - 1 or 0
 		if job.search ~= nil then
-			done = done + LEG_WEIGHT * SEARCH_SHARE * grid.progress(job.search)
+			done = done + LEG_WEIGHT * SEARCH_SHARE * (tried + grid.progress(job.search)) / tries
 		elseif job.path ~= nil then
 			done = done + LEG_WEIGHT * SEARCH_SHARE
+		else
+			done = done + LEG_WEIGHT * SEARCH_SHARE * tried / tries
 		end
 	end
 	return math.min(1, done / total)

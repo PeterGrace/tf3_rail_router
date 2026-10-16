@@ -39,6 +39,12 @@ global record PgraceRailRouterRoute
 		-- Samples whose nearest cell is blocked by a building or obstacle (curves cutting corners, mostly). Existing
 		-- track and roads are crossed by bridges instead (see the spans).
 		blockedSamples : integer
+		-- The curve radius the leg's search spaced its turns for (metres): weights.minRadius, or less where no path
+		-- fitted it (halved per try, down to weights.minSearchRadius; see step). Smoothing still aims for
+		-- weights.minRadius, so a smaller one leaves tight curves. And the states the search expanded, over all its
+		-- tries. For the log.
+		searchRadius : number
+		searchExpansions : integer
 		-- Path points kept, and arcs tightened, so that the smoothed track keeps to the ground the grid path chose:
 		-- inside the grid, off blocked cells, over water only where the path is, and with ground within 4 m of a
 		-- uniform slope across the path (no hills or hollows it went round). Never below weights.minBuildRadius
@@ -89,6 +95,15 @@ global record PgraceRailRouterRoute
 		siteIndex : integer
 		legIndex : integer
 		search : PgraceRailRouterGrid.Search
+		-- The current leg's search tries: the radii to try (nil before its first), and which one is running; the
+		-- fallback's path and cost once the first has finished; the radius of the path taken, and the states expanded
+		-- over all its tries.
+		radii : {number}
+		tryIndex : integer
+		fallback : {PgraceRailRouterGeo.Pt}
+		fallbackCost : number
+		searchRadius : number
+		searchExpansions : integer
 		-- A finished search's path, waiting for the next step to build its leg.
 		path : {PgraceRailRouterGeo.Pt}
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
@@ -100,6 +115,10 @@ global record PgraceRailRouterRoute
 	start : function(input : Input) : Job
 	-- One unit of work: a station site, starting a leg's search, up to maxExpansions cells of it, or building the
 	-- leg from its path (curves, heights). true once the plan is finished (whether it succeeded or not).
+	-- Where weights.minSearchRadius is below weights.minRadius, a leg is searched several times: first with turns
+	-- spaced for minSearchRadius (the fallback; no path there fails the plan with "no_path"), then for minRadius,
+	-- halving while above minSearchRadius, until a path costs at most 10% more than the fallback's; if none does,
+	-- the fallback's path is taken.
 	step : function(job : Job, maxExpansions : integer) : boolean
 	-- Share of the work done, 0 to 1.
 	progress : function(job : Job) : number

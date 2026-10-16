@@ -1,7 +1,7 @@
 local t = ...
 local grid = t.requireTl("gui/pgrace_rail_router/planner/grid.tl")
 
-local W = { maxGrade = 0.025, minRadius = 500, slopePenalty = 2, bridgeFactor = 6, turnPenalty = 20,
+local W = { maxGrade = 0.025, minRadius = 220, slopePenalty = 2, bridgeFactor = 6, turnPenalty = 20,
 	roadCrossing = 50, trackCrossing = 400, costPerMetre = 360, bridgeCostFactor = 5, tunnelCostFactor = 8,
 	bridgeAbove = 8, tunnelBelow = 12 }
 
@@ -341,4 +341,138 @@ t.test("grid: cellsAlong visits exactly the cells a segment meets, in order", fu
 			prev = math.max(prev, s)
 		end
 	end
+end)
+
+-- The direction index (1..16, as in grid.tl) of a move between neighbouring path points, cell size 100 m.
+local DIRS = { { 1, 0 }, { 2, 1 }, { 1, 1 }, { 1, 2 }, { 0, 1 }, { -1, 2 }, { -1, 1 }, { -2, 1 },
+	{ -1, 0 }, { -2, -1 }, { -1, -1 }, { -1, -2 }, { 0, -1 }, { 1, -2 }, { 1, -1 }, { 2, -1 } }
+local function dirOf(a, b)
+	local dx, dy = math.floor((b.x - a.x) / 100 + 0.5), math.floor((b.y - a.y) / 100 + 0.5)
+	for k, d in ipairs(DIRS) do
+		if d[1] == dx and d[2] == dy then
+			return k
+		end
+	end
+	error(("not a move: (%d, %d)"):format(dx, dy))
+end
+
+local function steps(a, b)
+	local t = math.abs(a - b)
+	return t > 8 and 16 - t or t
+end
+
+local function dist(a, b)
+	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+end
+
+t.test("grid: with a wide radius, turns are single steps spaced for the curves", function()
+	-- A long open field, the goal 3 km to the side of the start's heading: the path has to bend twice.
+	local g = grid.new(0, 0, 100, 121, 41)
+	local radius = 1000
+	local L = 2 * radius * math.tan(math.pi / 16)
+	local from, to = { x = 500, y = 500 }, { x = 11500, y = 3500 }
+	local path, s = run(g, from, to, with({ minRadius = radius, turnPenalty = 150 }))
+	t.ok(path ~= nil, "found")
+	t.eq(s.radius, radius, "spaced for the weights' radius")
+	local lastTurn, turns = nil, 0
+	for i = 2, #path - 1 do
+		local before, after = dirOf(path[i - 1], path[i]), dirOf(path[i], path[i + 1])
+		if before ~= after then
+			turns = turns + 1
+			t.eq(steps(before, after), 1, "one 22.5° step at point " .. i)
+			if lastTurn ~= nil then
+				local along = 0
+				for k = lastTurn + 1, i do
+					along = along + dist(path[k - 1], path[k])
+				end
+				t.ok(along >= L - 1e-6, ("turns at points %d and %d are %.0f m apart, under %.0f"):format(lastTurn, i,
+					along, L))
+			end
+			lastTurn = i
+		end
+	end
+	t.ok(turns >= 2, "turns: " .. turns)
+end)
+
+-- 30 × 20 cells with random buildings, water, roads and heights (a fixed sequence), the two end cells clear.
+local function clutteredGrid()
+	local seed = 7
+	local function rnd()
+		seed = (seed * 1103515245 + 12345) % 2147483648
+		return seed / 2147483648
+	end
+	local g = grid.new(0, 0, 100, 30, 20)
+	for i = 1, 30 * 20 do
+		g.blocked[i] = rnd() < 0.2
+		g.water[i] = rnd() < 0.1
+		g.road[i] = rnd() < 0.1
+		g.height[i] = math.floor(rnd() * 30)
+	end
+	g.blocked[grid.index(g, 1, 10)] = false
+	g.blocked[grid.index(g, 30, 10)] = false
+	return g
+end
+
+t.test("grid: a radius whose minimum straight fits in a cell turns as before the curve-aware search", function()
+	-- The path, cost and work from the search before turns were spaced for the radius.
+	local before = "0,9 1,8 2,7 3,7 4,8 6,7 8,6 10,7 11,8 12,9 14,8 16,9 17,8 18,7 20,8 21,9 23,10 24,9 26,8 28,9 29,9"
+	for __, radius in ipairs({ 220, 250 }) do
+		local path, s = run(clutteredGrid(), { x = 0, y = 900 }, { x = 2900, y = 900 }, with({ minRadius = radius }))
+		local cells = {}
+		for __, p in ipairs(path) do
+			table.insert(cells, ("%d,%d"):format(p.x / 100, p.y / 100))
+		end
+		t.eq(table.concat(cells, " "), before, radius .. ": path")
+		t.near(s.cost[0], 7653.7136120633877, 1e-9, radius .. ": cost")
+		t.eq(s.expansions, 1854, radius .. ": expansions")
+	end
+end)
+
+t.test("grid: the radius can be given apart from the weights", function()
+	local wide = with({ minRadius = 1000 })
+	local a, sa = run(clutteredGrid(), { x = 0, y = 900 }, { x = 2900, y = 900 }, wide)
+	local s = grid.startSearch(clutteredGrid(), { x = 0, y = 900 }, { x = 2900, y = 900 }, EAST, EAST, wide, 220)
+	while not grid.stepSearch(s, 1000) do end
+	t.eq(s.radius, 220, "radius")
+	t.near(s.cost[0], 7653.7136120633877, 1e-9, "as with the Cheapest radius")
+	t.ok(a == nil or sa.cost[0] >= s.cost[0] - 1e-9, "the wide radius never finds a cheaper path")
+end)
+
+t.test("grid: with a wide radius, a walled-off goal still fails in the fill, and maxCost cuts the search short", function()
+	local g = grid.new(0, 0, 100, 21, 21)
+	for iy = 1, 21 do
+		g.blocked[grid.index(g, 11, iy)] = true
+	end
+	local path, s = run(g, { x = 0, y = 1000 }, { x = 2000, y = 1000 }, with({ minRadius = 3000 }))
+	t.eq(path, nil, "no path")
+	t.eq(s.expansions, 0, "no expansions")
+	-- An open field: the straight path costs 2000, so a limit below that finds nothing.
+	local open = grid.new(0, 0, 100, 21, 21)
+	local capped = grid.startSearch(open, { x = 0, y = 1000 }, { x = 2000, y = 1000 }, EAST, EAST,
+		with({ minRadius = 3000 }), nil, 1900)
+	while not grid.stepSearch(capped, 1000) do end
+	t.eq(grid.path(capped), nil, "nothing under the limit")
+	local fits = grid.startSearch(open, { x = 0, y = 1000 }, { x = 2000, y = 1000 }, EAST, EAST,
+		with({ minRadius = 3000 }), nil, 2100)
+	while not grid.stepSearch(fits, 1000) do end
+	t.near(fits.cost[0], 2000, 1e-6, "found under a higher one")
+end)
+
+t.test("grid: with a wide radius, the finish can come part-way along a turn's straight", function()
+	-- Heading east to a goal two cells to the side and forty along, arriving heading east-north-east (2, 1). With
+	-- R = 2000 (L ≈ 796 m) a turn onto (2, 1) runs on for 4 knight steps, and one turn there puts the goal on its
+	-- second step: the search stops there rather than wind its way to the goal with three turns.
+	local g = grid.new(0, 0, 100, 61, 21)
+	local from, to = { x = 500, y = 500 }, { x = 4500, y = 700 }
+	local s = grid.startSearch(g, from, to, EAST, { x = 2, y = 1 }, with({ minRadius = 2000 }))
+	while not grid.stepSearch(s, 1000) do end
+	local path = grid.path(s)
+	t.ok(path ~= nil, "found")
+	t.eq(s.finishSteps, 2, "finished part-way, after 2 steps")
+	t.eq(s.finishDir, 2, "heading (2, 1)")
+	t.eq(path[#path].x, 4500, "ends at the goal")
+	t.eq(path[#path].y, 700, "ends at the goal")
+	t.eq(dirOf(path[#path - 1], path[#path]), 2, "arrives heading (2, 1)")
+	t.eq(dirOf(path[#path - 2], path[#path - 1]), 2, "after one knight step")
+	t.eq(dirOf(path[#path - 3], path[#path - 2]), 1, "from the east-bound straight")
 end)

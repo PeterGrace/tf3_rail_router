@@ -34,6 +34,10 @@ global record PgraceRailRouterModes
 		minRadius : number
 		-- The tightest curve the game builds for the track type (the guard on smoothing never goes below it).
 		minBuildRadius : number
+		-- The radius a leg's search falls back to where its turns spaced for minRadius don't fit (route.step): the
+		-- Cheapest radius, the build minimum × 4, whose spacing is under a cell, so any move may turn. nil: minRadius
+		-- (no fallback).
+		minSearchRadius : number
 		-- Over the grade limit, each step costs 1 + slopePenalty × (grade − maxGrade) / maxGrade times as much.
 		slopePenalty : number
 		-- Steps over water cost this many times as much (they need a bridge).

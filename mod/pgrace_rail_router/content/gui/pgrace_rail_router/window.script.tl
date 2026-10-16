@@ -399,13 +399,20 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		if done then
 			local plan = route.plan(work.routeJob)
 			local length = plan.summary ~= nil and plan.summary.length or 0
+			-- Each leg's search radius (below the mode's where its turns didn't fit) and expansions.
+			local searches : {string} = {}
+			for __, leg in ipairs(plan.legs or {}) do
+				table.insert(searches, tostring(math.floor(leg.searchRadius or 0)) .. " m/"
+					.. tostring(leg.searchExpansions or 0))
+			end
 			debugPrint(LOG_PREFIX .. "plan done: " .. (plan.ok and "ok" or tostring(plan.failure)) .. ", "
 				.. tostring(math.floor(work.planUs / 1000)) .. " ms over " .. tostring(work.planFrames)
 				.. " frames; slowest step sites " .. tostring(work.slowestStepUs.sites or 0) .. " us, legs "
 				.. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
 				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0) .. ", survey margin " .. tostring(work.margin)
 				.. ", retries " .. tostring(work.retries) .. ", guarded "
-				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0))
+				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0) .. ", leg searches (radius/expansions) "
+				.. table.concat(searches, " "))
 			if not plan.ok and plan.failure == "no_path" and work.retries < MAX_RETRIES then
 				-- Perhaps the way round lies outside the surveyed area: start over on a wider one.
 				work.retries = work.retries + 1

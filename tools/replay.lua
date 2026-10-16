@@ -82,6 +82,10 @@ for line in io.lines(capPath) do
 		end
 	end
 end
+-- Captures from before weights.minSearchRadius: the Cheapest radius, as modes.weights sets it.
+if weights.minSearchRadius == nil and weights.minBuildRadius ~= nil then
+	weights.minSearchRadius = 4 * weights.minBuildRadius
+end
 for k, v in pairs(overrides) do
 	if v == "true" or v == "false" then
 		weights[k] = v == "true"
@@ -119,8 +123,9 @@ for i, leg in ipairs(plan.legs) do
 			table.insert(arcs, ("%.0f@(%.0f,%.0f)"):format(piece.radius, piece.a.x, piece.a.y))
 		end
 	end
-	print(("  leg %d: %.0f m, grid path %d points, pieces %d, tight %d, blocked %d, guarded %d%s"):format(i,
-		leg.length, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves, leg.blockedSamples, leg.guarded,
+	print(("  leg %d: %.0f m, search radius %.0f (%d expansions), grid path %d points, pieces %d, tight %d, blocked %d, guarded %d%s"):format(i,
+		leg.length, leg.searchRadius, leg.searchExpansions, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves,
+		leg.blockedSamples, leg.guarded,
 		#arcs > 0 and (", tight arcs " .. table.concat(arcs, " ")) or ""))
 	for __, sample in ipairs(leg.samples) do
 		local ix, iy = grid.cellOf(g, sample.p)

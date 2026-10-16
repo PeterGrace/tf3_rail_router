@@ -13,7 +13,7 @@ local DIRS : {{integer}} = {
 	{ 1, 0 }, { 2, 1 }, { 1, 1 }, { 1, 2 }, { 0, 1 }, { -1, 2 }, { -1, 1 }, { -2, 1 },
 	{ -1, 0 }, { -2, -1 }, { -1, -1 }, { -1, -2 }, { 0, -1 }, { 1, -2 }, { 1, -1 }, { 2, -1 },
 }
--- A single move may turn at most this many 22.5° steps (90°).
+-- A single move may turn at most this many 22.5° steps (90°), where the radius leaves room to turn on every move.
 local MAX_TURN_STEPS = 4
 -- A step from one road cell to another costs this many times its length: entering a road is paid once
 -- (roadCrossing), so without it a path could run along a road for free, laid on it in Cheapest and on a long bridge
@@ -337,12 +337,37 @@ local function fillStep(s : Search, budget : integer) : integer
 	return budget
 end
 
-function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights) : Search
+-- The turn model for a curve radius: a 22.5° arc of radius R takes R·tan(11.25°) of straight on each side of its
+-- corner, so two turns need 2·R·tan(11.25°) between them. Where every move is at least that long (no more than a cell),
+-- any move may turn, by up to 90° (the old model, kept exactly). Otherwise a move may turn by one step only, and a
+-- turning move runs on straight in its new direction for as many steps as that length takes: the search's states stay
+-- (cell, direction), each one free to turn again.
+local function turnModel(s : Search, cell : number, radius : number)
+	local straight = 2 * radius * math.tan(math.pi / 16)
+	s.straightSteps = {}
+	if straight <= cell + EPSILON then
+		s.maxTurn = MAX_TURN_STEPS
+		for k = 1, NDIRS do
+			s.straightSteps[k] = 1
+		end
+		return
+	end
+	s.maxTurn = 1
+	for k, d in ipairs(DIRS) do
+		local length = cell * math.sqrt(d[1] * d[1] + d[2] * d[2])
+		s.straightSteps[k] = math.max(1, math.ceil(straight / length - EPSILON))
+	end
+end
+
+function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights,
+		radius ?: number, maxCost ?: number) : Search
 	local sx, sy = grid.cellOf(g, from)
 	local gx, gy = grid.cellOf(g, to)
 	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
-		goalDir = nearestDir(goalDir), done = false, found = false, expansions = 0, h0 = 0, bestH = 0, heap = {},
-		heapF = {}, cost = {}, parent = {}, filling = true, fillQueue = {}, fillHead = 1, fillSeen = {} }
+		goalDir = nearestDir(goalDir), radius = radius or w.minRadius, maxCost = maxCost or math.huge, done = false,
+		found = false, expansions = 0, h0 = 0, bestH = 0, heap = {}, heapF = {}, cost = {}, parent = {}, finishDir = 0, finishSteps = 0,
+		filling = true, fillQueue = {}, fillHead = 1, fillSeen = {} }
+	turnModel(s, g.cell, s.radius)
 	local start = grid.index(g, sx, sy)
 	s.fillQueue[1], s.fillSeen[start] = start, true
 	if start == s.goal then
@@ -366,6 +391,15 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 	return s
 end
 
+-- Offers the finish at cost fc, reached from state `from` by `steps` more steps in direction k (0 steps: from a state
+-- at the goal cell itself).
+local function finish(s : Search, fc : number, from : integer, k : integer, steps : integer)
+	if s.cost[FINISH] == nil or fc < s.cost[FINISH] then
+		s.cost[FINISH], s.parent[FINISH], s.finishDir, s.finishSteps = fc, from, k, steps
+		push(s, FINISH, fc)
+	end
+end
+
 function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 	if s.done then
 		return true
@@ -387,6 +421,11 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 			return true
 		end
 		local node, f = pop(s)
+		if f > s.maxCost then
+			-- Everything left costs more than the caller will take.
+			s.done = true
+			return true
+		end
 		if node == FINISH then
 			if f <= cost[FINISH] then
 				s.done, s.found = true, true
@@ -410,27 +449,46 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 				if h < s.bestH then
 					s.bestH = h
 				end
+				local maxTurn = s.maxTurn
 				if a == s.goal then
+					-- The final turn onto the asked direction obeys the same limit as any other: this state is free to
+					-- turn, and the room beyond the goal (a station's extension) takes the far side of the curve.
 					local turn = 0
 					if s.goalDir ~= 0 then
 						turn = turnSteps(prev, s.goalDir)
 					end
-					if turn <= MAX_TURN_STEPS then
-						local fc = base + w.turnPenalty * turn * turn
-						if cost[FINISH] == nil or fc < cost[FINISH] then
-							cost[FINISH], s.parent[FINISH] = fc, node
-							push(s, FINISH, fc)
-						end
+					if turn <= maxTurn then
+						finish(s, base + w.turnPenalty * turn * turn, node, prev, 0)
 					end
 				end
-				for turn = -MAX_TURN_STEPS, MAX_TURN_STEPS do
+				for turn = -maxTurn, maxTurn do
 					local k = (prev - 1 + turn) % NDIRS + 1
-					local c = moveCost(s, a, ax, ay, k)
-					if c ~= nil then
-						local d = DIRS[k]
-						local bx, by = ax + d[1], ay + d[2]
-						local nb = (grid.index(g, bx, by) - 1) * NDIRS + k
-						local nc = base + c + w.turnPenalty * turn * turn
+					-- A turning move runs on straight for its whole minimum length; every step of it is checked and
+					-- costed as a move of its own.
+					local steps = 1
+					if turn ~= 0 then
+						steps = s.straightSteps[k]
+					end
+					local d = DIRS[k]
+					local bx, by, b = ax, ay, a
+					local nc = base + w.turnPenalty * turn * turn
+					for j = 1, steps do
+						local c = moveCost(s, b, bx, by, k)
+						if c == nil then
+							nc = nil
+							break
+						end
+						bx, by = bx + d[1], by + d[2]
+						b = (by - 1) * g.nx + bx
+						nc = nc + c
+						-- Passing through the goal part-way along the straight finishes there, but only heading the
+						-- asked way: a turn here would come too soon after the last.
+						if j < steps and b == s.goal and (s.goalDir == 0 or k == s.goalDir) then
+							finish(s, nc, node, k, j)
+						end
+					end
+					if nc ~= nil then
+						local nb = (b - 1) * NDIRS + k
 						-- Gains below EPSILON are rounding (the same cost summed in another order): taking them would
 						-- expand a finished state again.
 						if cost[nb] == nil or nc < cost[nb] - EPSILON then
@@ -457,12 +515,33 @@ function grid.path(s : Search) : {Pt}
 		return nil
 	end
 	local g = s.g
-	local cells : {integer} = {}
+	local nodes : {integer} = {}
 	local node = s.parent[FINISH]
 	while node ~= nil do
-		table.insert(cells, 1, cellOfNode(node))
+		table.insert(nodes, 1, node)
 		node = s.parent[node]
 	end
+	-- A move may be a turn and its straight, several cells long: fill in the cells along it, stepping in the
+	-- direction it arrived in.
+	local cells : {integer} = { cellOfNode(nodes[1]) }
+	local function walk(k : integer, steps : integer, target : integer)
+		local d = DIRS[k]
+		local x, y = cellXY(g, cells[#cells])
+		for __ = 1, steps do
+			x, y = x + d[1], y + d[2]
+			local c = grid.index(g, x, y)
+			table.insert(cells, c)
+			if c == target then
+				return
+			end
+		end
+	end
+	for i = 2, #nodes do
+		local c = cellOfNode(nodes[i])
+		local k = nodes[i] - (c - 1) * NDIRS
+		walk(k, s.straightSteps[k], c)
+	end
+	walk(s.finishDir, s.finishSteps, s.goal)
 	if #cells < 2 then
 		return { s.startPt, s.goalPt }
 	end

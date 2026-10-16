@@ -2,7 +2,7 @@ local t = ...
 local grid = t.requireTl("gui/pgrace_rail_router/planner/grid.tl")
 local route = t.requireTl("gui/pgrace_rail_router/planner/route.tl")
 
-local W = { maxGrade = 0.085, minRadius = 220, minBuildRadius = 55, slopePenalty = 3, bridgeFactor = 6, turnPenalty = 20,
+local W = { maxGrade = 0.085, minRadius = 220, minBuildRadius = 55, minSearchRadius = 220, slopePenalty = 3, bridgeFactor = 6, turnPenalty = 20,
 	roadCrossing = 50, trackCrossing = 400, costPerMetre = 360, bridgeCostFactor = 5, tunnelCostFactor = 8,
 	bridgeAbove = 8, tunnelBelow = 12 }
 
@@ -121,7 +121,10 @@ t.test("route: the curves keep off buildings the search went round", function()
 	-- The old smoothing cut the wall's corner (and counted the samples there).
 	t.eq(plan.legs[1].blockedSamples, 0, "blocked samples")
 	t.eq(plan.summary.blockedSamples, 0, "summary")
-	t.ok(plan.legs[1].guarded > 0, "guarded")
+	-- Before the search spaced its turns for the radius, the guard had to hold the curves to its path here; now the
+	-- path leaves room for the full radius on its own.
+	t.eq(plan.legs[1].searchRadius, 1500, "searched at the full radius")
+	t.eq(plan.legs[1].tightCurves, 0, "no tight curves")
 end)
 
 t.test("route: a built-up centre moves the station", function()
@@ -335,7 +338,9 @@ t.test("route: the curves keep to the lake shore the search followed", function(
 		t.ok(not grid.waterAt(g, sample.p), ("dry at (%.0f, %.0f)"):format(sample.p.x, sample.p.y))
 	end
 	t.eq(countKind(leg, "bridge"), 0, "no bridge")
-	t.ok(leg.guarded > 0, "guarded " .. leg.guarded)
+	-- The guard used to tighten the curves along the shore; the search now leaves room for the full radius.
+	t.eq(leg.searchRadius, 1000, "searched at the full radius")
+	t.eq(leg.tightCurves, 0, "no tight curves")
 	t.eq(plan.summary.guarded, leg.guarded, "summary")
 end)
 
@@ -367,15 +372,18 @@ t.test("route: the curves go round the end of a steep hill, not through it", fun
 			("no higher than the path at (%.0f, %.0f)"):format(sample.p.x, sample.p.y))
 	end
 	t.eq(countKind(plan.legs[1], "tunnel"), 0, "no tunnel")
-	t.ok(plan.legs[1].guarded > 0, "guarded")
+	-- The guard used to tighten the curves round the hill's end; the search now leaves room for the full radius.
+	t.eq(plan.legs[1].searchRadius, 600, "searched at the full radius")
+	t.eq(plan.legs[1].tightCurves, 0, "no tight curves")
 end)
 
 t.test("route: on flat open ground the guard changes nothing", function()
-	-- y from -1500 to 3500, so C's station fits. Pieces and lengths from before the guard.
+	-- y from -1500 to 3500, so C's station fits. Pieces and lengths from before the guard (at 1000 m, leg 1's from
+	-- the curve-aware search, whose path differs: 2881.384564 m before).
 	local g = grid.new(-1000, -1500, 100, 81, 51)
 	local stops = { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 4500, 1500) }
 	local before = { [220] = { { 5, 2854.558372 }, { 7, 2009.573552 } },
-		[1000] = { { 7, 2881.384564 }, { 5, 2023.974285 } } }
+		[1000] = { { 7, 2883.861717 }, { 5, 2023.974285 } } }
 	for radius, legs in pairs(before) do
 		local plan = run(g, stops, 160, withWeights({ minRadius = radius }))
 		t.ok(plan.ok, "ok")
@@ -463,4 +471,46 @@ t.test("route: a turn with no room at the floor even without the extension keeps
 	local first = leg.pieces[1]
 	t.eq(first.kind, "straight", "leaves straight")
 	t.ok(first.length >= 100 - 1e-6, "the whole approach is straight: " .. first.length)
+end)
+
+t.test("route: a passage too narrow for the full radius falls back to a smaller one rather than fail", function()
+	-- Everything blocked but a corridor one cell wide: along y = 0, up at x = 2500 to y = 500, along it to x = 3500,
+	-- and back down to y = 0 and on to B. Its right-angle corners fit only the free turns of a radius whose minimum
+	-- straight is no longer than a cell.
+	local g = flatGrid()
+	for iy = 1, 31 do
+		for ix = 1, 81 do
+			local c = grid.centre(g, ix, iy)
+			local open = (c.y == 0 and (c.x <= 2500 or c.x >= 3500))
+				or (c.y == 500 and c.x >= 2500 and c.x <= 3500)
+				or ((c.x == 2500 or c.x == 3500) and c.y >= 0 and c.y <= 500)
+			g.blocked[grid.index(g, ix, iy)] = not open
+		end
+	end
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 6000, 0) },
+		weights = withWeights({ minRadius = 1000 }), platformLength = 160 })
+	local last = 0
+	while not route.step(job, 50) do
+		local p = route.progress(job)
+		t.ok(p >= last - 1e-9, "progress never goes back, through the retries")
+		last = p
+	end
+	local plan = route.plan(job)
+	t.ok(plan.ok, "ok")
+	local leg = plan.legs[1]
+	-- 1000 (L ≈ 398 m) and 500 (199 m) find nothing; 250 (99 m) turns freely.
+	t.eq(leg.searchRadius, 250, "search radius")
+	t.ok(leg.searchExpansions > 0, "expansions counted")
+	-- Smoothing still aims for 1000 m: the corners can't take it, so the curves are tight, held to the corridor.
+	t.ok(leg.tightCurves > 0, "tight curves: " .. leg.tightCurves)
+	t.ok(leg.guarded > 0, "guarded: " .. leg.guarded)
+	t.eq(leg.blockedSamples, 0, "in the corridor")
+end)
+
+t.test("route: a leg's search radius is the full radius on open ground", function()
+	local plan = run(flatGrid(), { ABC[1], ABC[2] }, 160, withWeights({ minRadius = 1000 }))
+	t.ok(plan.ok, "ok")
+	t.eq(plan.legs[1].searchRadius, 1000, "full radius")
+	local cheapest = run(flatGrid(), { ABC[1], ABC[2] })
+	t.eq(cheapest.legs[1].searchRadius, 220, "Cheapest: its own radius, one try")
 end)
