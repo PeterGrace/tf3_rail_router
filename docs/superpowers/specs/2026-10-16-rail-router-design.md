@@ -99,7 +99,26 @@ step costs its length × the sum of:
 
 The search state is (cell, arriving direction), so turn costs are exact and the result is optimal for the cost
 model (checked against an exact reference on random grids). It arrives at each station's approach in the platform's
-direction. Known cost (plain Lua, desktop): a 500 × 500 grid with 15% clutter took about 1.6 s and 35 MB in Cheapest
+direction.
+
+**Turns spaced for the radius.** A 22.5° turn rounded at radius R takes R·tan(11.25°) of straight on each side of its
+corner, so consecutive turns need L = 2·R·tan(11.25°) (≈ 0.4 R) between them. Where L is no more than a cell (Cheapest,
+R = 4 × the build minimum), any move may turn by up to 90°, as before. Otherwise the moves are long edges: from a state
+(cell, direction) the search may go one step straight on, or turn by one 22.5° step and carry on straight for
+ceil(L / step length) steps (every cell on the way checked and costed as single steps are), after which it may turn
+again. The state space stays (cell, direction), so the search is still optimal for this model and the heuristic still
+admissible. The start may turn at once (the station's extension gives room behind it); passing through the goal cell
+part-way along a turn's straight finishes there only heading the platform's way, and a state at the goal may make one
+last single-step turn onto it.
+
+**Radius fallback.** A Fastest leg is searched first with turns spaced for the Cheapest radius (the fallback; if that
+finds nothing, the plan fails "no_path"), then for the mode's radius, halving while above the Cheapest one, until a
+path costs at most 10% more than the fallback's; if none does, the fallback's path is taken. A radius that doesn't fit
+(station ends misaligned or close together, a passage too narrow) otherwise finds a loop or a wide detour, or nothing
+after a long search; the cost limit ends those searches early. The radius used is recorded per leg (`searchRadius`, in
+the log and the replay tool); smoothing still aims for the full radius, so a leg searched with a smaller one may have
+tight curves. Cost on the captured Fastest map (4 legs, R = 3000 m): about twice the expansions of the free-turning
+search (7,400 against 3,900; about 45 ms against 28 ms offline), Cheapest unchanged. Known cost (plain Lua, desktop): a 500 × 500 grid with 15% clutter took about 1.6 s and 35 MB in Cheapest
 mode and about 6 s and 90 MB in Fastest mode, spread over frames. If that's too slow in-game, weight the heuristic
 (f = g + 1.2·h) in Fastest mode, giving up exact optimality that smoothing hides anyway.
 
@@ -213,11 +232,16 @@ Each ends with one in-game test by the user.
 
 ## Known issues after milestone 1 (to settle with in-game data)
 
-- **Curves near obstacles can be tight.** The smoothing guard keeps the track on the grid path's ground (off water,
-  hillsides and buildings it went round), so where the path turns close to an obstacle the curve is tightened below
-  the mode's radius instead (a tight-curve warning). It shows most in Fastest mode (radii up to 3 km): there the grid
-  path, not the radius, decides the line. Candidate fix: a search with a coarser turn model, so the grid path already
-  fits the radius. A rotation penalty on station sites gave mixed results in simulation and was not adopted.
+- **Curves near station ends can be tight.** The search now spaces its turns for the radius, so in open country and
+  round lakes, hills and buildings the path leaves room for full-radius curves (in the test scenarios the guard no
+  longer has to tighten any). But where a station's platforms point away from the next station, or two stations'
+  extensions nearly meet, no path with turns spaced for a wide radius fits, and the leg falls back to a smaller
+  search radius, with tight curves near its ends. On the captured Fastest map (R = 3000 m, legs of 2 to 5 km
+  between station extensions) that is every leg: three fall back to the Cheapest radius and one to 750 m, and the plan
+  is the same as before the curve-aware search: 8 tight curves, each a turn between a station's direction and the
+  line, starting 0.3 to 1.9 km from the nearest station (whose extension reaches 1.4 km out). Task C (stations that
+  face the line) addresses this. The smoothing guard still tightens curves where a path searched at a
+  smaller radius turns close to an obstacle.
 
 ## Out of scope for version 1
 
