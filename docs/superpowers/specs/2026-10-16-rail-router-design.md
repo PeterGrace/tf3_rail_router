@@ -41,13 +41,13 @@ content/gui/pgrace_rail_router/
 
 Data flow:
 
-1. The player picks the towns, the mode and the settings, and presses **Find route**.
-2. `survey` samples the corridor over several frames (`react.enqueueJoin` steps, 6 ms of work per frame, measured with
-   `api.type.Clock`), showing "Surveying… N%".
-3. `corridor` lists the candidate stops; the player ticks the ones they want.
-4. The planner runs: `stations` → `grid` → `smooth` → `profile`, producing a **Plan**.
-5. `builder` dry-runs the Plan and reports the game's cost and any errors.
-6. **Show on map** draws the Plan, and **Build** sends it once the dry run is clean.
+1. The player picks the towns, the mode and the settings. `corridor` lists the candidate stops straight away (it
+   only needs town centres); the player ticks the ones they want and presses **Find route**.
+2. `survey` samples the area around the chosen stops over several frames (`react.enqueueJoin` steps, 6 ms of work
+   per frame, measured with `api.type.Clock`), showing "Surveying… N%".
+3. The planner runs: `stations` → `grid` → `smooth` → `profile`, producing a **Plan**.
+4. `builder` dry-runs the Plan and reports the game's cost and any errors.
+5. **Show on map** draws the Plan, and **Build** sends it once the dry run is clean.
 
 The **Plan** is plain data: a list of stations (position, direction, length) and a list of track pieces (straight or
 arc geometry, heights at both ends, and kind: ground, bridge or tunnel). Everything from the survey output to the Plan
@@ -58,8 +58,9 @@ is pure, so it can be tested end to end on artificial maps.
 - **Corridor:** the box around the chosen towns, plus a 25% margin. If the grid search finds no path, widen the
   margin and retry (up to twice).
 - **Per 100 m cell:** `api.engine.terrain.getHeightAt` and `isOnWater` at the cell centre.
-- **Town buildings:** `octree.findEntitiesInCircle(..., TOWN_BUILDING)` over the corridor in ~1 km tiles; mark cells
-  within 30 m of a building as blocked.
+- **Buildings and other constructions:** `octree.findEntitiesInCircle(..., CONSTRUCTION / TOWN_BUILDING)` over the
+  corridor in ~1 km tiles; mark cells within 30 m of any of them (town buildings, stations, industries, depots) as
+  blocked.
 - **Existing roads and track:** `BASE_EDGE_STREET` and `BASE_EDGE_TRACK` entities in the corridor; mark the cells they
   cross.
 - **Towns:** all towns with their centre positions (for the dropdowns and the candidate stops).
@@ -88,7 +89,7 @@ step costs its length × the sum of:
 
 - the base cost per metre (the track type's `cost`);
 - slope: grades over the limit cost extra, and grades far beyond it are priced as a cutting or a tunnel;
-- water: priced as a bridge; very wide water is banned;
+- water: priced as a bridge (wide water is not banned, just expensive);
 - town buildings: impassable;
 - existing roads: crossing allowed (priced per mode, above);
 - existing track: crossed only by a bridge, never through a junction;
@@ -120,17 +121,18 @@ window lists each candidate with its added detour.
 
 States:
 
-1. **Set up:** From/To dropdowns (towns sorted by name), Mode, Track, Electrified, Platform, **Find route**.
-2. **Surveying… N%**, with Cancel.
-3. **Candidate stops:** a ticked list with the added detour for each ("+3.1 km").
-4. **Result:**
+1. **Set up:** From/To dropdowns (towns sorted by name), Mode, Track, Electrified, Platform, the candidate stops as a
+   ticked list with the added detour for each ("+3.1 km"), and **Find route**.
+2. **Surveying… N%**, then **Planning… N%**. Changing any setting cancels the work.
+3. **Result:**
    - length, the game's cost, bridges and tunnels (count and length), maximum grade, minimum radius, and each
      station's distance from its town centre;
    - **Show on map**;
    - **Build**, enabled only after a clean dry run; otherwise the game's error messages are listed.
 
-The window is built like Trim the Fat's (`tool_react_util.registerToolWithWindow`, a `ToolButton` on
-`::MainModButtonAreaExtension`, size from a mod stylesheet keyed on a class).
+The window is built like Jam Session's (`tool_react_util.registerToolWithWindow`, a `ToolButton` on
+`::MainModButtonAreaExtension`), docked at the left edge by a mod stylesheet keyed on its class, and sized to its
+content.
 
 ## Preview (`preview.tl`)
 
