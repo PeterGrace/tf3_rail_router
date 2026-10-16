@@ -198,7 +198,7 @@ local function failureText(plan : Plan) : string
 	elseif plan.failure == "no_path" then
 		return fill(_("No route found from {from} to {to}."), { from = towns[1] or "?", to = towns[2] or "?" })
 	elseif plan.failure == "too_close" then
-		return fill(_("The stations in {from} and {to} would be too close together. Untick one of them or use shorter platforms."),
+		return fill(_("The stations in {from} and {to} would be too close together or facing apart. Try other stops or shorter platforms."),
 			{ from = towns[1] or "?", to = towns[2] or "?" })
 	end
 	return _("Choose two different towns.")
