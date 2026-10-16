@@ -82,6 +82,8 @@ function survey.trackTypes() : {TrackType}
 	local names : {integer : string} = {}
 	local catenaryIds : {integer : boolean} = {}
 	local catenaryBases : {string : boolean} = {}
+	-- Track template ids by base name, to find a catenaryAdd that rep.find doesn't know in that form.
+	local idByBase : {string : integer} = {}
 	local anyCatenaryAdd = false
 	for id, name in pairs(rep.getAll()) do
 		local ok, err = pcall(function() : boolean
@@ -89,6 +91,7 @@ function survey.trackTypes() : {TrackType}
 			if tpl ~= nil and tpl.roadType == trackRoad then
 				tracks[id] = tpl
 				names[id] = name
+				idByBase[baseName(name)] = id
 				if nonEmpty(tpl.catenaryAdd) then
 					anyCatenaryAdd = true
 					local found = rep.find(tpl.catenaryAdd)
@@ -134,16 +137,30 @@ function survey.trackTypes() : {TrackType}
 				yearFrom, yearTo = tpl.availability.yearFrom, tpl.availability.yearTo
 			end
 			local catenary : string = nil
+			local catenaryYearFrom = 0
 			if nonEmpty(tpl.catenaryAdd) then
 				catenary = tpl.catenaryAdd
+				local found = rep.find(catenary)
+				local variant : StreetTemplate = nil
+				if found ~= nil and found >= 0 then
+					variant = tracks[found]
+				end
+				if variant == nil and idByBase[baseName(catenary)] ~= nil then
+					variant = tracks[idByBase[baseName(catenary)]]
+				end
+				if variant ~= nil and variant.availability ~= nil then
+					catenaryYearFrom = variant.availability.yearFrom
+				end
 			end
 			table.insert(result, { name = name, label = label, cost = tpl.cost, speed = speed,
 				maxSlopeBuild = tpl.maxSlopeBuild, minCurveRadiusBuild = tpl.minCurveRadiusBuild,
-				trackDistance = tpl.trackDistance, yearFrom = yearFrom, yearTo = yearTo, catenary = catenary })
+				trackDistance = tpl.trackDistance, yearFrom = yearFrom, yearTo = yearTo, catenary = catenary,
+				catenaryYearFrom = catenaryYearFrom })
 			debugPrint(LOG_PREFIX .. "track type " .. name .. ": label " .. tostring(label) .. ", speed "
 				.. tostring(speed) .. ", cost " .. tostring(tpl.cost) .. ", maxSlopeBuild " .. tostring(tpl.maxSlopeBuild)
 				.. ", minCurveRadiusBuild " .. tostring(tpl.minCurveRadiusBuild) .. ", years " .. tostring(yearFrom)
-				.. "–" .. tostring(yearTo) .. ", catenary " .. tostring(catenary))
+				.. "–" .. tostring(yearTo) .. ", catenary " .. tostring(catenary) .. " from "
+				.. tostring(catenaryYearFrom))
 			return true
 		end)
 		if not ok then

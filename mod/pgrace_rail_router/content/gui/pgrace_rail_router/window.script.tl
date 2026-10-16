@@ -39,7 +39,7 @@ local record Settings
 	-- Track type name; nil for the mode's default in the current year.
 	track : string
 	-- Not used by the planner: milestone 2's builder lays catenary with it. nil: ticked if the chosen track has an
-	-- electrified variant.
+	-- electrified variant available in the current year.
 	electrified : boolean
 	platform : integer
 	-- Candidate stops the player unticked, by town id.
@@ -438,9 +438,15 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end,
 	}))
 	-- Not used for planning (milestone 2's builder uses it), so changing it keeps the plan and any work in progress.
+	-- Default: ticked if the chosen track has an electrified variant that's available this year. A remembered tick
+	-- shows unticked on a track without one.
+	local electrifiable = track ~= nil and track.catenary ~= nil
 	local electrified = settings.electrified
 	if electrified == nil then
-		electrified = track ~= nil and track.catenary ~= nil
+		local from = electrifiable and track.catenaryYearFrom or 0
+		electrified = electrifiable and (from == 0 or data.year >= from)
+	elseif not electrifiable then
+		electrified = false
 	end
 	table.insert(body, builtin.CheckBox{
 		label = _("Electrified"),
