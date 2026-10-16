@@ -38,6 +38,8 @@ local record Settings
 	mode : Mode
 	-- Track type name; nil for the mode's default in the current year.
 	track : string
+	-- Not used by the planner: milestone 2's builder lays catenary with it. nil: ticked if the chosen track has an
+	-- electrified variant.
 	electrified : boolean
 	platform : integer
 	-- Candidate stops the player unticked, by town id.
@@ -45,7 +47,7 @@ local record Settings
 end
 
 -- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
-local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = true, platform = 160, skipped = {} }
+local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, skipped = {} }
 
 local record GameData
 	towns : {Town}
@@ -60,6 +62,11 @@ local record Work
 	platform : integer
 	surveyJob : PgraceRailRouterSurvey.Job
 	routeJob : PgraceRailRouterRoute.Job
+	-- Timing diagnostics for the planning part (after the survey), logged when the plan is done: the slowest single
+	-- route.step per phase ("sites", "legs") and the total, microseconds, and the frames it took.
+	slowestStepUs : {string : integer}
+	planUs : integer
+	planFrames : integer
 end
 
 local record Progress
@@ -250,13 +257,21 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- A join is queued and hasn't run yet; at most one at a time.
 	local joinQueuedRef : ReactRefT<boolean> = react.useRef(false)
 
+	-- Copies from the latest state, not this render's `settings`, so two changes in one frame both stick: transform
+	-- (as the base save-game page uses) hands us the newest value, even one set earlier in the same frame.
+	local function setSettings(change : function(Settings))
+		settingsState:transform(function(current : Settings) : Settings
+			local copy : Settings = { from = current.from, to = current.to, mode = current.mode, track = current.track,
+				electrified = current.electrified, platform = current.platform, skipped = current.skipped }
+			change(copy)
+			remembered = copy
+			return copy
+		end)
+	end
+
 	-- Every settings change drops the shown plan and any work in progress: a plan for other settings would mislead.
 	local function update(change : function(Settings))
-		local copy : Settings = { from = settings.from, to = settings.to, mode = settings.mode, track = settings.track,
-			electrified = settings.electrified, platform = settings.platform, skipped = settings.skipped }
-		change(copy)
-		remembered = copy
-		settingsState:set(copy)
+		setSettings(change)
 		planState:set(nil)
 		showState:set(false)
 		workRef:set(nil)
@@ -283,7 +298,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			end
 		end
 		workRef:set({ stops = corridor.order(fromTown, toTown, picked), weights = modes.weights(settings.mode, track),
-			platform = settings.platform })
+			platform = settings.platform, slowestStepUs = { sites = 0, legs = 0 }, planUs = 0, planFrames = 0 })
 		planState:set(nil)
 		showState:set(false)
 		errorState:set(false)
@@ -319,13 +334,34 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			return
 		end
 		local done = false
+		local planStart = clock:getTime()
+		work.planFrames = work.planFrames + 1
 		repeat
+			local phase = work.routeJob.phase
+			local before = clock:getTime()
 			done = route.step(work.routeJob, EXPANSIONS_PER_CALL)
-		until done or clock:getTime() >= BUDGET_US
+			local took = clock:getTime() - before
+			if took > (work.slowestStepUs[phase] or 0) then
+				work.slowestStepUs[phase] = took
+			end
+			local used = clock:getTime()
+			-- A step inside a leg's search is bounded by EXPANSIONS_PER_CALL, but the others (a station site, starting a
+			-- search, building a leg's curves and heights) can be long: past half the budget, leave those to the next
+			-- frame rather than overrun this one.
+			local stop = used >= BUDGET_US or (used > BUDGET_US / 2 and work.routeJob.search == nil)
+		until done or stop
+		work.planUs = work.planUs + (clock:getTime() - planStart)
 		if done then
+			local plan = route.plan(work.routeJob)
+			local length = plan.summary ~= nil and plan.summary.length or 0
+			debugPrint(LOG_PREFIX .. "plan done: " .. (plan.ok and "ok" or tostring(plan.failure)) .. ", "
+				.. tostring(math.floor(work.planUs / 1000)) .. " ms over " .. tostring(work.planFrames)
+				.. " frames; slowest step sites " .. tostring(work.slowestStepUs.sites or 0) .. " us, legs "
+				.. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
+				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0))
 			nextGeneration = nextGeneration + 1
 			generationState:set(nextGeneration)
-			planState:set(route.plan(work.routeJob))
+			planState:set(plan)
 			workRef:set(nil)
 			progressState:set(nil)
 		else
@@ -359,12 +395,13 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 
 	local body : {TreeNodeId} = {}
 	if data.error then
-		table.insert(body, textRow(_("Error (see log)"), "font-scale-body"))
+		table.insert(body, textRow(_("Couldn't read the map (see log)"), "font-scale-body"))
 	end
-	table.insert(body, labelled(_("From"), townCombo(data.towns, settings.from, function(id : integer)
+	-- Combo values must match an item: a remembered town that isn't on this map shows "Choose a town".
+	table.insert(body, labelled(_("From"), townCombo(data.towns, fromTown ~= nil and fromTown.id or -1, function(id : integer)
 		update(function(s : Settings) s.from = id s.skipped = {} end)
 	end)))
-	table.insert(body, labelled(_("To"), townCombo(data.towns, settings.to, function(id : integer)
+	table.insert(body, labelled(_("To"), townCombo(data.towns, toTown ~= nil and toTown.id or -1, function(id : integer)
 		update(function(s : Settings) s.to = id s.skipped = {} end)
 	end)))
 	table.insert(body, labelled(_("Mode"), builtin.ComboBox{
@@ -375,7 +412,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		},
 		onValueChange = function(v : integer | number | string)
 			-- The default track depends on the mode: a type the player didn't pick follows it.
-			update(function(s : Settings) s.mode = tostring(v) as Mode end)
+			local mode = tostring(v)
+			if mode == "cheapest" or mode == "fastest" then
+				update(function(s : Settings) s.mode = mode as Mode end)
+			end
 		end,
 	}))
 	local trackItems : {TreeNodeId} = {}
@@ -383,18 +423,30 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		table.insert(trackItems, builtin.ComboBoxItem{ value = t.name, content = builtin.TextView{ text = t.label },
 			available = modes.isAvailable(t, data.year) })
 	end
+	if #trackItems == 0 then
+		-- One item, so the value "" matches it.
+		table.insert(trackItems, builtin.ComboBoxItem{ value = "", content = builtin.TextView{ text = _("No track available") } })
+	end
 	table.insert(body, labelled(_("Track"), builtin.ComboBox{
 		value = track ~= nil and track.name or "",
 		items = trackItems,
 		onValueChange = function(v : integer | number | string)
-			update(function(s : Settings) s.track = tostring(v) end)
+			local name = tostring(v)
+			if name ~= "" then
+				update(function(s : Settings) s.track = name end)
+			end
 		end,
 	}))
+	-- Not used for planning (milestone 2's builder uses it), so changing it keeps the plan and any work in progress.
+	local electrified = settings.electrified
+	if electrified == nil then
+		electrified = track ~= nil and track.catenary ~= nil
+	end
 	table.insert(body, builtin.CheckBox{
 		label = _("Electrified"),
-		value = settings.electrified and 1 or 0,
+		value = electrified and 1 or 0,
 		onValueChange = function(v : integer)
-			update(function(s : Settings) s.electrified = v == 1 end)
+			setSettings(function(s : Settings) s.electrified = v == 1 end)
 		end,
 	})
 	local platformItems : {TreeNodeId} = {}
@@ -448,7 +500,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		table.insert(body, textRow(fill(template, { percent = tostring(progress.percent) }), "font-scale-annotation"))
 	end
 	if errorState:old() then
-		table.insert(body, textRow(_("Error (see log)"), "font-scale-body"))
+		table.insert(body, textRow(_("Planning failed (see log)"), "font-scale-body"))
 	end
 	local plan = planState:old()
 	if plan ~= nil then
