@@ -45,3 +45,14 @@ t.test("modes: fastest is flatter and wider", function()
 	t.ok(w.turnPenalty > c.turnPenalty, "turns cost more")
 	t.ok(w.bridgeFactor < c.bridgeFactor, "bridges cost less, relatively")
 end)
+
+t.test("modes: cheapest falls back to the cheapest type when only fast ones are available", function()
+	local function fast(name, cost, speed, yearFrom)
+		return { name = name, label = name, cost = cost, speed = speed, maxSlopeBuild = 0.085, minCurveRadiusBuild = 55,
+			trackDistance = 5, yearFrom = yearFrom, yearTo = 0 }
+	end
+	local types = { fast("high_speed.lua", 540, 97.2, 0), fast("mid_fast.lua", 400, 80, 0) }
+	t.eq(modes.defaultTrack(types, 1990, "cheapest").name, "mid_fast.lua", "cheapest of the fast ones")
+	local future = { fast("a.lua", 540, 97.2, 2100), fast("b.lua", 400, 80, 2100) }
+	t.eq(modes.defaultTrack(future, 1990, "cheapest"), nil, "none available")
+end)

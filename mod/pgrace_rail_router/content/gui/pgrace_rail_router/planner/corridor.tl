@@ -29,7 +29,10 @@ function corridor.candidates(a : Town, b : Town, towns : {Town}, budget : number
 		end
 	end
 	table.sort(result, function(x : Candidate, y : Candidate) : boolean
-		return x.along < y.along
+		if x.along ~= y.along then
+			return x.along < y.along
+		end
+		return x.town.id < y.town.id
 	end)
 	return result
 end
@@ -41,8 +44,15 @@ function corridor.order(a : Town, b : Town, picked : {Town}) : {Town}
 			table.insert(middle, town)
 		end
 	end
+	local alongById : {integer:number} = {}
+	for __, town in ipairs(middle) do
+		alongById[town.id] = along(a.pos, b.pos, town.pos)
+	end
 	table.sort(middle, function(x : Town, y : Town) : boolean
-		return along(a.pos, b.pos, x.pos) < along(a.pos, b.pos, y.pos)
+		if alongById[x.id] ~= alongById[y.id] then
+			return alongById[x.id] < alongById[y.id]
+		end
+		return x.id < y.id
 	end)
 	local stops : {Town} = { a }
 	for __, town in ipairs(middle) do
