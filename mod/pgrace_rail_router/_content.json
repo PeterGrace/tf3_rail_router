@@ -2,6 +2,8 @@
     "archives": null,
     "files": [
         "gui/pgrace_rail_router/planner/geo.d.tl",
-        "gui/pgrace_rail_router/planner/geo.tl"
+        "gui/pgrace_rail_router/planner/geo.tl",
+        "gui/pgrace_rail_router/planner/modes.d.tl",
+        "gui/pgrace_rail_router/planner/modes.tl"
     ]
 }
