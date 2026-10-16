@@ -54,6 +54,7 @@ function modes.weights(mode : Mode, t : TrackType) : Weights
 			tunnelCostFactor = 8.0,
 			bridgeAbove = 8.0,
 			tunnelBelow = 12.0,
+			bridgeRoads = true,
 		}
 	end
 	return {
@@ -69,6 +70,7 @@ function modes.weights(mode : Mode, t : TrackType) : Weights
 		tunnelCostFactor = 8.0,
 		bridgeAbove = 8.0,
 		tunnelBelow = 12.0,
+		bridgeRoads = false,
 	}
 end
 

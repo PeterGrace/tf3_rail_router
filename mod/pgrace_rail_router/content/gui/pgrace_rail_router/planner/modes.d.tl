@@ -46,6 +46,8 @@ global record PgraceRailRouterModes
 		-- Track more than this far above the ground is a bridge, more than tunnelBelow below it a tunnel (metres).
 		bridgeAbove : number
 		tunnelBelow : number
+		-- Whether roads are crossed by a bridge (fastest) or on the level (cheapest). Existing track is always bridged.
+		bridgeRoads : boolean
 	end
 
 	isAvailable : function(t : TrackType, year : integer) : boolean

@@ -224,3 +224,47 @@ t.test("route: planning leaves the grid unchanged", function()
 	run(g, ABC)
 	same("finished")
 end)
+
+local function withWeights(changes)
+	local w = {}
+	for k, v in pairs(W) do
+		w[k] = v
+	end
+	for k, v in pairs(changes) do
+		w[k] = v
+	end
+	return w
+end
+
+-- An existing line (or road) running north-south across the whole grid at x = 1500.
+local function crossedGrid(field)
+	local g = flatGrid()
+	for iy = 1, 31 do
+		g[field][grid.index(g, 26, iy)] = true
+	end
+	return g
+end
+
+t.test("route: existing track is crossed by a bridge", function()
+	local plan = run(crossedGrid("track"), { ABC[1], ABC[2] })
+	t.ok(plan.ok, "ok")
+	t.ok(plan.summary.bridges >= 1, "bridges " .. plan.summary.bridges)
+	t.eq(plan.summary.blockedSamples, 0, "not counted as blocked")
+	t.ok(plan.summary.maxGrade <= W.maxGrade + 1e-9, "grade " .. plan.summary.maxGrade)
+	local leg = plan.legs[1]
+	for i, sample in ipairs(leg.samples) do
+		local ix, iy = grid.cellOf(crossedGrid("track"), sample.p)
+		if ix == 26 then
+			t.ok(leg.z[i] >= 7 - 1e-9, "clearance at " .. sample.s .. ": " .. leg.z[i])
+		end
+	end
+end)
+
+t.test("route: roads are bridged only when the weights say so", function()
+	local level = run(crossedGrid("road"), { ABC[1], ABC[2] }, 160, withWeights({ bridgeRoads = false }))
+	t.ok(level.ok, "ok level")
+	t.eq(level.summary.bridges, 0, "level crossing")
+	local bridged = run(crossedGrid("road"), { ABC[1], ABC[2] }, 160, withWeights({ bridgeRoads = true }))
+	t.ok(bridged.ok, "ok bridged")
+	t.ok(bridged.summary.bridges >= 1, "bridges " .. bridged.summary.bridges)
+end)

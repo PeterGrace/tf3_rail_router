@@ -110,6 +110,8 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}) : 
 	local s : {number} = {}
 	local ground : {number} = {}
 	local water : {boolean} = {}
+	-- Existing track is always crossed by a bridge, roads only when the mode says so.
+	local crossing : {boolean} = {}
 	local blockedSamples = 0
 	for i, sample in ipairs(samples) do
 		s[i] = sample.s
@@ -120,8 +122,9 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}) : 
 		if g.blocked[cell] then
 			blockedSamples = blockedSamples + 1
 		end
+		crossing[i] = g.track[cell] or (w.bridgeRoads and g.road[cell]) or false
 	end
-	local fit = profile.fit(s, ground, water, w.maxGrade, w.bridgeAbove, w.tunnelBelow, a.z, b.z)
+	local fit = profile.fit(s, ground, water, w.maxGrade, w.bridgeAbove, w.tunnelBelow, a.z, b.z, crossing)
 	local length = 0.0
 	if #s > 0 then
 		length = s[#s]

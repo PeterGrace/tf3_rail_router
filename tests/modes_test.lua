@@ -44,6 +44,8 @@ t.test("modes: fastest is flatter and wider", function()
 	local c = modes.weights("cheapest", TYPES[2])
 	t.ok(w.turnPenalty > c.turnPenalty, "turns cost more")
 	t.ok(w.bridgeFactor < c.bridgeFactor, "bridges cost less, relatively")
+	t.eq(w.bridgeRoads, true, "fastest bridges roads")
+	t.eq(c.bridgeRoads, false, "cheapest crosses roads level")
 end)
 
 t.test("modes: cheapest falls back to the cheapest type when only fast ones are available", function()
