@@ -10,27 +10,38 @@ local type Site = PgraceRailRouterStations.Site
 -- Directions tried at each spot: the wanted one first, then up to 30° either way.
 local TURNS : {number} = { 0, math.rad(15), -math.rad(15), math.rad(30), -math.rad(30) }
 
--- Whether the run is inside, dry and unblocked, and then (the dearer test, done only for runs that pass) flat.
+-- Distances along the run to check, from end to end: every quarter cell, and always both ends exactly.
+local function offsets(g : Grid, runLength : number) : {number}
+	local half = runLength / 2
+	local step = g.cell / 4
+	local ds : {number} = {}
+	local d = -half
+	while d < half - 1e-6 do
+		table.insert(ds, d)
+		d = d + step
+	end
+	table.insert(ds, half)
+	return ds
+end
+
+-- Whether the run is inside, dry and clear (no building, road or track), and then (the dearer test, done only for
+-- runs that pass) flat.
 local function clear(g : Grid, centre : Pt, dir : Pt, runLength : number, maxRelief : number,
 		taken : {integer : boolean}) : boolean
-	local step = g.cell / 2
-	local half = runLength / 2 + 1e-6
-	local d = -runLength / 2
-	while d <= half do
+	local ds = offsets(g, runLength)
+	for __, d in ipairs(ds) do
 		local p : Pt = { x = centre.x + dir.x * d, y = centre.y + dir.y * d }
 		if not grid.inside(g, p) then
 			return false
 		end
 		local ix, iy = grid.cellOf(g, p)
 		local i = grid.index(g, ix, iy)
-		if g.blocked[i] or g.water[i] or (taken ~= nil and taken[i]) then
+		if g.blocked[i] or g.water[i] or g.road[i] or g.track[i] or (taken ~= nil and taken[i]) then
 			return false
 		end
-		d = d + step
 	end
 	local lo, hi = math.huge, -math.huge
-	d = -runLength / 2
-	while d <= half do
+	for __, d in ipairs(ds) do
 		local h = grid.heightAt(g, { x = centre.x + dir.x * d, y = centre.y + dir.y * d })
 		if h < lo then
 			lo = h
@@ -41,7 +52,6 @@ local function clear(g : Grid, centre : Pt, dir : Pt, runLength : number, maxRel
 		if hi - lo > maxRelief then
 			return false
 		end
-		d = d + step
 	end
 	return true
 end

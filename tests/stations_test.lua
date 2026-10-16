@@ -110,3 +110,49 @@ t.test("stations: nothing beyond maxRadius", function()
 	local site = stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 1500)
 	t.ok(site ~= nil and site.distance > 800, "found further out")
 end)
+
+-- Every 5 m, ends included: whether any cell under the run is blocked, water, road or track.
+local function runIsFree(g, site, runLength)
+	local half = runLength / 2
+	local d = -half
+	while true do
+		local p = { x = site.centre.x + site.dir.x * d, y = site.centre.y + site.dir.y * d }
+		local i = grid.index(g, grid.cellOf(g, p))
+		if g.blocked[i] or g.water[i] or g.road[i] or g.track[i] then
+			return false, d
+		end
+		if d >= half then
+			return true
+		end
+		d = math.min(half, d + 5)
+	end
+end
+
+t.test("stations: a road crossing the town centre pushes the site off it", function()
+	local g = openGrid()
+	fill(g, "road", function(c) return math.abs(c.x) < 50 end)
+	local site = stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 1500)
+	t.ok(site ~= nil, "found")
+	t.ok(site.distance > 0, "moved: " .. site.distance)
+	local free, at = runIsFree(g, site, 360)
+	t.ok(free, "off the road (hit at " .. tostring(at) .. ")")
+end)
+
+t.test("stations: existing track pushes the site off it", function()
+	local g = openGrid()
+	fill(g, "track", function(c) return math.abs(c.x) < 50 end)
+	local site = stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 1500)
+	t.ok(site ~= nil, "found")
+	local free, at = runIsFree(g, site, 360)
+	t.ok(free, "off the track (hit at " .. tostring(at) .. ")")
+end)
+
+t.test("stations: the run's very ends are checked", function()
+	local g = openGrid()
+	-- The cell at x = 150..250 on the line: a 340 m run from the centre ends at x = 170, inside it.
+	g.blocked[grid.index(g, 23, 21)] = true
+	local site = stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 340, 10, 1500)
+	t.ok(site ~= nil, "found")
+	local free, at = runIsFree(g, site, 340)
+	t.ok(free, "run is clear to its ends (hit at " .. tostring(at) .. ")")
+end)
