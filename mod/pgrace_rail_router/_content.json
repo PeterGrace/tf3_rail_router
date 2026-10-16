@@ -11,6 +11,8 @@
         "gui/pgrace_rail_router/planner/modes.tl",
         "gui/pgrace_rail_router/planner/profile.d.tl",
         "gui/pgrace_rail_router/planner/profile.tl",
+        "gui/pgrace_rail_router/planner/route.d.tl",
+        "gui/pgrace_rail_router/planner/route.tl",
         "gui/pgrace_rail_router/planner/smooth.d.tl",
         "gui/pgrace_rail_router/planner/smooth.tl",
         "gui/pgrace_rail_router/planner/stations.d.tl",
