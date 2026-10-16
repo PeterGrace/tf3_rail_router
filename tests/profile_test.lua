@@ -159,3 +159,19 @@ t.test("profile: a one-sample crossing keeps its bridge", function()
 	t.ok(r.z[21] >= 7 - 1e-9, "clearance " .. r.z[21])
 	t.ok(gradesWithin(r, s, 0.025), "grades")
 end)
+
+t.test("profile: crossings on ground steeper than the limit keep their clearance", function()
+	-- Ground climbing 20% over 450..600 m (crossing samples), flat either side.
+	local s, ground, water = line(function(x) return 0.2 * math.max(450, math.min(600, x)) end)
+	local crossing = {}
+	for i = 1, #s do
+		crossing[i] = s[i] >= 450 and s[i] <= 600
+	end
+	local r = profile.fit(s, ground, water, 0.025, 8, 12, nil, nil, crossing)
+	for i = 1, #s do
+		if crossing[i] then
+			t.ok(r.z[i] - ground[i] >= 7 - 1e-9, "clearance at " .. s[i] .. ": " .. (r.z[i] - ground[i]))
+		end
+	end
+	t.ok(gradesWithin(r, s, 0.025), "grades")
+end)
