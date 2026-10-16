@@ -55,8 +55,10 @@ is pure, so it can be tested end to end on artificial maps.
 
 ## Survey (`survey.tl`)
 
-- **Corridor:** the box around the chosen towns, plus a 25% margin. If the grid search finds no path, widen the
-  margin and retry (up to twice).
+- **Corridor:** the box around the chosen towns, plus a 25% margin (at least 2 km). If a leg's grid search finds no
+  path, the window starts the work over (survey and plan) with the margin doubled, up to twice (0.25 → 0.5 → 1.0),
+  showing "Widening the search… N%"; only then is "No route found" shown. The grid coarsens past 250,000 cells, so
+  a wider margin costs resolution rather than memory.
 - **Per 100 m cell:** `api.engine.terrain.getHeightAt` and `isOnWater` at the cell centre.
 - **Buildings and other constructions:** `octree.findEntitiesInCircle(..., CONSTRUCTION / TOWN_BUILDING)` over the
   corridor in ~1 km tiles; mark cells within 30 m of any of them (town buildings, stations, industries, depots) as
@@ -92,7 +94,7 @@ step costs its length × the sum of:
 - water: priced as a bridge (wide water is not banned, just expensive);
 - town buildings: impassable;
 - existing roads: crossing allowed (priced per mode, above);
-- existing track: crossed only by a bridge, never through a junction;
+- existing track: crossed only by a bridge, never through a junction (the height profile makes the bridge);
 - a turn penalty per change of direction.
 
 The search state is (cell, arriving direction), so turn costs are exact and the result is optimal for the cost
@@ -112,11 +114,20 @@ Fits the track's height to the terrain under the grade limit, smoothing forwards
 more than 8 m above the ground it becomes a bridge, and more than 12 m below a tunnel. These thresholds are starting
 values, tuned in-game.
 
+**Crossings:** samples over existing track, and over roads in Fastest mode (`Weights.bridgeRoads`), are bridges and
+are never merged away. The track there is lifted to at least 7 m above the ground, ramping up and down within the
+grade limit; the station heights pinned at a leg's ends win if a crossing is too close to them. In Cheapest mode
+roads are crossed on the level.
+
+**Known issue (tuning, milestone 4):** the forward-then-backward grade clamp handles a ridge one-sidedly: the
+forward pass cuts into the near side, so the track is in a tunnel near the leg's start and then runs on a long
+viaduct down the far side, instead of a balanced cut, tunnel and descent.
+
 ### Stations (`stations.tl`)
 
 For each town, search outward in rings from the centre for a spot where a straight run (the platform length plus 100 m
-of approach at each end) is clear of blocked cells. The station's direction follows the line from the previous stop
-to the next. Every station is a through station with 2 tracks, both ends connected.
+of approach at each end) is clear of blocked, water, road and track cells, checked every quarter cell and at both ends
+of the run. The station's direction follows the line from the previous stop to the next. Every station is a through station with 2 tracks, both ends connected.
 
 ### Candidate stops (`corridor.tl`)
 
@@ -142,9 +153,11 @@ content.
 
 ## Preview (`preview.tl`)
 
-One static cargo-flow arrow (`FlowData`, speed 0) per straight or curve piece, coloured green for ground, blue for
-bridge and orange for tunnel, drawn through a map action (`useAction` + `setActiveOwnerOverride`, as in Jam Session,
-with `accessNotificationCacheFn` left nil). The camera frames the whole route once when the preview is turned on.
+Static cargo-flow arrows (`FlowData`, speed 0) along the track as chords of about 200 m between height samples, each
+coloured by the kind of span it covers (green ground, blue bridge, orange tunnel), plus one white arrow along each
+station's platforms in the direction of travel. They're drawn through a map action (`useAction` +
+`setActiveOwnerOverride`, as in Jam Session, with `accessNotificationCacheFn` left nil). When the preview is turned
+on, the camera moves to the route once, showing as much of it as the maximum zoom-out allows.
 
 ## Building (`builder.tl`)
 
@@ -172,8 +185,9 @@ don't keep engine components across a `sendCommand`.
 - `grid`: a straight line on flat ground; going round a lake when that's cheaper than a bridge; a bridge when going
   round is too long; impassable buildings; Fastest choosing a straighter path than Cheapest on the same map.
 - `smooth`: every arc is at least the minimum radius, and the end directions are kept.
-- `profile`: grades stay under the limit; a valley becomes a bridge, a ridge a tunnel.
-- `stations`: the chosen spot is clear and as near the centre as possible.
+- `profile`: grades stay under the limit; a valley becomes a bridge, a ridge a tunnel; a crossing a bridge with 7 m
+  of clearance.
+- `stations`: the chosen spot is clear (of buildings, water, roads and track) and as near the centre as possible.
 - `corridor`: the detour budget includes and excludes the right towns.
 
 **In-game:** on a flat test map (Map Editor → Create New Map) with a hill, a lake and a few towns, never the active
