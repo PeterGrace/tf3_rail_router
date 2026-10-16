@@ -221,7 +221,7 @@ local function resultRows(plan : Plan) : {TreeNodeId}
 			{ count = tostring(sum.steepLegs) }), "font-scale-body"))
 	end
 	if sum.blockedSamples > 0 then
-		table.insert(rows, textRow(_("Warning: the curves cut across buildings or existing track in places."), "font-scale-body"))
+		table.insert(rows, textRow(_("Warning: the curves cut across buildings in places."), "font-scale-body"))
 	end
 	for __, station in ipairs(plan.stations) do
 		table.insert(rows, textRow(fill(_("{town}: station {distance} from the centre"),

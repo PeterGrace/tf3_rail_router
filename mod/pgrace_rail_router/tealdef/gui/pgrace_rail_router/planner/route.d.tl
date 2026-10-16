@@ -33,7 +33,8 @@ global record PgraceRailRouterRoute
 		-- true when the two stations are too far apart in height for the grade limit: the track still meets both,
 		-- so a grade next to one of them is steeper than allowed.
 		steepEnds : boolean
-		-- Samples whose nearest cell is blocked or has track on it (curves cutting corners, mostly).
+		-- Samples whose nearest cell is blocked by a building or obstacle (curves cutting corners, mostly). Existing
+		-- track and roads are crossed by bridges instead (see the spans).
 		blockedSamples : integer
 	end
 
@@ -49,7 +50,7 @@ global record PgraceRailRouterRoute
 		minRadius : number
 		-- Our own price estimate for both tracks (bridges and tunnels included, stations not).
 		estimate : number
-		-- Sums over the legs: arcs tighter than weights.minRadius, and samples over blocked cells or track.
+		-- Sums over the legs: arcs tighter than weights.minRadius, and samples over blocked cells.
 		tightCurves : integer
 		blockedSamples : integer
 		-- Legs whose steepEnds is set.

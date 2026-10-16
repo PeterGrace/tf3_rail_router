@@ -117,7 +117,7 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}) : 
 		water[i] = grid.waterAt(g, sample.p)
 		local ix, iy = grid.cellOf(g, sample.p)
 		local cell = grid.index(g, ix, iy)
-		if g.blocked[cell] or g.track[cell] then
+		if g.blocked[cell] then
 			blockedSamples = blockedSamples + 1
 		end
 	end
