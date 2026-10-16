@@ -109,7 +109,8 @@ ceil(L / step length) steps (every cell on the way checked and costed as single 
 again. The state space stays (cell, direction), so the search is still optimal for this model and the heuristic still
 admissible. The start may turn at once (the station's extension gives room behind it); passing through the goal cell
 part-way along a turn's straight finishes there only heading the platform's way, and a state at the goal may make one
-last single-step turn onto it.
+last single-step turn onto it. The path's first and last segments run from and to the asked points, off their cells'
+centres, so they are checked for blocked cells on their own (a diagonal past a blocked cell's corner would cut it).
 
 **Radius fallback.** A Fastest leg is searched first with turns spaced for the Cheapest radius (the fallback; if that
 finds nothing, the plan fails "no_path"), then for the mode's radius, halving while above the Cheapest one, until a
@@ -155,7 +156,23 @@ and the crossing floors.
 
 For each town, search outward in rings from the centre for a spot where a straight run (the platform length plus 100 m
 of approach at each end) is clear of blocked, water, road and track cells, checked every quarter cell and at both ends
-of the run. The station's direction follows the line from the previous stop to the next. Every station is a through station with 2 tracks, both ends connected.
+of the run. Every station is a through station with 2 tracks, both ends connected.
+
+**Facing the line** (`route.tl`). The first sites face from the previous stop to the next. Then each leg is scouted:
+a search between the two site centres, free to start and end in any direction and turning as freely as the Cheapest
+radius allows (with the mode's costs). Each station's direction is then taken from the scouts: from the point D before
+it on the arriving scout to the point D after it on the leaving one (from or to its centre at the line's ends), with
+D = 600 m or the full radius's minimum straight if longer (1.19 km at 3 km: over a shorter stretch, a scout one cell
+off the axis turns the station 10° or more). Its site is found again facing that way, at most one cell farther from
+the town than the first; if there is none, or it leaves no room to the stations either side, the first site stays.
+One round; a second moved stations again without settling. Scouts are searches like the legs', stepped through
+`route.step`, and count towards the progress.
+
+**Room to turn beyond the approach** (the leg's search starts and ends there): enough for the search's first turn at
+full radius. Where the search turns freely (Cheapest) that may be anything up to 90°, so room for 45°
+(R·tan 22.5°, 91 m at 220 m); where it spaces its turns, one 22.5° step (R·tan 11.25°, 597 m at 3 km). The longer
+room (1.24 km at 3 km) cost Fastest dear once the stations faced the line: it pushed the legs' ends past their turns,
+into a ridge (a 300 m tunnel) and loops (estimate 23.2–23.5 M against 19.6 M on the captured map).
 
 ### Candidate stops (`corridor.tl`)
 
@@ -232,16 +249,21 @@ Each ends with one in-game test by the user.
 
 ## Known issues after milestone 1 (to settle with in-game data)
 
-- **Curves near station ends can be tight.** The search now spaces its turns for the radius, so in open country and
-  round lakes, hills and buildings the path leaves room for full-radius curves (in the test scenarios the guard no
-  longer has to tighten any). But where a station's platforms point away from the next station, or two stations'
-  extensions nearly meet, no path with turns spaced for a wide radius fits, and the leg falls back to a smaller
-  search radius, with tight curves near its ends. On the captured Fastest map (R = 3000 m, legs of 2 to 5 km
-  between station extensions) that is every leg: three fall back to the Cheapest radius and one to 750 m, and the plan
-  is the same as before the curve-aware search: 8 tight curves, each a turn between a station's direction and the
-  line, starting 0.3 to 1.9 km from the nearest station (whose extension reaches 1.4 km out). Task C (stations that
-  face the line) addresses this. The smoothing guard still tightens curves where a path searched at a
-  smaller radius turns close to an obstacle.
+- **Curves near station ends can be tight.** The search spaces its turns for the radius, and the stations face the
+  scouted line, so in open country and round lakes, hills and buildings the path leaves room for full-radius curves.
+  What's left on the captured Fastest map (R = 3000 m; 7 tight curves, the tightest 263 m):
+  - a stop the line doubles back through (Bangor → Mercer Island → Antelope turns about 135° at Mercer Island): no
+    direction suits both legs, and both fall back to the Cheapest search radius (263 m and 572 m at its ends);
+  - two stations too close for their offset (Mercer Island and Antelope both face north, 1.7 km apart sideways and
+    1.9 km along): an S-bend at 687 m;
+  - a station whose room to turn is cut short by its own town's buildings (Aloha's leaving side): the turn starts at
+    the approach, 429 m;
+  - a leg that fits only at a smaller search radius (Antelope → Aloha at 1500 m, round the lake): 1187 m and 2529 m.
+  The smoothing guard still tightens curves where a path searched at a smaller radius turns close to an obstacle.
+- **A curve at a cut-short station end can cross buildings.** Where buildings cut a station's room to turn short and
+  the line turns sharply at its approach, the curve there may only be tightened to the build minimum and still clip
+  the buildings (the guard gives up at the floor). None on the captures with the chosen settings, but neighbouring
+  ones (D = 300, 900 or 1200 m, or two scouting rounds) gave 1 to 5 samples on blocked cells, all at such an end.
 
 ## Out of scope for version 1
 

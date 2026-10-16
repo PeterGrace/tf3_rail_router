@@ -122,9 +122,12 @@ t.test("route: the curves keep off buildings the search went round", function()
 	t.eq(plan.legs[1].blockedSamples, 0, "blocked samples")
 	t.eq(plan.summary.blockedSamples, 0, "summary")
 	-- Before the search spaced its turns for the radius, the guard had to hold the curves to its path here; now the
-	-- path leaves room for the full radius on its own.
+	-- path leaves room for the full radius on its own, but for one curve at A: the scout (turning as freely as the
+	-- Cheapest radius allows) climbs round the wall by knight moves, so A faces 26.6° north of east, more than the
+	-- 1500 m line needs, and turns back at a little under the radius.
 	t.eq(plan.legs[1].searchRadius, 1500, "searched at the full radius")
-	t.eq(plan.legs[1].tightCurves, 0, "no tight curves")
+	t.ok(plan.legs[1].tightCurves <= 1, "tight curves: " .. plan.legs[1].tightCurves)
+	t.ok(plan.legs[1].minRadius >= 1300, "radius " .. plan.legs[1].minRadius)
 end)
 
 t.test("route: a built-up centre moves the station", function()
@@ -276,9 +279,10 @@ end)
 
 t.test("route: the straight beyond a station's approach stops short of a building", function()
 	local g = flatGrid()
-	-- A's approach ends at x = 180; with a 1500 m radius the room to turn would run on to x = 801. A building in the
-	-- cell at x = 450..550 on the line, 300 m beyond the approach.
-	g.blocked[grid.index(g, 16, 16)] = true
+	-- A's approach ends 180 m out; with a 1500 m radius the room to turn would run on to 801 m. A building in the
+	-- cell at x = 250..350, y = -50..50, just beyond the approach. (The scouted line steps a cell aside to pass it,
+	-- so A may turn by a few degrees; its axis still meets the building's cell.)
+	g.blocked[grid.index(g, 14, 16)] = true
 	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 5000, 0) },
 		weights = withWeights({ minRadius = 1500 }), platformLength = 160 })
 	local start = nil
@@ -290,14 +294,21 @@ t.test("route: the straight beyond a station's approach stops short of a buildin
 		steps = steps + 1
 		assert(steps < 100000, "runaway")
 	end
-	t.ok(route.plan(job).ok, "ok")
+	local plan = route.plan(job)
+	t.ok(plan.ok, "ok")
 	t.ok(start ~= nil, "searched")
-	-- The leg's search starts where the straight from the approach ends: before the building, and clear all the way.
-	t.ok(start.x < 450, "search starts before the building: x " .. start.x)
-	t.ok(start.x > 180 - 1e-6, "and not behind the approach: x " .. start.x)
-	for x = 180, start.x, 5 do
-		t.ok(not g.blocked[grid.index(g, grid.cellOf(g, { x = x, y = 0 }))], "straight clear at x " .. x)
-	end
+	local c, d = plan.stations[1].site.centre, plan.stations[1].site.dir
+	t.ok(math.abs(d.y) < 0.2, ("A faces about east: (%.2f, %.2f)"):format(d.x, d.y))
+	-- The leg's search starts on A's axis, where the straight from the approach ends: short of the building's cell,
+	-- and clear all the way.
+	local along = (start.x - c.x) * d.x + (start.y - c.y) * d.y
+	local across = (start.x - c.x) * d.y - (start.y - c.y) * d.x
+	t.near(across, 0, 1e-6, "on A's axis")
+	t.ok(along >= 180 - 1e-6, "not behind the approach: " .. along)
+	t.ok(along < 250 / d.x, "pulled back short of the building: " .. along)
+	t.ok(grid.cellsAlong(g, { x = c.x + 180 * d.x, y = c.y + 180 * d.y }, start, function(i)
+		return not g.blocked[i]
+	end), "straight clear")
 end)
 
 -- A disc of the flat grid around (3000, -300), 1100 m across the radius, set by `mark(g, i)`: the line from A (0, 0)
@@ -378,12 +389,13 @@ t.test("route: the curves go round the end of a steep hill, not through it", fun
 end)
 
 t.test("route: on flat open ground the guard changes nothing", function()
-	-- y from -1500 to 3500, so C's station fits. Pieces and lengths from before the guard (at 1000 m, leg 1's from
-	-- the curve-aware search, whose path differs: 2881.384564 m before).
+	-- y from -1500 to 3500, so C's station fits. Pieces and lengths with the stations facing the scouted line (from
+	-- before the guard, with the stations facing town to town: 2854.558372 and 2009.573552 m at 220 m, 2881.384564
+	-- and 2023.974285 m at 1000 m).
 	local g = grid.new(-1000, -1500, 100, 81, 51)
 	local stops = { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 4500, 1500) }
-	local before = { [220] = { { 5, 2854.558372 }, { 7, 2009.573552 } },
-		[1000] = { { 7, 2883.861717 }, { 5, 2023.974285 } } }
+	local before = { [220] = { { 5, 2869.190062 }, { 7, 2002.722075 } },
+		[1000] = { { 7, 2880.707083 }, { 7, 2012.128815 } } }
 	for radius, legs in pairs(before) do
 		local plan = run(g, stops, 160, withWeights({ minRadius = radius }))
 		t.ok(plan.ok, "ok")
@@ -416,7 +428,21 @@ t.test("route: a plain incline isn't mistaken for an obstacle", function()
 			local plan = run(g, stops, 160, w)
 			t.ok(plan.ok, label .. ": ok")
 			t.eq(plan.summary.guarded, 0, label .. ": guarded")
-			for k, leg in ipairs(plan.legs) do
+			-- Turned to face the scouted line, a station's run may climb more than 10 m across the slope: then it
+			-- turns less (15° off the line), and its legs differ from the flat ground's. Compare where the stations
+			-- match.
+			local same = true
+			for k, station in ipairs(plan.stations) do
+				local ref = flat.stations[k].site
+				same = same and math.abs(station.site.dir.x - ref.dir.x) < 1e-9
+					and math.abs(station.site.dir.y - ref.dir.y) < 1e-9
+					and math.abs(station.site.centre.x - ref.centre.x) < 1e-9
+					and math.abs(station.site.centre.y - ref.centre.y) < 1e-9
+			end
+			if not same then
+				t.ok(math.abs(slope) > 0.05, label .. ": only the steeper slopes move a station")
+			end
+			for k, leg in ipairs(same and plan.legs or {}) do
 				local ref = flat.legs[k]
 				t.eq(#leg.pieces, #ref.pieces, label .. ": leg " .. k .. " pieces")
 				t.near(leg.length, ref.length, 1e-6, label .. ": leg " .. k .. " length")
@@ -437,7 +463,34 @@ local function walledStart(top, extra)
 	if extra then
 		extra(g)
 	end
-	return run(g, { town(1, "A", 0, 0), town(2, "B", 5000, 0) })
+	-- The scouted line climbs north past the wall, so A would turn to face it and the sharp turn these tests are
+	-- about would go away: keep the sites found facing town to town (east), to test the extension rules alone.
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 5000, 0) }, weights = W,
+		platformLength = 160 })
+	local first, steps = nil, 0
+	while not route.step(job, 500) do
+		if job.phase == "scout" and first == nil then
+			first = {}
+			for k, station in ipairs(job.result.stations) do
+				first[k] = station.site
+			end
+		elseif job.phase == "legs" and first ~= nil then
+			job.taken = {}
+			for k, station in ipairs(job.result.stations) do
+				station.site = first[k]
+				local c, d = station.site.centre, station.site.dir
+				for o = -80, 80, 50 do
+					job.taken[grid.index(g, grid.cellOf(g, { x = c.x + d.x * o, y = c.y + d.y * o }))] = true
+				end
+			end
+			first = nil
+		end
+		steps = steps + 1
+		assert(steps < 100000, "runaway")
+	end
+	local plan = route.plan(job)
+	t.near(plan.stations[1].site.dir.x, 1, 1e-9, "A faces east")
+	return plan
 end
 
 t.test("route: a sharp turn just past a short extension gives the extension up rather than build too tight", function()
@@ -513,4 +566,73 @@ t.test("route: a leg's search radius is the full radius on open ground", functio
 	t.eq(plan.legs[1].searchRadius, 1000, "full radius")
 	local cheapest = run(flatGrid(), { ABC[1], ABC[2] })
 	t.eq(cheapest.legs[1].searchRadius, 220, "Cheapest: its own radius, one try")
+end)
+
+-- Grid cells under each station's platforms, by index (every quarter cell along them).
+local function platformSet(g, station, platformLength)
+	local cells = {}
+	local c, d = station.site.centre, station.site.dir
+	for s = -platformLength / 2, platformLength / 2, 25 do
+		cells[grid.index(g, grid.cellOf(g, { x = c.x + d.x * s, y = c.y + d.y * s }))] = true
+	end
+	return cells
+end
+
+t.test("route: an end station faces the way the line leaves it, not straight at the next town", function()
+	-- A wall east of A, from the grid's bottom edge up to y = 600: the line leaves A north-eastwards round its top.
+	local g = flatGrid()
+	for iy = 1, 31 do
+		for ix = 1, 81 do
+			local c = grid.centre(g, ix, iy)
+			if c.x >= 700 and c.x <= 900 and c.y <= 600 then
+				g.blocked[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 5000, 0) }, weights = W,
+		platformLength = 160 })
+	local scoutSteps, last = 0, 0
+	while not route.step(job, 50) do
+		if job.phase == "scout" then
+			scoutSteps = scoutSteps + 1
+		end
+		local p = route.progress(job)
+		t.ok(p >= last - 1e-9, "progress never goes back")
+		last = p
+	end
+	local plan = route.plan(job)
+	t.ok(plan.ok, "ok")
+	t.ok(scoutSteps > 2, "the scout's search is spread over steps: " .. scoutSteps)
+	local dir = plan.stations[1].site.dir
+	t.ok(dir.y > 0.25, ("A turned towards the line: (%.2f, %.2f)"):format(dir.x, dir.y))
+	t.eq(plan.legs[1].blockedSamples, 0, "off the wall")
+	t.eq(plan.summary.tightCurves, 0, "no tight curves")
+end)
+
+t.test("route: a middle station faces along the line through it", function()
+	-- Water everywhere south of y = 800 between x = 600 and x = 2400, and north of y = -800 between x = 3600 and
+	-- x = 5400: the line from A (0, 0) climbs north-east to pass the first, crosses B (3000, 0) heading south-east and
+	-- passes south of the second, on to C (6000, 0). Facing A to C (east), B would make both legs bend sharply.
+	local g = flatGrid()
+	for iy = 1, 31 do
+		for ix = 1, 81 do
+			local c = grid.centre(g, ix, iy)
+			if (c.x >= 600 and c.x <= 2400 and c.y <= 800) or (c.x >= 3600 and c.x <= 5400 and c.y >= -800) then
+				g.water[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+	local plan = run(g, ABC, 160, withWeights({ bridgeFactor = 100 }))
+	t.ok(plan.ok, "ok")
+	local dir = plan.stations[2].site.dir
+	t.ok(dir.y < -0.25, ("B faces south-east: (%.2f, %.2f)"):format(dir.x, dir.y))
+	t.eq(plan.summary.blockedSamples, 0, "nothing in the way")
+	-- No two stations' platforms share a cell.
+	local seen = {}
+	for k, station in ipairs(plan.stations) do
+		for i in pairs(platformSet(g, station, 160)) do
+			t.ok(seen[i] == nil, "station " .. k .. " on station " .. tostring(seen[i]) .. "'s platforms")
+			seen[i] = k
+		end
+	end
 end)

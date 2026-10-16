@@ -30,8 +30,22 @@ local SIMPLIFY_SHARE = 0.75
 -- (metres; see pathGuard): more, and it has climbed a hill or dropped into a hollow the search went round, where it
 -- would need a tunnel, a bridge or a cutting the search didn't pay for. A starting value, tuned in-game.
 local MAX_GROUND_DIFF = 4.0
--- For progress: a station site counts as 1 unit of work, a leg as this many.
+-- For progress: a station site counts as 1 unit of work, a leg as this many, and a scout (per round) as this many.
 local LEG_WEIGHT = 10
+local SCOUT_WEIGHT = 2
+-- Each station faces along the scouted line: from this far before it on the scout arriving to this far after it on
+-- the scout leaving (metres along the paths), or the full radius's minimum straight if longer (see scoutDir; 1.19 km
+-- in Fastest at 3 km, which did a little better there than 600 m: 7 tight curves against 9). For Cheapest on the
+-- captures, 600 m was the only length with no samples on blocked cells (300, 900 and 1200 m had one each, at a
+-- station end where buildings cut its extension short); 300 m was also 3% dearer.
+local MIN_SCOUT_AHEAD = 600.0
+-- How many times the stations are scouted and turned. A second round on the captures moved stations again without
+-- settling: one capture 6% cheaper but with 5 samples on blocked cells, the others little changed, Fastest a tight
+-- curve more.
+local SCOUT_ROUNDS = 1
+-- A turned station may be at most this much farther from its town's centre than its first site (metres): it should
+-- face the line, not leave the town for it. (On the captures no station moved farther than that anyway.)
+local MAX_TURN_MOVE = 100.0
 -- Share of a leg's work that is its search; building it is the rest.
 local SEARCH_SHARE = 0.99
 -- A leg's search with its turns spaced for a wide radius is taken if its path costs at most this share more than the
@@ -78,8 +92,26 @@ local function straightClear(input : Input, a : Pt, b : Pt, taken : {integer : b
 	end)
 end
 
+-- The minimum straight between turns for the full radius (grid.startSearch): 2 · minRadius · tan(11.25°).
+local function minStraight(input : Input) : number
+	return 2 * input.weights.minRadius * math.tan(math.pi / 16)
+end
+
+-- The room to turn beyond a station's approach: for the first turn the leg's search may make there, at full radius.
+-- Where the search turns freely (its minimum straight within a cell) that may be anything up to 90°, so room for a
+-- 45° turn (minRadius × tan 22.5°); otherwise it is one 22.5° step, so minRadius × tan 11.25°. The longer room cost
+-- Fastest dear on the captures: with stations facing the line, 1.24 km straights at R = 3000 m pushed the legs'
+-- ends past their turns, into a ridge (a 300 m tunnel) and loops (estimate 23.2–23.5 M against 19.6 M).
+local function extensionLength(input : Input) : number
+	local r = input.weights.minRadius
+	if minStraight(input) <= input.grid.cell + 1e-6 then
+		return r * math.tan(math.pi / 8)
+	end
+	return r * math.tan(math.pi / 16)
+end
+
 -- Where a station's platforms end, where its straight approach ends, and where the room to turn beyond it ends
--- (minRadius × tan 22.5°: a 45° turn at full radius), on its leaving side (forward = true) or its arriving side.
+-- (extensionLength), on its leaving side (forward = true) or its arriving side.
 -- The leg's search starts or ends at the last, and the track runs straight to it, so it is pulled back (half a cell
 -- at a time, at most to the approach point) until that straight is inside the grid and clear of blocked cells and
 -- other stations' platforms (`taken`). Where it's pulled back, the curve beyond may be tighter than minRadius (and
@@ -92,7 +124,7 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 	local platformEnd = geo.add(c, geo.scale(d, sign * half))
 	local approach = geo.add(c, geo.scale(d, sign * (half + APPROACH)))
 	local own = platformCells(input, station)
-	local ext = input.weights.minRadius * math.tan(math.pi / 8)
+	local ext = extensionLength(input)
 	while ext > 0 do
 		local extension = geo.add(c, geo.scale(d, sign * (half + APPROACH + ext)))
 		if straightClear(input, approach, extension, taken, own) then
@@ -124,6 +156,52 @@ local function searchRadii(w : PgraceRailRouterModes.Weights) : {number}
 		r = r / 2
 	end
 	return radii
+end
+
+-- The point `d` metres along `path` from its start (or from its end, backwards), or its far end if it's shorter.
+local function pointAlong(path : {Pt}, d : number, fromEnd : boolean) : Pt
+	local n = #path
+	local prev = fromEnd and path[n] or path[1]
+	for k = 2, n do
+		local p = fromEnd and path[n + 1 - k] or path[k]
+		local l = geo.dist(prev, p)
+		if l >= d then
+			return geo.add(prev, geo.scale(geo.sub(p, prev), d / l))
+		end
+		d = d - l
+		prev = p
+	end
+	return prev
+end
+
+-- The direction the scouted line runs through station i: from `ahead` before it on the scout arriving to `ahead`
+-- after it on the scout leaving (from or to the station's centre at the line's ends), where `ahead` is the full
+-- radius's minimum straight, or MIN_SCOUT_AHEAD if more: over a shorter stretch, a scout one cell off the station's
+-- axis would turn it by 10° or more. nil without a scout.
+local function scoutDir(job : Job, i : integer) : Pt
+	local ahead = math.max(MIN_SCOUT_AHEAD, minStraight(job.input))
+	local centre = job.result.stations[i].site.centre
+	local arriving, leaving = job.scouts[i - 1], job.scouts[i]
+	local from, to = centre, centre
+	if arriving ~= nil then
+		from = pointAlong(arriving, ahead, true)
+	end
+	if leaving ~= nil then
+		to = pointAlong(leaving, ahead, false)
+	end
+	local d = geo.sub(to, from)
+	if geo.len(d) < 1e-6 then
+		return nil
+	end
+	return geo.norm(d)
+end
+
+-- Whether consecutive stations a and b leave room between them: their platforms and approaches fit, and b lies ahead
+-- of a along both their directions.
+local function apartEnough(input : Input, a : PgraceRailRouterStations.Site, b : PgraceRailRouterStations.Site) : boolean
+	local apart = geo.sub(b.centre, a.centre)
+	return geo.len(apart) >= input.platformLength + 2 * APPROACH and geo.dot(apart, a.dir) > 0
+		and geo.dot(apart, b.dir) > 0
 end
 
 local function fail(job : Job, failure : string, towns : {string}) : boolean
@@ -390,17 +468,72 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		if site == nil then
 			return fail(job, "no_site", { town.name })
 		end
-		if prev ~= nil then
-			local apart = geo.sub(site.centre, prev.site.centre)
-			if geo.len(apart) < input.platformLength + 2 * APPROACH or geo.dot(apart, prev.site.dir) <= 0
-				or geo.dot(apart, site.dir) <= 0 then
-				return fail(job, "too_close", { prev.town.name, town.name })
-			end
+		if prev ~= nil and not apartEnough(input, prev.site, site) then
+			return fail(job, "too_close", { prev.town.name, town.name })
 		end
 		table.insert(plan.stations, { town = town, site = site, z = grid.heightAt(input.grid, site.centre) })
 		job.siteIndex = i + 1
 		if job.siteIndex > #input.stops then
-			job.phase = "legs"
+			job.phase, job.round, job.scoutIndex, job.scouts = "scout", 1, 1, {}
+		end
+		return false
+	end
+	if job.phase == "scout" then
+		-- A search between consecutive site centres, free to start and end in any direction, turning as freely as the
+		-- Cheapest radius allows: where the line wants to run, whichever way the stations face.
+		local i = job.scoutIndex
+		if job.search == nil then
+			local a, b = plan.stations[i].site.centre, plan.stations[i + 1].site.centre
+			local any : Pt = { x = 0, y = 0 }
+			local w = input.weights
+			job.search = grid.startSearch(input.grid, a, b, any, any, w, w.minSearchRadius or w.minRadius)
+			return false
+		end
+		if not grid.stepSearch(job.search, maxExpansions) then
+			return false
+		end
+		-- No scout (no path): the station keeps its direction on that side; the leg's own search reports it.
+		job.scouts[i] = grid.path(job.search)
+		job.search = nil
+		job.scoutIndex = i + 1
+		if job.scoutIndex > #plan.stations - 1 then
+			job.phase, job.siteIndex = "turn", 1
+		end
+		return false
+	end
+	if job.phase == "turn" then
+		-- Find station i's site again, facing along the scouted line; keep the old one where that finds nothing, or
+		-- nothing that leaves room to the stations either side.
+		local i = job.siteIndex
+		local station = plan.stations[i]
+		local dir = scoutDir(job, i)
+		if dir ~= nil then
+			local others : {integer : boolean} = {}
+			for j, other in ipairs(plan.stations) do
+				if j ~= i then
+					takePlatforms(input, other, others)
+				end
+			end
+			local site = stations.find(input.grid, station.town.pos, dir, input.platformLength + 2 * APPROACH,
+				MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + MAX_TURN_MOVE), others)
+			local prev, next = plan.stations[i - 1], plan.stations[i + 1]
+			if site ~= nil and (prev == nil or apartEnough(input, prev.site, site))
+				and (next == nil or apartEnough(input, site, next.site)) then
+				station.site, station.z = site, grid.heightAt(input.grid, site.centre)
+			end
+		end
+		job.siteIndex = i + 1
+		if job.siteIndex > #plan.stations then
+			if job.round < SCOUT_ROUNDS then
+				job.phase, job.round, job.scoutIndex, job.scouts = "scout", job.round + 1, 1, {}
+			else
+				-- The legs keep off every platform (each station's ends less its own).
+				job.taken = {}
+				for __, other in ipairs(plan.stations) do
+					takePlatforms(input, other, job.taken)
+				end
+				job.phase = "legs"
+			end
 		end
 		return false
 	end
@@ -472,10 +605,20 @@ function route.progress(job : Job) : number
 		return 1
 	end
 	local n = #job.input.stops
-	local total = n + LEG_WEIGHT * math.max(1, n - 1)
+	-- Per round: a scout per leg, and turning each station (one unit each).
+	local round = SCOUT_WEIGHT * (n - 1) + n
+	local scouting = n + SCOUT_ROUNDS * round
+	local total = scouting + LEG_WEIGHT * math.max(1, n - 1)
 	local done : number = job.siteIndex - 1
-	if job.phase == "legs" then
-		done = n + LEG_WEIGHT * (job.legIndex - 1)
+	if job.phase == "scout" then
+		done = n + (job.round - 1) * round + SCOUT_WEIGHT * (job.scoutIndex - 1)
+		if job.search ~= nil then
+			done = done + SCOUT_WEIGHT * grid.progress(job.search)
+		end
+	elseif job.phase == "turn" then
+		done = n + (job.round - 1) * round + SCOUT_WEIGHT * (n - 1) + job.siteIndex - 1
+	elseif job.phase == "legs" then
+		done = scouting + LEG_WEIGHT * (job.legIndex - 1)
 		-- Each of the leg's tries has an equal share of its search; one that succeeds takes the rest.
 		local tries = job.radii ~= nil and #job.radii or 1
 		local tried = job.radii ~= nil and job.tryIndex - 1 or 0

@@ -1,5 +1,7 @@
--- Plans a double-track line through the stops in order: a station site for each town, then one leg between each
--- pair (grid search, curves, heights). Pure (no api.*); spread over frames with start/step.
+-- Plans a double-track line through the stops in order: a station site for each town (facing from the previous town
+-- to the next), a scout of each leg (a free-turning search between the sites, any direction at either end), each
+-- station found again facing along the scouted line, then one leg between each pair (grid search, curves, heights).
+-- Pure (no api.*); spread over frames with start/step.
 global record PgraceRailRouterRoute
 	record Input
 		grid : PgraceRailRouterGrid.Grid
@@ -12,14 +14,19 @@ global record PgraceRailRouterRoute
 
 	record Station
 		town : PgraceRailRouterCorridor.Town
+		-- Faces along the scouted line through it: from 600 m (or the full radius's minimum straight, if longer)
+		-- before it to as far after it, along the scouts either side (one side at the line's ends). Where no site
+		-- within one cell farther from the town than the first faces that way (or one leaves no room to the
+		-- neighbouring stations), the first site, facing from town to town, is kept.
 		site : PgraceRailRouterStations.Site
 		-- Ground height at the station's centre.
 		z : number
 	end
 
-	-- From one station's platform end to the next one's: a straight approach of 100 m at each end, then room for a
-	-- 45° turn at full radius before the searched path (less where buildings or the grid edge are in the way, which
-	-- may leave a curve tighter than the radius).
+	-- From one station's platform end to the next one's: a straight approach of 100 m at each end, then room for the
+	-- search's first turn at full radius before the searched path: 45° where the search turns freely, one 22.5° step
+	-- where it spaces its turns (less where buildings or the grid edge are in the way, which may leave a curve tighter
+	-- than the radius).
 	record Leg
 		pieces : {PgraceRailRouterSmooth.Piece}
 		samples : {PgraceRailRouterSmooth.Sample}
@@ -90,9 +97,14 @@ global record PgraceRailRouterRoute
 	-- Work in progress. The fields are internal.
 	record Job
 		input : Input
-		-- "sites", "legs" or "done"
+		-- "sites", "scout", "turn", "legs" or "done"
 		phase : string
+		-- The station being sited, or turned.
 		siteIndex : integer
+		-- Scouting: the round (1..), the leg being scouted, and the scouts' paths by leg (nil where none was found).
+		round : integer
+		scoutIndex : integer
+		scouts : {integer : {PgraceRailRouterGeo.Pt}}
 		legIndex : integer
 		search : PgraceRailRouterGrid.Search
 		-- The current leg's search tries: the radii to try (nil before its first), and which one is running; the
@@ -113,8 +125,9 @@ global record PgraceRailRouterRoute
 	end
 
 	start : function(input : Input) : Job
-	-- One unit of work: a station site, starting a leg's search, up to maxExpansions cells of it, or building the
-	-- leg from its path (curves, heights). true once the plan is finished (whether it succeeded or not).
+	-- One unit of work: a station site, starting a search (a scout or a leg's), up to maxExpansions states of it,
+	-- turning a station to face the scouted line, or building a leg from its path (curves, heights). true once the
+	-- plan is finished (whether it succeeded or not).
 	-- Where weights.minSearchRadius is below weights.minRadius, a leg is searched several times: first with turns
 	-- spaced for minSearchRadius (the fallback; no path there fails the plan with "no_path"), then for minRadius,
 	-- halving while above minSearchRadius, until a path costs at most 10% more than the fallback's; if none does,
