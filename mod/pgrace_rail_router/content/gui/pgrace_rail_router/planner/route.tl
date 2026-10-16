@@ -35,13 +35,62 @@ local function stopDir(stops : {Town}, i : integer) : Pt
 	return geo.norm(geo.sub(next.pos, prev.pos))
 end
 
--- Where a station's platforms end, and where its straight approach ends, on its leaving side (forward = true) or
--- its arriving side.
-local function stationEnds(input : Input, station : Station, forward : boolean) : Pt, Pt
+-- Where a station's platforms end, where its straight approach ends, and where the room to turn beyond it ends
+-- (minRadius × tan 22.5°: a 45° turn at full radius), on its leaving side (forward = true) or its arriving side.
+-- The leg's search starts or ends at the last, so it is pulled back (half a cell at a time, at most to the
+-- approach point) while it lies outside the grid or on a blocked cell.
+local function stationEnds(input : Input, station : Station, forward : boolean) : Pt, Pt, Pt
+	local g = input.grid
 	local sign = forward and 1 or -1
 	local half = input.platformLength / 2
 	local c, d = station.site.centre, station.site.dir
-	return geo.add(c, geo.scale(d, sign * half)), geo.add(c, geo.scale(d, sign * (half + APPROACH)))
+	local platformEnd = geo.add(c, geo.scale(d, sign * half))
+	local approach = geo.add(c, geo.scale(d, sign * (half + APPROACH)))
+	local ext = input.weights.minRadius * math.tan(math.pi / 8)
+	while ext > 0 do
+		local extension = geo.add(c, geo.scale(d, sign * (half + APPROACH + ext)))
+		if grid.inside(g, extension) then
+			local ix, iy = grid.cellOf(g, extension)
+			if not g.blocked[grid.index(g, ix, iy)] then
+				return platformEnd, approach, extension
+			end
+		end
+		ext = ext - g.cell / 2
+	end
+	return platformEnd, approach, approach
+end
+
+-- Marks a station's platform cells blocked, so later sites don't overlap it; the cells' old values go into `saved`.
+local function blockPlatforms(input : Input, station : Station, saved : {integer : boolean})
+	local g = input.grid
+	local half = input.platformLength / 2
+	local c, dir = station.site.centre, station.site.dir
+	local d = -half
+	while d <= half + 1e-6 do
+		local ix, iy = grid.cellOf(g, geo.add(c, geo.scale(dir, d)))
+		local i = grid.index(g, ix, iy)
+		if saved[i] == nil then
+			saved[i] = g.blocked[i] == true
+		end
+		g.blocked[i] = true
+		d = d + g.cell / 2
+	end
+end
+
+-- Puts back the cells blockPlatforms marked.
+local function unblockPlatforms(job : Job)
+	if job.saved == nil then
+		return
+	end
+	local g = job.input.grid
+	for i, was in pairs(job.saved) do
+		if was then
+			g.blocked[i] = true
+		else
+			g.blocked[i] = nil
+		end
+	end
+	job.saved = nil
 end
 
 local function fail(job : Job, failure : string, towns : {string}) : boolean
@@ -49,48 +98,69 @@ local function fail(job : Job, failure : string, towns : {string}) : boolean
 	job.result.failure = failure
 	job.result.failureTowns = towns
 	job.phase = "done"
+	unblockPlatforms(job)
 	return true
 end
 
 local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}) : Leg
 	local g, w = input.grid, input.weights
-	local aEnd = stationEnds(input, a, true)
-	local bEnd = stationEnds(input, b, false)
-	-- path runs from a's approach to b's; add the platform ends, and keep both approach points so the line leaves
-	-- and enters the platforms straight.
+	local aEnd, aApproach = stationEnds(input, a, true)
+	local bEnd, bApproach = stationEnds(input, b, false)
+	-- path runs from a's extension point to b's; add the platform ends and approach points, and keep all of them
+	-- fixed so the line leaves and enters the platforms straight and has room to turn at full radius beyond.
+	-- (Where an extension point is its approach point, fillet merges the two.)
 	local middle = smooth.simplify(path, g.cell * SIMPLIFY_SHARE)
-	local pts : {Pt} = { aEnd }
+	local pts : {Pt} = { aEnd, aApproach }
 	for __, p in ipairs(middle) do
 		table.insert(pts, p)
 	end
+	table.insert(pts, bApproach)
 	table.insert(pts, bEnd)
 	local fixed : {boolean} = {}
-	fixed[2], fixed[#pts - 1] = true, true
+	fixed[2], fixed[3], fixed[#pts - 2], fixed[#pts - 1] = true, true, true, true
 	local fitted = smooth.fillet(pts, w.minRadius, fixed)
+	local tight = 0
+	for __, piece in ipairs(fitted.pieces) do
+		if piece.kind == "arc" and piece.radius < w.minRadius - 1e-6 then
+			tight = tight + 1
+		end
+	end
 	local samples = smooth.sample(fitted.pieces, SAMPLE_STEP)
 	local s : {number} = {}
 	local ground : {number} = {}
 	local water : {boolean} = {}
+	local blockedSamples = 0
 	for i, sample in ipairs(samples) do
 		s[i] = sample.s
 		ground[i] = grid.heightAt(g, sample.p)
 		water[i] = grid.waterAt(g, sample.p)
+		local ix, iy = grid.cellOf(g, sample.p)
+		local cell = grid.index(g, ix, iy)
+		if g.blocked[cell] or g.track[cell] then
+			blockedSamples = blockedSamples + 1
+		end
 	end
-	local fit = profile.fit(s, ground, water, w.maxGrade, w.bridgeAbove, w.tunnelBelow)
+	local fit = profile.fit(s, ground, water, w.maxGrade, w.bridgeAbove, w.tunnelBelow, a.z, b.z)
 	local length = 0.0
 	if #s > 0 then
 		length = s[#s]
 	end
 	return { pieces = fitted.pieces, samples = samples, z = fit.z, spans = fit.spans, length = length,
-		minRadius = fitted.minRadius, maxGrade = fit.maxGrade }
+		minRadius = fitted.minRadius, maxGrade = fit.maxGrade, tightCurves = tight, steepEnds = not fit.feasible,
+		blockedSamples = blockedSamples }
 end
 
 local function summarise(input : Input, plan : Plan) : Summary
 	local w = input.weights
 	local sum : Summary = { length = 0, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, maxGrade = 0,
-		minRadius = math.huge, estimate = 0 }
+		minRadius = math.huge, estimate = 0, tightCurves = 0, steepLegs = 0, blockedSamples = 0 }
 	for __, leg in ipairs(plan.legs) do
 		sum.length = sum.length + leg.length
+		sum.tightCurves = sum.tightCurves + leg.tightCurves
+		sum.blockedSamples = sum.blockedSamples + leg.blockedSamples
+		if leg.steepEnds then
+			sum.steepLegs = sum.steepLegs + 1
+		end
 		sum.maxGrade = math.max(sum.maxGrade, leg.maxGrade)
 		sum.minRadius = math.min(sum.minRadius, leg.minRadius)
 		for __, span in ipairs(leg.spans) do
@@ -131,23 +201,36 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	if job.phase == "sites" then
 		local i = job.siteIndex
 		local town = input.stops[i]
+		local prev = plan.stations[i - 1]
+		if prev ~= nil then
+			-- Keep the next site off the earlier platforms (put back once all sites are found).
+			job.saved = job.saved or {}
+			blockPlatforms(input, prev, job.saved)
+		end
 		local site = stations.find(input.grid, town.pos, stopDir(input.stops, i),
 			input.platformLength + 2 * APPROACH, MAX_STATION_RELIEF, MAX_STATION_RADIUS)
 		if site == nil then
 			return fail(job, "no_site", { town.name })
 		end
+		if prev ~= nil then
+			local apart = geo.sub(site.centre, prev.site.centre)
+			if geo.len(apart) < input.platformLength + 2 * APPROACH or geo.dot(apart, prev.site.dir) <= 0 then
+				return fail(job, "too_close", { prev.town.name, town.name })
+			end
+		end
 		table.insert(plan.stations, { town = town, site = site, z = grid.heightAt(input.grid, site.centre) })
 		job.siteIndex = i + 1
 		if job.siteIndex > #input.stops then
+			unblockPlatforms(job)
 			job.phase = "legs"
 		end
 		return false
 	end
 	local a, b = plan.stations[job.legIndex], plan.stations[job.legIndex + 1]
 	if job.search == nil then
-		local __, aApproach = stationEnds(input, a, true)
-		local ___, bApproach = stationEnds(input, b, false)
-		job.search = grid.startSearch(input.grid, aApproach, bApproach, a.site.dir, b.site.dir, input.weights)
+		local aExtension = select(3, stationEnds(input, a, true))
+		local bExtension = select(3, stationEnds(input, b, false))
+		job.search = grid.startSearch(input.grid, aExtension, bExtension, a.site.dir, b.site.dir, input.weights)
 		return false
 	end
 	if not grid.stepSearch(job.search, maxExpansions) then

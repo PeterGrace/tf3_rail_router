@@ -15,8 +15,8 @@ local function flatGrid()
 	return grid.new(-1000, -1500, 100, 81, 31)
 end
 
-local function run(g, stops)
-	local job = route.start({ grid = g, stops = stops, weights = W, platformLength = 160 })
+local function run(g, stops, platformLength, weights)
+	local job = route.start({ grid = g, stops = stops, weights = weights or W, platformLength = platformLength or 160 })
 	local steps = 0
 	while not route.step(job, 500) do
 		steps = steps + 1
@@ -42,6 +42,84 @@ t.test("route: three towns in a row on flat ground", function()
 	t.near(plan.summary.maxGrade, 0, 1e-9, "grade")
 	t.eq(plan.summary.minRadius, math.huge, "straight")
 	t.near(plan.summary.estimate, plan.summary.length * 360, 1, "estimate")
+	t.eq(plan.summary.tightCurves, 0, "no tight curves")
+	t.eq(plan.summary.blockedSamples, 0, "nothing in the way")
+	t.eq(plan.summary.steepLegs, 0, "no steep legs")
+	for __, leg in ipairs(plan.legs) do
+		t.eq(leg.tightCurves, 0, "leg tight curves")
+		t.eq(leg.blockedSamples, 0, "leg blocked samples")
+		t.eq(leg.steepEnds, false, "leg steep ends")
+	end
+end)
+
+t.test("route: trains leave and enter the platforms straight before turning", function()
+	-- y from -1500 to 3500, so C's station fits.
+	local g = grid.new(-1000, -1500, 100, 81, 51)
+	-- B's platforms point from A towards C, so both legs must turn.
+	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 4500, 1500) })
+	t.ok(plan.ok, "ok")
+	for k, leg in ipairs(plan.legs) do
+		local first, last = leg.pieces[1], leg.pieces[#leg.pieces]
+		t.eq(first.kind, "straight", "leg " .. k .. " leaves straight")
+		t.ok(first.length >= 100 - 1e-6, "leg " .. k .. " leaving straight " .. first.length)
+		t.eq(last.kind, "straight", "leg " .. k .. " arrives straight")
+		t.ok(last.length >= 100 - 1e-6, "leg " .. k .. " arriving straight " .. last.length)
+		t.eq(leg.tightCurves, 0, "leg " .. k .. " tight curves")
+		local arcs = 0
+		for __, piece in ipairs(leg.pieces) do
+			if piece.kind == "arc" then
+				arcs = arcs + 1
+			end
+		end
+		t.ok(arcs > 0, "leg " .. k .. " turns")
+	end
+	t.eq(plan.summary.tightCurves, 0, "summary tight curves")
+end)
+
+t.test("route: stations too close together fail", function()
+	local plan = run(flatGrid(), { town(1, "A", 0, 0), town(2, "B", 250, 0) }, 200)
+	t.ok(not plan.ok, "failed")
+	t.eq(plan.failure, "too_close", "reason")
+	t.eq(plan.failureTowns[1], "A", "first")
+	t.eq(plan.failureTowns[2], "B", "second")
+end)
+
+t.test("route: the track meets the stations' heights", function()
+	-- Ground rising 1 m per 100 m eastwards.
+	local g = flatGrid()
+	for iy = 1, 31 do
+		for ix = 1, 81 do
+			g.height[grid.index(g, ix, iy)] = grid.centre(g, ix, iy).x / 100
+		end
+	end
+	local plan = run(g, { ABC[1], ABC[2] })
+	t.ok(plan.ok, "ok")
+	local leg = plan.legs[1]
+	t.near(leg.z[1], plan.stations[1].z, 1e-9, "leaves at A's height")
+	t.near(leg.z[#leg.z], plan.stations[2].z, 1e-9, "arrives at B's height")
+	t.eq(leg.steepEnds, false, "feasible")
+end)
+
+t.test("route: track cutting across an obstacle is counted", function()
+	local g = flatGrid()
+	-- A wall from the bottom edge to y = 250 at x = 2500..2700: the line has to go round its top.
+	for iy = 1, 31 do
+		for ix = 1, 81 do
+			local c = grid.centre(g, ix, iy)
+			if c.x >= 2500 and c.x <= 2700 and c.y <= 250 then
+				g.blocked[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+	local wide = {}
+	for k, v in pairs(W) do
+		wide[k] = v
+	end
+	wide.minRadius = 1500
+	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 5000, 0) }, 160, wide)
+	t.ok(plan.ok, "ok")
+	t.ok(plan.legs[1].blockedSamples > 0, "counted " .. plan.legs[1].blockedSamples)
+	t.eq(plan.summary.blockedSamples, plan.legs[1].blockedSamples, "summary")
 end)
 
 t.test("route: a built-up centre moves the station", function()
