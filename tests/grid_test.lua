@@ -476,3 +476,22 @@ t.test("grid: with a wide radius, the finish can come part-way along a turn's st
 	t.eq(dirOf(path[#path - 2], path[#path - 1]), 2, "after one knight step")
 	t.eq(dirOf(path[#path - 3], path[#path - 2]), 1, "from the east-bound straight")
 end)
+
+t.test("grid: the path's off-centre ends don't cut a blocked cell's corner", function()
+	-- From (40, 20), off its cell's centre, north-east to (760, 780): the diagonal to the cell centre (100, 100) would
+	-- clip the blocked cell round (100, 0); so would the last segment, from (700, 700) into the goal, the blocked cell
+	-- round (700, 800).
+	local g = grid.new(0, 0, 100, 10, 10)
+	g.blocked[grid.index(g, 2, 1)] = true
+	g.blocked[grid.index(g, 8, 9)] = true
+	local ne = { x = 1, y = 1 }
+	local from, to = { x = 40, y = 20 }, { x = 760, y = 780 }
+	local path = run(g, from, to, W, 1000, ne, ne)
+	t.ok(path ~= nil, "found")
+	for i = 2, #path do
+		t.ok(grid.cellsAlong(g, path[i - 1], path[i], function(c)
+			return not g.blocked[c]
+		end), ("segment %d clear: (%.0f, %.0f) to (%.0f, %.0f)"):format(i - 1, path[i - 1].x, path[i - 1].y,
+			path[i].x, path[i].y))
+	end
+end)

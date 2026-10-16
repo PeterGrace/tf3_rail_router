@@ -369,6 +369,7 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 		filling = true, fillQueue = {}, fillHead = 1, fillSeen = {} }
 	turnModel(s, g.cell, s.radius)
 	local start = grid.index(g, sx, sy)
+	s.start = start
 	s.fillQueue[1], s.fillSeen[start] = start, true
 	if start == s.goal then
 		s.filling, s.fillSeen, s.fillQueue = false, nil, nil
@@ -389,6 +390,15 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 		end
 	end
 	return s
+end
+
+-- The path's ends are the asked points, not their cells' centres, so its first and last segments run off the lines
+-- between centres that moves are checked along: a diagonal past a blocked cell's corner then cuts into it. Whether
+-- the segment from p to q is clear of blocked cells.
+local function segmentClear(g : Grid, p : Pt, q : Pt) : boolean
+	return grid.cellsAlong(g, p, q, function(i : integer) : boolean
+		return not g.blocked[i]
+	end)
 end
 
 -- Offers the finish at cost fc, reached from state `from` by `steps` more steps in direction k (0 steps: from a state
@@ -457,7 +467,12 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 					if s.goalDir ~= 0 then
 						turn = turnSteps(prev, s.goalDir)
 					end
-					if turn <= maxTurn then
+					-- The last segment runs from the cell before (or the start point) to the goal point.
+					local before = s.startPt
+					if base > 0 then
+						before = grid.centre(g, ax - DIRS[prev][1], ay - DIRS[prev][2])
+					end
+					if turn <= maxTurn and segmentClear(g, before, s.goalPt) then
 						finish(s, base + w.turnPenalty * turn * turn, node, prev, 0)
 					end
 				end
@@ -478,12 +493,18 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 							nc = nil
 							break
 						end
+						if j == 1 and base == 0 and a == s.start
+							and not segmentClear(g, s.startPt, grid.centre(g, bx + d[1], by + d[2])) then
+							nc = nil
+							break
+						end
 						bx, by = bx + d[1], by + d[2]
 						b = (by - 1) * g.nx + bx
 						nc = nc + c
 						-- Passing through the goal part-way along the straight finishes there, but only heading the
 						-- asked way: a turn here would come too soon after the last.
-						if j < steps and b == s.goal and (s.goalDir == 0 or k == s.goalDir) then
+						if j < steps and b == s.goal and (s.goalDir == 0 or k == s.goalDir)
+							and segmentClear(g, grid.centre(g, bx - d[1], by - d[2]), s.goalPt) then
 							finish(s, nc, node, k, j)
 						end
 					end

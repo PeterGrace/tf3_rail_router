@@ -26,6 +26,8 @@ global record PgraceRailRouterGrid
 		w : PgraceRailRouterModes.Weights
 		startPt : PgraceRailRouterGeo.Pt
 		goalPt : PgraceRailRouterGeo.Pt
+		-- The start cell's index.
+		start : integer
 		-- The goal cell's index, and its column and row.
 		goal : integer
 		gx : integer
@@ -93,7 +95,8 @@ global record PgraceRailRouterGrid
 	-- straight in its new direction for ceil(L / step length) steps in all, each checked and costed as a move of
 	-- its own; passing through the goal cell part-way along, heading in goalDir, finishes there. The start state
 	-- (startDir) may turn at once (the station's extension gives room behind it), as may every state the search
-	-- reaches. With maxCost, the search finishes, not found, once every path left would cost more. A blocked goal
+	-- reaches. The first segment, from `from` to the next cell's centre, and the last, into `to`, must be clear of
+	-- blocked cells too (off-centre ends can cut a blocked cell's corner). With maxCost, the search finishes, not found, once every path left would cost more. A blocked goal
 	-- cell finishes the search at once, not found. The first stepSearch calls flood-fill the cells from the start
 	-- (about one cell per unit of budget, no expansions counted) and finish, not found, if the goal can't be reached
 	-- at all. Entering a road or track cell costs w.roadCrossing or w.trackCrossing; a step from road to road costs
