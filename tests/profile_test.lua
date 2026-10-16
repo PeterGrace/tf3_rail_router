@@ -81,7 +81,9 @@ t.test("profile: pinned ends meet the given heights", function()
 end)
 
 t.test("profile: free ends are feasible", function()
-	local s, ground, water = line(function(x) return 0.05 * x end)
+	-- Within the grade limit, so the track follows the ground to both ends. On ground steeper than the limit the
+	-- free ends are balanced between the two clamp orders instead.
+	local s, ground, water = line(function(x) return 0.02 * x end)
 	local r = profile.fit(s, ground, water, 0.025, 8, 12)
 	t.ok(r.feasible, "feasible")
 	t.near(r.z[1], 0, 1e-9, "start follows the ground")
@@ -174,4 +176,37 @@ t.test("profile: crossings on ground steeper than the limit keep their clearance
 		end
 	end
 	t.ok(gradesWithin(r, s, 0.025), "grades")
+end)
+
+-- A 60 m cosine hill (or valley) in the middle of the 1 km line, level at both ends.
+local function countKind(result, kind)
+	local count, mid = 0, nil
+	for __, span in ipairs(result.spans) do
+		if span.kind == kind then
+			count = count + 1
+			mid = (span.s0 + span.s1) / 2
+		end
+	end
+	return count, mid
+end
+
+local function checkBalanced(sign, kind)
+	local s, ground, water = line(function(x) return sign * 30 * (1 - math.cos(2 * math.pi * x / 1000)) end)
+	local r = profile.fit(s, ground, water, 0.025, 8, 12, 0, 0)
+	local n = #s
+	for k = 1, n do
+		t.near(r.z[k], r.z[n + 1 - k], 1e-6, "symmetric at " .. k)
+	end
+	t.ok(gradesWithin(r, s, 0.025), "grades")
+	local count, mid = countKind(r, kind)
+	t.eq(count, 1, "one " .. kind)
+	t.near(mid, 500, 25, "centred")
+end
+
+t.test("profile: a ridge is tunnelled symmetrically", function()
+	checkBalanced(1, "tunnel")
+end)
+
+t.test("profile: a valley is bridged symmetrically", function()
+	checkBalanced(-1, "bridge")
 end)

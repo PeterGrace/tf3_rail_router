@@ -119,9 +119,9 @@ are never merged away. The track there is lifted to at least 7 m above the groun
 grade limit; the station heights pinned at a leg's ends win if a crossing is too close to them. In Cheapest mode
 roads are crossed on the level.
 
-**Known issue (tuning, milestone 4):** the forward-then-backward grade clamp handles a ridge one-sidedly: the
-forward pass cuts into the near side, so the track is in a tunnel near the leg's start and then runs on a long
-viaduct down the far side, instead of a balanced cut, tunnel and descent.
+The grade clamp runs both ways (start first, and end first) from the same target and the two results are averaged, so
+a ridge or valley is cut symmetrically instead of leaning towards one end; the average keeps the grade limit, the pins
+and the crossing floors.
 
 ### Stations (`stations.tl`)
 
@@ -210,7 +210,6 @@ Each ends with one in-game test by the user.
   edges, and the shortened station extensions add tight-curve warnings there. Candidate fixes: an obstacle-aware
   fillet (shrink or split an arc that crosses blocked cells), or a search with a coarser turn model so the grid path
   already fits the radius. A rotation penalty on station sites gave mixed results in simulation and was not adopted.
-- **One-sided ridge profile.** See "Height profile".
 
 ## Out of scope for version 1
 

@@ -22,7 +22,8 @@ global record PgraceRailRouterProfile
 	end
 
 	-- `s` is metres along the route per sample (increasing), `ground` the ground height and `water` whether it's
-	-- water. The track follows the ground as closely as maxGrade allows, and runs straight between the banks over
+	-- water. The track follows the ground as closely as maxGrade allows, balanced over ridges and valleys (the
+	-- average of the grade clamp run from each end first), and runs straight between the banks over
 	-- water. Water, and track more than bridgeAbove over the ground, are bridges; track more than tunnelBelow under
 	-- it is a tunnel. Runs shorter than 75 m are merged into their neighbours (between two of the same kind it takes
 	-- theirs, else it joins the longer one), so noise doesn't split a bridge; a run over water or a crossing is always

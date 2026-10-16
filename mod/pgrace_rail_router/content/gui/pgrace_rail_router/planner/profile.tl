@@ -114,26 +114,44 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 	if n > 1 and zStart ~= nil and zEnd ~= nil and math.abs(zEnd - zStart) > maxGrade * (s[n] - s[1]) + 1e-9 then
 		feasible = false
 	end
-	-- Forward from the start, then backward from the end, each sample clamped to its neighbour ± the grade limit:
-	-- afterwards every pair is within it.
+	-- Clamp each sample to its neighbour ± the grade limit, one direction after the other, so afterwards every pair is
+	-- within it. A single order is lopsided: over a ridge the first pass lags below the ground on the way up (a tunnel
+	-- near that end) and stays above it on the way down (a long viaduct), and a valley is the reverse. So run both
+	-- orders and average them. Each result keeps the grade limit and the pins, and neither goes under a crossing floor
+	-- (the floor is itself within the grade limit, and the targets are at or above it), so the average keeps all
+	-- three. When the pins are infeasible they still win over the grade, in both.
+	local function clamp(forwardFirst : boolean) : {number}
+		local out : {number} = {}
+		for k = 1, n do
+			out[k] = target[k]
+		end
+		for pass = 1, 2 do
+			if (pass == 1) == forwardFirst then
+				for k = 2, n do
+					local limit = maxGrade * (s[k] - s[k - 1])
+					out[k] = math.max(out[k - 1] - limit, math.min(out[k - 1] + limit, out[k]))
+				end
+				-- The end just reached goes back to its pin before the other pass starts from it.
+				if n > 0 and zEnd ~= nil then
+					out[n] = zEnd
+				end
+			else
+				for k = n - 1, 1, -1 do
+					local limit = maxGrade * (s[k + 1] - s[k])
+					out[k] = math.max(out[k + 1] - limit, math.min(out[k + 1] + limit, out[k]))
+				end
+				if n > 0 and zStart ~= nil then
+					out[1] = zStart
+				end
+			end
+		end
+		return out
+	end
+	local za = clamp(true)
+	local zb = clamp(false)
 	local z : {number} = {}
 	for k = 1, n do
-		z[k] = target[k]
-	end
-	for k = 2, n do
-		local limit = maxGrade * (s[k] - s[k - 1])
-		z[k] = math.max(z[k - 1] - limit, math.min(z[k - 1] + limit, z[k]))
-	end
-	if n > 0 and zEnd ~= nil then
-		z[n] = zEnd
-	end
-	for k = n - 1, 1, -1 do
-		local limit = maxGrade * (s[k + 1] - s[k])
-		z[k] = math.max(z[k + 1] - limit, math.min(z[k + 1] + limit, z[k]))
-	end
-	-- When feasible the backward pass leaves the start alone; when not, the pins win over the grade.
-	if n > 0 and zStart ~= nil then
-		z[1] = zStart
+		z[k] = (za[k] + zb[k]) / 2
 	end
 	local kinds : {string} = {}
 	local maxG = 0.0
