@@ -315,7 +315,7 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 	local g, w = s.g, s.w
 	local cost = s.cost
 	-- A backstop for goals that only the turn limit cuts off: by then the search has gone far past any sensible path.
-	local maxTotal = MAX_EXPANSIONS_PER_CELL * g.nx * g.ny
+	local maxTotal = math.max(20000, MAX_EXPANSIONS_PER_CELL * g.nx * g.ny)
 	while budget > 0 do
 		if #s.heap == 0 then
 			s.done = true
