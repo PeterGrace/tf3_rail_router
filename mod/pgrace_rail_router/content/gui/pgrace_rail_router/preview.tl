@@ -68,12 +68,12 @@ local function segmentKinds(leg : Leg) : {string}
 	local first = 1
 	for i = 1, #leg.samples - 1 do
 		local a, b = leg.samples[i].s, leg.samples[i + 1].s
-		while first <= #spans and spans[first].s1 < a do
+		while first <= #spans and spans[first].s1 <= a do
 			first = first + 1
 		end
 		local kind = "ground"
 		local k = first
-		while k <= #spans and spans[k].s0 <= b do
+		while k <= #spans and spans[k].s0 < b do
 			if spans[k].kind ~= "ground" then
 				kind = spans[k].kind
 				break
