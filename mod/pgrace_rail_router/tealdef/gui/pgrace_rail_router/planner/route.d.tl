@@ -77,14 +77,16 @@ global record PgraceRailRouterRoute
 		siteIndex : integer
 		legIndex : integer
 		search : PgraceRailRouterGrid.Search
+		-- A finished search's path, waiting for the next step to build its leg.
+		path : {PgraceRailRouterGeo.Pt}
 		-- Cells blocked for the earlier platforms during the site search, with their old values.
 		saved : {integer : boolean}
 		result : Plan
 	end
 
 	start : function(input : Input) : Job
-	-- One unit of work: a station site, or up to maxExpansions cells of a leg's search. true once the plan is
-	-- finished (whether it succeeded or not).
+	-- One unit of work: a station site, starting a leg's search, up to maxExpansions cells of it, or building the
+	-- leg from its path (curves, heights). true once the plan is finished (whether it succeeded or not).
 	step : function(job : Job, maxExpansions : integer) : boolean
 	-- Share of the work done, 0 to 1.
 	progress : function(job : Job) : number

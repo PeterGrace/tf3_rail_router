@@ -27,6 +27,8 @@ local SAMPLE_STEP = 25.0
 local SIMPLIFY_SHARE = 0.75
 -- For progress: a station site counts as 1 unit of work, a leg as this many.
 local LEG_WEIGHT = 10
+-- Share of a leg's work that is its search; building it is the rest.
+local SEARCH_SHARE = 0.99
 
 -- The direction of travel at stop i: from the previous stop towards the next.
 local function stopDir(stops : {Town}, i : integer) : Pt
@@ -227,6 +229,17 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		return false
 	end
 	local a, b = plan.stations[job.legIndex], plan.stations[job.legIndex + 1]
+	if job.path ~= nil then
+		table.insert(plan.legs, buildLeg(input, a, b, job.path))
+		job.path = nil
+		job.legIndex = job.legIndex + 1
+		if job.legIndex > #plan.stations - 1 then
+			plan.summary = summarise(input, plan)
+			job.phase = "done"
+			return true
+		end
+		return false
+	end
 	if job.search == nil then
 		local aExtension = select(3, stationEnds(input, a, true))
 		local bExtension = select(3, stationEnds(input, b, false))
@@ -236,17 +249,11 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	if not grid.stepSearch(job.search, maxExpansions) then
 		return false
 	end
-	local path = grid.path(job.search)
+	-- The leg is built on the next step, so no step does both.
+	job.path = grid.path(job.search)
 	job.search = nil
-	if path == nil then
+	if job.path == nil then
 		return fail(job, "no_path", { a.town.name, b.town.name })
-	end
-	table.insert(plan.legs, buildLeg(input, a, b, path))
-	job.legIndex = job.legIndex + 1
-	if job.legIndex > #plan.stations - 1 then
-		plan.summary = summarise(input, plan)
-		job.phase = "done"
-		return true
 	end
 	return false
 end
@@ -261,7 +268,9 @@ function route.progress(job : Job) : number
 	if job.phase == "legs" then
 		done = n + LEG_WEIGHT * (job.legIndex - 1)
 		if job.search ~= nil then
-			done = done + LEG_WEIGHT * grid.progress(job.search)
+			done = done + LEG_WEIGHT * SEARCH_SHARE * grid.progress(job.search)
+		elseif job.path ~= nil then
+			done = done + LEG_WEIGHT * SEARCH_SHARE
 		end
 	end
 	return math.min(1, done / total)

@@ -176,3 +176,17 @@ t.test("route: progress runs from 0 to 1", function()
 	end
 	t.near(route.progress(job), 1, 1e-9, "end")
 end)
+
+t.test("route: a leg is built in a step of its own, after its search", function()
+	local job = route.start({ grid = flatGrid(), stops = ABC, weights = W, platformLength = 160 })
+	local done = false
+	while not done do
+		local legs = #job.result.legs
+		local searching = job.search ~= nil
+		done = route.step(job, 50)
+		if #job.result.legs > legs then
+			t.ok(not searching, "the step that built a leg didn't also search")
+		end
+	end
+	t.eq(#job.result.legs, 2, "legs")
+end)
