@@ -1,0 +1,10 @@
+{
+    "modId": "pgrace_rail_router",
+    "revision": 1,
+    "severityAdd": "None",
+    "severityRemove": "None",
+    "cosmetic": true,
+    "dependencies": null,
+    "incompatibilities": null,
+    "params": null
+}

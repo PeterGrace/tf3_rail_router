@@ -1,0 +1,15 @@
+{
+    "authors": [
+        {
+            "name": "Peter Grace",
+            "role": "CREATOR"
+        }
+    ],
+    "name": "Rail Router",
+    "summary": "TODO: one line, at most 100 characters.",
+    "description": "TODO: plain-text description (description.html is what mod.io shows).",
+    "tags": [
+        "Script Mod"
+    ],
+    "url": ""
+}

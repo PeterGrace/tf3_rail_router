@@ -1,0 +1,9 @@
+{
+    "archives": null,
+    "files": [
+        "gui/pgrace_rail_router/industry_plugin.res.lua",
+        "gui/pgrace_rail_router/pgrace_rail_router.script.tl",
+        "gui/pgrace_rail_router/util.d.tl",
+        "gui/pgrace_rail_router/util.tl"
+    ]
+}
