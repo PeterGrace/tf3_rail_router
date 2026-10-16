@@ -78,3 +78,38 @@ t.test("smooth: samples cover the pieces", function()
 		t.near(math.sqrt(dx * dx + dy * dy), 200, 1e-6, "on the arc")
 	end
 end)
+
+t.test("smooth: simplify measures to the segment, not the line through it", function()
+	-- The middle point overshoots the end along the same line: a reversal, not a straight.
+	local pts = smooth.simplify({ P(0, 0), P(2000, 0), P(1000, 0) }, 10)
+	t.eq(#pts, 3, "overshoot kept")
+end)
+
+t.test("smooth: duplicate points don't make zero-radius arcs", function()
+	local fixed = {}
+	fixed[2], fixed[3] = true, true
+	local r = smooth.fillet({ P(0, 0), P(1000, 0), P(1000, 0), P(1000, 1000) }, 200, fixed)
+	t.near(r.minRadius, 200, 1e-6, "radius kept")
+	local arcs = 0
+	for __, piece in ipairs(r.pieces) do
+		if piece.kind == "arc" then
+			arcs = arcs + 1
+		end
+	end
+	t.eq(arcs, 1, "one arc")
+	local straightLine = smooth.fillet({ P(0, 0), P(1000, 0), P(1000, 0), P(2000, 0) }, 200, {})
+	t.eq(#straightLine.pieces, 1, "duplicate on a straight")
+	t.eq(straightLine.minRadius, math.huge, "no arcs")
+	local lastDup = smooth.fillet({ P(0, 0), P(1000, 0), P(1000, 0) }, 200, {})
+	t.eq(#lastDup.pieces, 1, "duplicate end")
+	t.near(lastDup.pieces[1].length, 1000, 1e-9, "end kept")
+end)
+
+t.test("smooth: fillet of fewer than two points has no pieces", function()
+	for __, pts in ipairs({ {}, { P(5, 5) } }) do
+		local r = smooth.fillet(pts, 200, {})
+		t.eq(#r.pieces, 0, "pieces")
+		t.eq(r.minRadius, math.huge, "radius")
+		t.eq(r.removed, 0, "removed")
+	end
+end)

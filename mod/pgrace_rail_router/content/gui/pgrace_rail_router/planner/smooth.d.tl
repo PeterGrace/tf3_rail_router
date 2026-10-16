@@ -28,11 +28,13 @@ global record PgraceRailRouterSmooth
 		removed : integer
 	end
 
-	-- Douglas–Peucker: drops points within `tolerance` metres of the line through their neighbours. Keeps the ends.
+	-- Douglas–Peucker: drops points within `tolerance` metres of the segment between their neighbours (so a point
+	-- that overshoots the segment's end is kept). Keeps the ends.
 	simplify : function(points : {PgraceRailRouterGeo.Pt}, tolerance : number) : {PgraceRailRouterGeo.Pt}
 	-- Rounds each corner with an arc of `radius`. Where neighbouring arcs don't fit, a point is dropped (the one with
 	-- the gentler turn); points marked in `fixed` (by index) and the two ends are never dropped, and arcs between
-	-- them are tightened to fit instead.
+	-- them are tightened to fit instead. Consecutive points closer than 1e-6 m are merged first (fixed if either
+	-- was; the ends stay). Fewer than two points give no pieces.
 	fillet : function(points : {PgraceRailRouterGeo.Pt}, radius : number, fixed : {boolean}) : Result
 	-- The point `d` metres along a piece.
 	pointAt : function(piece : Piece, d : number) : PgraceRailRouterGeo.Pt

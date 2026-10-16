@@ -7,13 +7,15 @@ local type Piece = PgraceRailRouterSmooth.Piece
 local type Sample = PgraceRailRouterSmooth.Sample
 local type Result = PgraceRailRouterSmooth.Result
 
+-- Distance from p to the segment a–b (not the infinite line through it, so overshoots count).
 local function perpDist(p : Pt, a : Pt, b : Pt) : number
 	local ab = geo.sub(b, a)
-	local l = geo.len(ab)
-	if l < 1e-9 then
+	local l2 = geo.dot(ab, ab)
+	if l2 < 1e-18 then
 		return geo.dist(p, a)
 	end
-	return math.abs(geo.cross(ab, geo.sub(p, a))) / l
+	local f = math.max(0, math.min(1, geo.dot(geo.sub(p, a), ab) / l2))
+	return geo.dist(p, geo.add(a, geo.scale(ab, f)))
 end
 
 function smooth.simplify(points : {Pt}, tolerance : number) : {Pt}
@@ -92,12 +94,31 @@ local function build(pts : {Pt}, theta : {number}, t : {number}, removed : integ
 	return { pieces = pieces, minRadius = minRadius, removed = removed }
 end
 
+-- Points closer than this to the one before are merged into it.
+local SAME = 1e-6
+
 function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}) : Result
+	if #points < 2 then
+		return { pieces = {}, minRadius = math.huge, removed = 0 }
+	end
+	-- Merge repeated points (a merged point is fixed if either was); the ends always stay.
 	local pts : {Pt} = {}
 	local fix : {boolean} = {}
+	local count = #points
 	for i, p in ipairs(points) do
-		pts[i] = p
-		fix[i] = fixed[i] == true
+		local m = #pts
+		if m > 1 and geo.dist(pts[m], p) < SAME then
+			-- The last point replaces the one it repeats, so the end stays where it was.
+			if i == count then
+				pts[m] = p
+			end
+			fix[m] = fix[m] or fixed[i] == true
+		elseif m == 1 and i < count and geo.dist(pts[1], p) < SAME then
+			fix[1] = true
+		else
+			table.insert(pts, p)
+			table.insert(fix, fixed[i] == true)
+		end
 	end
 	fix[1], fix[#pts] = true, true
 	local removed = 0
