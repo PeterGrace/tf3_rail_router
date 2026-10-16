@@ -7,6 +7,7 @@ local profile = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/
 local route : PgraceRailRouterRoute = {}
 
 local type Pt = PgraceRailRouterGeo.Pt
+local type Grid = PgraceRailRouterGrid.Grid
 local type Town = PgraceRailRouterCorridor.Town
 local type Input = PgraceRailRouterRoute.Input
 local type Station = PgraceRailRouterRoute.Station
@@ -25,6 +26,10 @@ local MAX_STATION_RADIUS = 1500.0
 local SAMPLE_STEP = 25.0
 -- Grid paths are simplified to within this share of a cell before the curves are fitted.
 local SIMPLIFY_SHARE = 0.75
+-- Most the ground under the smoothed track may differ from the ground under the nearest point of the grid path it
+-- replaces (metres): more, and it has left the path's level for a hillside, where it would need a cutting or a tunnel
+-- the search didn't pay for. A starting value, tuned in-game.
+local MAX_GROUND_DIFF = 4.0
 -- For progress: a station site counts as 1 unit of work, a leg as this many.
 local LEG_WEIGHT = 10
 -- Share of a leg's work that is its search; building it is the rest.
@@ -117,23 +122,104 @@ local function fail(job : Job, failure : string, towns : {string}) : boolean
 	return true
 end
 
+-- Whether track at a point stays on the kind of ground the grid path had, so that smoothing doesn't take it where
+-- the search chose not to go: clear(p, from, to) is true when p is inside the grid and off blocked cells, over water
+-- only where the nearest of path[from..to] is, and within MAX_GROUND_DIFF of that point's ground.
+local function pathGuard(g : Grid, path : {Pt}) : function(p : Pt, from : integer, to : integer) : boolean
+	local n = #path
+	local pathZ : {number} = {}
+	local pathWet : {boolean} = {}
+	-- The longest step between neighbouring path points: the nearest-point search skips ahead by it.
+	local maxGap = 1e-9
+	for k, q in ipairs(path) do
+		pathZ[k] = grid.heightAt(g, q)
+		pathWet[k] = grid.waterAt(g, q)
+		if k > 1 then
+			maxGap = math.max(maxGap, geo.dist(path[k - 1], q))
+		end
+	end
+	-- Checks come in runs along a piece, so the last answer is a good first guess for the next.
+	local hint = 1
+	local function nearest(p : Pt, from : integer, to : integer) : integer
+		from, to = math.max(1, from), math.min(n, to)
+		if hint < from or hint > to then
+			hint = from
+		end
+		local best, bestD = hint, geo.dist(p, path[hint])
+		local k = from
+		while k <= to do
+			local d = geo.dist(p, path[k])
+			if d < bestD then
+				best, bestD = k, d
+			end
+			-- path[k + m] is at least d − m × maxGap from p, so the points up to k + (d − bestD) / maxGap can't be
+			-- nearer than best: skip them. Far from p that's most of the path.
+			k = k + 1 + math.floor((d - bestD) / maxGap)
+		end
+		hint = best
+		return best
+	end
+	return function(p : Pt, from : integer, to : integer) : boolean
+		if not grid.inside(g, p) then
+			return false
+		end
+		local ix, iy = grid.cellOf(g, p)
+		local cell = grid.index(g, ix, iy)
+		if g.blocked[cell] then
+			return false
+		end
+		local k = nearest(p, from, to)
+		if g.water[cell] and not pathWet[k] then
+			return false
+		end
+		return math.abs(grid.heightAt(g, p) - pathZ[k]) <= MAX_GROUND_DIFF
+	end
+end
+
 local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, taken : {integer : boolean}) : Leg
 	local g, w = input.grid, input.weights
 	local aEnd, aApproach = stationEnds(input, a, true, taken)
 	local bEnd, bApproach = stationEnds(input, b, false, taken)
+	-- Simplifying and filleting are guarded, so the track keeps to the ground the path chose (off water, hillsides
+	-- and buildings it went round), checked every quarter cell.
+	local clear = pathGuard(g, path)
+	local step = g.cell / 4
+	local function straightOnPath(i : integer, j : integer) : boolean
+		local from, to = path[i], path[j]
+		local length = geo.dist(from, to)
+		local dir = geo.scale(geo.sub(to, from), 1 / math.max(length, 1e-9))
+		local d = 0.0
+		while true do
+			if not clear(geo.add(from, geo.scale(dir, math.min(d, length))), i, j) then
+				return false
+			end
+			if d >= length then
+				return true
+			end
+			d = d + step
+		end
+	end
 	-- path runs from a's extension point to b's; add the platform ends and approach points, and keep all of them
 	-- fixed so the line leaves and enters the platforms straight and has room to turn at full radius beyond.
-	-- (Where an extension point is its approach point, fillet merges the two.)
-	local middle = smooth.simplify(path, g.cell * SIMPLIFY_SHARE)
+	-- (Where an extension point is its approach point, fillet merges the two.) raw maps each point to the path
+	-- point it stands for, for the guard.
+	local middle, kept = smooth.simplify(path, g.cell * SIMPLIFY_SHARE, straightOnPath)
 	local pts : {Pt} = { aEnd, aApproach }
-	for __, p in ipairs(middle) do
+	local raw : {integer} = { 1, 1 }
+	for k, p in ipairs(middle) do
 		table.insert(pts, p)
+		table.insert(raw, kept[k])
 	end
 	table.insert(pts, bApproach)
 	table.insert(pts, bEnd)
+	table.insert(raw, #path)
+	table.insert(raw, #path)
 	local fixed : {boolean} = {}
 	fixed[2], fixed[3], fixed[#pts - 2], fixed[#pts - 1] = true, true, true, true
-	local fitted = smooth.fillet(pts, w.minRadius, fixed)
+	local fitted = smooth.fillet(pts, w.minRadius, fixed, { step = step, clear = function(p : Pt, from : integer,
+			to : integer) : boolean
+		return clear(p, raw[from], raw[to])
+	end })
 	local tight = 0
 	for __, piece in ipairs(fitted.pieces) do
 		if piece.kind == "arc" and piece.radius < w.minRadius - 1e-6 then
@@ -165,17 +251,18 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, ta
 	end
 	return { pieces = fitted.pieces, samples = samples, z = fit.z, spans = fit.spans, length = length,
 		minRadius = fitted.minRadius, maxGrade = fit.maxGrade, tightCurves = tight, steepEnds = not fit.feasible,
-		blockedSamples = blockedSamples }
+		blockedSamples = blockedSamples, guarded = fitted.guarded }
 end
 
 local function summarise(input : Input, plan : Plan) : Summary
 	local w = input.weights
 	local sum : Summary = { length = 0, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, maxGrade = 0,
-		minRadius = math.huge, estimate = 0, tightCurves = 0, steepLegs = 0, blockedSamples = 0 }
+		minRadius = math.huge, estimate = 0, tightCurves = 0, steepLegs = 0, blockedSamples = 0, guarded = 0 }
 	for __, leg in ipairs(plan.legs) do
 		sum.length = sum.length + leg.length
 		sum.tightCurves = sum.tightCurves + leg.tightCurves
 		sum.blockedSamples = sum.blockedSamples + leg.blockedSamples
+		sum.guarded = sum.guarded + leg.guarded
 		if leg.steepEnds then
 			sum.steepLegs = sum.steepLegs + 1
 		end

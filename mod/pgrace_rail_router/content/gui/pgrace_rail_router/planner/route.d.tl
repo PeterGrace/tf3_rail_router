@@ -39,6 +39,10 @@ global record PgraceRailRouterRoute
 		-- Samples whose nearest cell is blocked by a building or obstacle (curves cutting corners, mostly). Existing
 		-- track and roads are crossed by bridges instead (see the spans).
 		blockedSamples : integer
+		-- Path points kept, and arcs tightened, so that the smoothed track keeps to the ground the grid path chose:
+		-- inside the grid, off blocked cells, over water only where the path is, and within 4 m of the ground under
+		-- the nearest path point (smooth.Result.guarded). For the log.
+		guarded : integer
 	end
 
 	record Summary
@@ -56,6 +60,8 @@ global record PgraceRailRouterRoute
 		-- Sums over the legs: arcs tighter than weights.minRadius, and samples over blocked cells.
 		tightCurves : integer
 		blockedSamples : integer
+		-- Sum over the legs of Leg.guarded.
+		guarded : integer
 		-- Legs whose steepEnds is set.
 		steepLegs : integer
 	end

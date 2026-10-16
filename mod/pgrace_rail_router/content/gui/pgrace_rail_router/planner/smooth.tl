@@ -6,6 +6,7 @@ local type Pt = PgraceRailRouterGeo.Pt
 local type Piece = PgraceRailRouterSmooth.Piece
 local type Sample = PgraceRailRouterSmooth.Sample
 local type Result = PgraceRailRouterSmooth.Result
+local type Guard = PgraceRailRouterSmooth.Guard
 
 -- Distance from p to the segment a–b (not the infinite line through it, so overshoots count).
 local function perpDist(p : Pt, a : Pt, b : Pt) : number
@@ -18,7 +19,8 @@ local function perpDist(p : Pt, a : Pt, b : Pt) : number
 	return geo.dist(p, geo.add(a, geo.scale(ab, f)))
 end
 
-function smooth.simplify(points : {Pt}, tolerance : number) : {Pt}
+function smooth.simplify(points : {Pt}, tolerance : number, clear ?: function(i : integer, j : integer) : boolean)
+		: {Pt}, {integer}
 	local n = #points
 	local keep : {boolean} = {}
 	keep[1], keep[n] = true, true
@@ -33,19 +35,28 @@ function smooth.simplify(points : {Pt}, tolerance : number) : {Pt}
 				worst, worstD = k, d
 			end
 		end
+		local split = 0
 		if worst > 0 and worstD > tolerance then
-			keep[worst] = true
-			table.insert(stack, { i, worst })
-			table.insert(stack, { worst, j })
+			split = worst
+		elseif j - i > 1 and clear ~= nil and not clear(i, j) then
+			-- Within tolerance but not clear: every point is near the straight, so halve the range instead.
+			split = math.floor((i + j) / 2)
+		end
+		if split > 0 then
+			keep[split] = true
+			table.insert(stack, { i, split })
+			table.insert(stack, { split, j })
 		end
 	end
 	local result : {Pt} = {}
+	local indices : {integer} = {}
 	for k = 1, n do
 		if keep[k] then
 			table.insert(result, points[k])
+			table.insert(indices, k)
 		end
 	end
-	return result
+	return result, indices
 end
 
 local function straight(pieces : {Piece}, a : Pt, b : Pt)
@@ -55,8 +66,10 @@ local function straight(pieces : {Piece}, a : Pt, b : Pt)
 	end
 end
 
--- Pieces for points whose corner tangents (t) fit, tightening any that overlap between fixed points.
-local function build(pts : {Pt}, theta : {number}, t : {number}, removed : integer) : Result
+-- Pieces for points whose corner tangents (t) fit, tightening any that overlap between fixed points. Also returns,
+-- for each arc (by piece index), the point whose corner it rounds.
+local function build(pts : {Pt}, theta : {number}, t : {number}, removed : integer, guarded : integer)
+		: Result, {integer : integer}
 	local n = #pts
 	local fit : {number} = {}
 	for i = 1, n do
@@ -72,6 +85,7 @@ local function build(pts : {Pt}, theta : {number}, t : {number}, removed : integ
 		end
 	end
 	local pieces : {Piece} = {}
+	local corners : {integer : integer} = {}
 	local minRadius = math.huge
 	local cur = pts[1]
 	for i = 2, n - 1 do
@@ -86,24 +100,38 @@ local function build(pts : {Pt}, theta : {number}, t : {number}, removed : integ
 			straight(pieces, cur, a)
 			table.insert(pieces, { kind = "arc", a = a, b = b, length = r * theta[i], radius = r, centre = centre,
 				turn = side * theta[i] })
+			corners[#pieces] = i
 			minRadius = math.min(minRadius, r)
 			cur = b
 		end
 	end
 	straight(pieces, cur, pts[n])
-	return { pieces = pieces, minRadius = minRadius, removed = removed }
+	return { pieces = pieces, minRadius = minRadius, removed = removed, guarded = guarded }, corners
 end
 
 -- Points closer than this to the one before are merged into it.
 local SAME = 1e-6
 
-function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}) : Result
-	if #points < 2 then
-		return { pieces = {}, minRadius = math.huge, removed = 0 }
+-- Whether the points every `step` (or less) along a piece, both ends included, pass the guard.
+local function pieceClear(piece : Piece, guard : Guard, from : integer, to : integer) : boolean
+	local m = math.max(1, math.ceil(piece.length / guard.step))
+	for k = 0, m do
+		if not guard.clear(smooth.pointAt(piece, piece.length * k / m), from, to) then
+			return false
+		end
 	end
-	-- Merge repeated points (a merged point is fixed if either was); the ends always stay.
+	return true
+end
+
+function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard ?: Guard) : Result
+	if #points < 2 then
+		return { pieces = {}, minRadius = math.huge, removed = 0, guarded = 0 }
+	end
+	-- Merge repeated points (a merged point is fixed if either was); the ends always stay. src is the input index
+	-- each point came from, for the guard.
 	local pts : {Pt} = {}
 	local fix : {boolean} = {}
+	local src : {integer} = {}
 	local count = #points
 	for i, p in ipairs(points) do
 		local m = #pts
@@ -111,6 +139,7 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}) : Resu
 			-- The last point replaces the one it repeats, so the end stays where it was.
 			if i == count then
 				pts[m] = p
+				src[m] = i
 			end
 			fix[m] = fix[m] or fixed[i] == true
 		elseif m == 1 and i < count and geo.dist(pts[1], p) < SAME then
@@ -118,14 +147,16 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}) : Resu
 		else
 			table.insert(pts, p)
 			table.insert(fix, fixed[i] == true)
+			table.insert(src, i)
 		end
 	end
 	fix[1], fix[#pts] = true, true
-	local removed = 0
+	local removed, guarded = 0, 0
+	local theta : {number} = {}
+	local t : {number} = {}
 	while true do
 		local n = #pts
-		local theta : {number} = {}
-		local t : {number} = {}
+		theta, t = {}, {}
 		for i = 1, n do
 			theta[i], t[i] = 0, 0
 		end
@@ -149,11 +180,51 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}) : Resu
 			end
 		end
 		if victim == nil then
-			return build(pts, theta, t, removed)
+			break
 		end
-		table.remove(pts, victim)
-		table.remove(fix, victim)
-		removed = removed + 1
+		local dropOk = true
+		if guard ~= nil then
+			local a, b = pts[victim - 1], pts[victim + 1]
+			dropOk = pieceClear({ kind = "straight", a = a, b = b, length = geo.dist(a, b) }, guard, src[victim - 1],
+				src[victim + 1])
+		end
+		if dropOk then
+			table.remove(pts, victim)
+			table.remove(fix, victim)
+			table.remove(src, victim)
+			removed = removed + 1
+		else
+			-- The straight without it would leave the ground the path chose: keep it, and let the arcs either side
+			-- tighten to fit instead.
+			fix[victim] = true
+			guarded = guarded + 1
+		end
+	end
+	local result, corners = build(pts, theta, t, removed, guarded)
+	if guard == nil then
+		return result
+	end
+	-- Halve the radius of each arc that leaves the guard's ground until every arc is clear, or one would get tighter
+	-- than a guard step (that one then stays as it is). Tightening one arc can give its neighbours room to widen
+	-- again, so every arc is checked each round.
+	local tightened : {boolean} = {}
+	while true do
+		local changed = false
+		for k, piece in ipairs(result.pieces) do
+			local i = corners[k]
+			if i ~= nil and piece.radius / 2 >= guard.step and not pieceClear(piece, guard, src[i - 1], src[i + 1]) then
+				t[i] = piece.radius / 2 * math.tan(theta[i] / 2)
+				if not tightened[i] then
+					tightened[i] = true
+					guarded = guarded + 1
+				end
+				changed = true
+			end
+		end
+		if not changed then
+			return result
+		end
+		result, corners = build(pts, theta, t, removed, guarded)
 	end
 end
 

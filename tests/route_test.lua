@@ -100,7 +100,7 @@ t.test("route: the track meets the stations' heights", function()
 	t.eq(leg.steepEnds, false, "feasible")
 end)
 
-t.test("route: track cutting across an obstacle is counted", function()
+t.test("route: the curves keep off buildings the search went round", function()
 	local g = flatGrid()
 	-- A wall from the bottom edge to y = 250 at x = 2500..2700: the line has to go round its top.
 	for iy = 1, 31 do
@@ -118,8 +118,10 @@ t.test("route: track cutting across an obstacle is counted", function()
 	wide.minRadius = 1500
 	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 5000, 0) }, 160, wide)
 	t.ok(plan.ok, "ok")
-	t.ok(plan.legs[1].blockedSamples > 0, "counted " .. plan.legs[1].blockedSamples)
-	t.eq(plan.summary.blockedSamples, plan.legs[1].blockedSamples, "summary")
+	-- The old smoothing cut the wall's corner (and counted the samples there).
+	t.eq(plan.legs[1].blockedSamples, 0, "blocked samples")
+	t.eq(plan.summary.blockedSamples, 0, "summary")
+	t.ok(plan.legs[1].guarded > 0, "guarded")
 end)
 
 t.test("route: a built-up centre moves the station", function()
@@ -292,5 +294,76 @@ t.test("route: the straight beyond a station's approach stops short of a buildin
 	t.ok(start.x > 180 - 1e-6, "and not behind the approach: x " .. start.x)
 	for x = 180, start.x, 5 do
 		t.ok(not g.blocked[grid.index(g, grid.cellOf(g, { x = x, y = 0 }))], "straight clear at x " .. x)
+	end
+end)
+
+-- A disc of the flat grid around (3000, -300), 1100 m across the radius, set by `mark(g, i)`: the line from A (0, 0)
+-- to B (6000, 0) has to go round its northern edge.
+local function roundGrid(mark)
+	local g = flatGrid()
+	for iy = 1, 31 do
+		for ix = 1, 81 do
+			local c = grid.centre(g, ix, iy)
+			local dx, dy = c.x - 3000, c.y + 300
+			if math.sqrt(dx * dx + dy * dy) <= 1100 then
+				mark(g, grid.index(g, ix, iy))
+			end
+		end
+	end
+	return g
+end
+
+local function countKind(leg, kind)
+	local n = 0
+	for __, span in ipairs(leg.spans) do
+		if span.kind == kind then
+			n = n + 1
+		end
+	end
+	return n
+end
+
+t.test("route: the curves keep to the lake shore the search followed", function()
+	local g = roundGrid(function(g, i)
+		g.water[i] = true
+	end)
+	-- A wide radius made the old smoothing cut 600 m across the lake's edge on a bridge.
+	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 6000, 0) }, 160, withWeights({ minRadius = 1000 }))
+	t.ok(plan.ok, "ok")
+	local leg = plan.legs[1]
+	for __, sample in ipairs(leg.samples) do
+		t.ok(not grid.waterAt(g, sample.p), ("dry at (%.0f, %.0f)"):format(sample.p.x, sample.p.y))
+	end
+	t.eq(countKind(leg, "bridge"), 0, "no bridge")
+	t.ok(leg.guarded > 0, "guarded " .. leg.guarded)
+	t.eq(plan.summary.guarded, leg.guarded, "summary")
+end)
+
+t.test("route: the curves go round the end of a steep hill, not through it", function()
+	local g = roundGrid(function(g, i)
+		g.height[i] = 60
+	end)
+	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 6000, 0) }, 160, withWeights({ minRadius = 600 }))
+	t.ok(plan.ok, "ok")
+	t.eq(countKind(plan.legs[1], "tunnel"), 0, "no tunnel")
+	t.ok(plan.legs[1].guarded > 0, "guarded")
+end)
+
+t.test("route: on flat open ground the guard changes nothing", function()
+	-- y from -1500 to 3500, so C's station fits. Pieces and lengths from before the guard.
+	local g = grid.new(-1000, -1500, 100, 81, 51)
+	local stops = { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 4500, 1500) }
+	local before = { [220] = { { 5, 2854.558372 }, { 7, 2009.573552 } },
+		[1000] = { { 7, 2881.384564 }, { 5, 2023.974285 } } }
+	for radius, legs in pairs(before) do
+		local plan = run(g, stops, 160, withWeights({ minRadius = radius }))
+		t.ok(plan.ok, "ok")
+		t.eq(plan.summary.guarded, 0, radius .. ": guarded")
+		for k, leg in ipairs(plan.legs) do
+			t.eq(#leg.pieces, legs[k][1], radius .. ": leg " .. k .. " pieces")
+			t.near(leg.length, legs[k][2], 1e-3, radius .. ": leg " .. k .. " length")
+			t.near(leg.minRadius, radius, 1e-6, radius .. ": leg " .. k .. " radius")
+			t.eq(leg.guarded, 0, radius .. ": leg " .. k .. " guarded")
+		end
 	end
 end)

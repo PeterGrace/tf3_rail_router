@@ -373,7 +373,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				.. " frames; slowest step sites " .. tostring(work.slowestStepUs.sites or 0) .. " us, legs "
 				.. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
 				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0) .. ", survey margin " .. tostring(work.margin)
-				.. ", retries " .. tostring(work.retries))
+				.. ", retries " .. tostring(work.retries) .. ", guarded "
+				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0))
 			if not plan.ok and plan.failure == "no_path" and work.retries < MAX_RETRIES then
 				-- Perhaps the way round lies outside the surveyed area: start over on a wider one.
 				work.retries = work.retries + 1

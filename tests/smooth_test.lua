@@ -113,3 +113,95 @@ t.test("smooth: fillet of fewer than two points has no pieces", function()
 		t.eq(r.removed, 0, "removed")
 	end
 end)
+
+t.test("smooth: simplify gives the kept points' indices", function()
+	local pts, idx = smooth.simplify({ P(0, 0), P(500, 0), P(1000, 0), P(1000, 500), P(1000, 1000) }, 10)
+	t.eq(#idx, #pts, "one index per point")
+	t.eq(idx[1], 1, "first")
+	t.eq(idx[2], 3, "corner")
+	t.eq(idx[3], 5, "last")
+end)
+
+t.test("smooth: simplify splits a straight that isn't clear", function()
+	local line = { P(0, 0), P(100, 0), P(200, 0), P(300, 1), P(400, 0) }
+	-- Everything is within tolerance, but the whole range is refused: split at the middle index.
+	local pts, idx = smooth.simplify(line, 10, function(i, j)
+		return not (i == 1 and j == 5)
+	end)
+	t.eq(#pts, 3, "an interior point kept")
+	t.eq(idx[2], 3, "the middle one")
+	t.eq(pts[2].x, 200, "its x")
+	-- Nothing is ever clear: every point stays, and ranges without an interior point aren't split.
+	local all = smooth.simplify(line, 10, function()
+		return false
+	end)
+	t.eq(#all, 5, "all kept")
+	-- A clear() that always agrees changes nothing.
+	t.eq(#smooth.simplify(line, 10, function()
+		return true
+	end), 2, "as without")
+end)
+
+-- A guard refusing every point within `r` of `c`.
+local function disc(c, r, step)
+	return { step = step, clear = function(p)
+		local dx, dy = p.x - c.x, p.y - c.y
+		return dx * dx + dy * dy > r * r
+	end }
+end
+
+local function minDist(pieces, c, step)
+	local best = math.huge
+	for __, sample in ipairs(smooth.sample(pieces, step)) do
+		local dx, dy = sample.p.x - c.x, sample.p.y - c.y
+		best = math.min(best, math.sqrt(dx * dx + dy * dy))
+	end
+	return best
+end
+
+t.test("smooth: a guarded fillet keeps a point whose removal would cut through the disc", function()
+	local jog = { P(0, 0), P(500, 0), P(550, 50), P(1000, 50) }
+	local c = P(500, 40)
+	local plain = smooth.fillet(jog, 200, {})
+	t.eq(plain.removed, 1, "unguarded drops a point")
+	t.ok(minDist(plain.pieces, c, 2) < 8, "and cuts through the disc")
+	local r = smooth.fillet(jog, 200, {}, disc(c, 8, 5))
+	-- The point at (550, 50) goes instead: the straight left without it is clear.
+	t.eq(r.removed, 1, "the other point dropped")
+	t.ok(r.guarded > 0, "guarded " .. r.guarded)
+	t.ok(minDist(r.pieces, P(500, 0), 1) < 5, "the corner kept")
+	t.ok(minDist(r.pieces, c, 2) > 8, "clear of the disc")
+end)
+
+t.test("smooth: a guarded fillet tightens an arc that crosses the disc", function()
+	local corner = { P(0, 0), P(1000, 0), P(1000, 1000) }
+	local c = P(960, 40)
+	local plain = smooth.fillet(corner, 200, {})
+	t.ok(minDist(plain.pieces, c, 2) < 30, "unguarded cuts through")
+	local r = smooth.fillet(corner, 200, {}, disc(c, 30, 10))
+	t.ok(r.guarded > 0, "guarded " .. r.guarded)
+	t.ok(minDist(r.pieces, c, 2) > 30, "clear of the disc")
+	t.near(r.minRadius, 50, 1e-6, "halved twice")
+end)
+
+t.test("smooth: a guard that finds nothing changes nothing", function()
+	local jog = { P(0, 0), P(500, 0), P(550, 50), P(1000, 50) }
+	local plain = smooth.fillet(jog, 200, {})
+	local r = smooth.fillet(jog, 200, {}, disc(P(5000, 5000), 10, 10))
+	t.eq(r.guarded, 0, "guarded")
+	t.eq(r.removed, plain.removed, "removed")
+	t.eq(#r.pieces, #plain.pieces, "pieces")
+	t.near(r.minRadius, plain.minRadius, 1e-9, "radius")
+end)
+
+t.test("smooth: the guard is asked about the input points each piece replaces", function()
+	-- Point 2 is dropped: the straight from 1 to 3 replaces input points 1 to 3, and the arc at 3 (between 1 and 4)
+	-- replaces 1 to 4.
+	local seen = {}
+	smooth.fillet({ P(0, 0), P(500, 0), P(550, 50), P(1000, 50) }, 200, {}, { step = 50, clear = function(p, from, to)
+		seen[from .. "-" .. to] = true
+		return true
+	end })
+	t.ok(seen["1-3"], "1-3")
+	t.ok(seen["1-4"], "1-4")
+end)
