@@ -153,7 +153,7 @@ content.
 
 ## Preview (`preview.tl`)
 
-Static cargo-flow arrows (`FlowData`, speed 0) along the track as chords of about 200 m between height samples, each
+Static cargo-flow arrows (`FlowData`, speed 0) along the track as chords of about 100 m between height samples, each
 coloured by the kind of span it covers (green ground, blue bridge, orange tunnel), plus one white arrow along each
 station's platforms in the direction of travel. They're drawn through a map action (`useAction` +
 `setActiveOwnerOverride`, as in Jam Session, with `accessNotificationCacheFn` left nil). When the preview is turned

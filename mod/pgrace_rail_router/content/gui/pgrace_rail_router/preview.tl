@@ -14,8 +14,9 @@ local type FlowData = LayerConfig.CargoFlowRenderableConfig.FlowData
 
 local LOG_PREFIX = "[rail_router] "
 local ACTION_KEY = "pgrace_rail_router_route"
--- Arrows are drawn as arcs rising about 6% of their length, so long stretches are split into chords this long.
-local CHORD = 200.0
+-- Arrows are drawn as arcs rising about 6% of their length, so long stretches are split into chords this long:
+-- at 200 m the arches read as a bouncing route from a low camera.
+local CHORD = 100.0
 -- Arrows sit this far above the track height, so the ground doesn't hide them (metres).
 local LIFT = 3.0
 -- Camera framing: distance as a multiple of the route's extent, clamped (focusPosition caps it near 4,055 m).

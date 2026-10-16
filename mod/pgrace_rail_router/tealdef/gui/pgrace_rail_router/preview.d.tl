@@ -1,4 +1,4 @@
--- Draws a plan on the map: one static arrow per ~200 m of track (green on the ground, blue on bridges, orange in
+-- Draws a plan on the map: one static arrow per ~100 m of track (green on the ground, blue on bridges, orange in
 -- tunnels) and a white one along each platform, and frames the camera on it once.
 global record PgraceRailRouterPreview
 	record Params is IRecipeParamWithMeta

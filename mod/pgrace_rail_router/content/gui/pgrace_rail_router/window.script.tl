@@ -116,6 +116,9 @@ local function textRow(text : string, class : string) : TreeNodeId
 	}
 end
 
+-- Candidate stops with a smaller detour than this are shown as "on the way" (metres).
+local ON_THE_WAY = 50.0
+
 local function formatLength(metres : number) : string
 	local ok, text = pcall(api.util.formatLength, metres)
 	if ok and text ~= nil then
@@ -498,8 +501,13 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		table.insert(body, textRow(_("Stops on the way:"), "font-scale-body"))
 		for __, candidate in ipairs(candidates) do
 			local id = candidate.town.id
+			-- A town (almost) on the direct line costs no detour worth a number.
+			local label = fill(_("{town} (on the way)"), { town = candidate.town.name })
+			if candidate.detour >= ON_THE_WAY then
+				label = fill(_("{town} (+{detour})"), { town = candidate.town.name, detour = formatLength(candidate.detour) })
+			end
 			table.insert(body, builtin.CheckBox{
-				label = fill(_("{town} (+{detour})"), { town = candidate.town.name, detour = formatLength(candidate.detour) }),
+				label = label,
 				value = settings.skipped[id] and 0 or 1,
 				onValueChange = function(v : integer)
 					update(function(s : Settings)
@@ -515,6 +523,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 	end
 	table.insert(body, builtin.Button{
+		meta = { class = "primary" },
 		content = builtin.TextView{ text = _("Find route") },
 		onClick = findRoute,
 	})
