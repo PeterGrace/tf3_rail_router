@@ -232,3 +232,113 @@ t.test("grid: a path doesn't follow a road when there's room beside it", functio
 	end
 	t.ok(onRoad <= 4, "mostly off the road: " .. onRoad .. " of " .. #path .. " points on it")
 end)
+
+-- The cells cellsAlong visits, as a set and in visiting order.
+local function along(g, a, b)
+	local set, order = {}, {}
+	grid.cellsAlong(g, a, b, function(i)
+		t.ok(not set[i], "cell " .. i .. " visited once")
+		set[i] = true
+		table.insert(order, i)
+		return true
+	end)
+	return set, order
+end
+
+t.test("grid: cellsAlong catches a cell whose corner the segment clips between samples", function()
+	local g = grid.new(0, 0, 100, 4, 4)
+	-- x + y = 101 cuts the corner of the cell round (100, 100) at (50.5, 50.5); points every quarter cell along it
+	-- all fall in the cells round (0, 100) and (100, 0).
+	local set = along(g, { x = 21, y = 80 }, { x = 81, y = 20 })
+	t.ok(set[grid.index(g, 2, 2)], "the clipped cell")
+	t.ok(set[grid.index(g, 1, 2)] and set[grid.index(g, 2, 1)], "the cells it runs through")
+	t.ok(not set[grid.index(g, 1, 1)], "not the cell it passes beside")
+end)
+
+t.test("grid: cellsAlong counts every cell at a corner it passes through exactly", function()
+	local g = grid.new(0, 0, 100, 4, 4)
+	local set = along(g, { x = 20, y = 80 }, { x = 80, y = 20 })
+	for __, c in ipairs({ { 1, 1 }, { 1, 2 }, { 2, 1 }, { 2, 2 } }) do
+		t.ok(set[grid.index(g, c[1], c[2])], "cell " .. c[1] .. "," .. c[2])
+	end
+end)
+
+t.test("grid: cellsAlong stops when told to", function()
+	local g = grid.new(0, 0, 100, 10, 1)
+	local seen = 0
+	local result = grid.cellsAlong(g, { x = 0, y = 0 }, { x = 900, y = 0 }, function(i)
+		seen = seen + 1
+		return i < 4
+	end)
+	t.eq(result, false, "stopped")
+	t.eq(seen, 4, "at the fourth cell")
+	t.eq(grid.cellsAlong(g, { x = 900, y = 0 }, { x = 0, y = 0 }, function() return true end), true, "ran through")
+end)
+
+-- Whether the segment a–b meets the closed square of half-side h round c (Liang–Barsky clipping).
+local function meets(a, b, c, h)
+	local t0, t1 = 0, 1
+	local d = { x = b.x - a.x, y = b.y - a.y }
+	for __, axis in ipairs({ "x", "y" }) do
+		local lo, hi = c[axis] - h - 1e-7, c[axis] + h + 1e-7
+		if math.abs(d[axis]) < 1e-12 then
+			if a[axis] < lo or a[axis] > hi then
+				return false
+			end
+		else
+			local u0, u1 = (lo - a[axis]) / d[axis], (hi - a[axis]) / d[axis]
+			if u0 > u1 then
+				u0, u1 = u1, u0
+			end
+			t0, t1 = math.max(t0, u0), math.min(t1, u1)
+			if t0 > t1 then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+t.test("grid: cellsAlong visits exactly the cells a segment meets, in order", function()
+	local g = grid.new(-500, -300, 100, 12, 9)
+	local seed = 12345
+	local function rnd()
+		seed = (seed * 1103515245 + 12345) % 2147483648
+		return seed / 2147483648
+	end
+	local function pt()
+		-- Some points snapped to cell edges and centres, so edges and corners get hit exactly.
+		local x, y = -550 + rnd() * 1200, -350 + rnd() * 900
+		if rnd() < 0.3 then
+			x, y = math.floor(x / 50 + 0.5) * 50, math.floor(y / 50 + 0.5) * 50
+		end
+		return { x = x, y = y }
+	end
+	for n = 1, 500 do
+		local a, b = pt(), pt()
+		if n % 7 == 0 then
+			b.y = a.y
+		elseif n % 11 == 0 then
+			b.x = a.x
+		end
+		local set, order = along(g, a, b)
+		for iy = 1, g.ny do
+			for ix = 1, g.nx do
+				local i = grid.index(g, ix, iy)
+				t.eq(set[i] == true, meets(a, b, grid.centre(g, ix, iy), 50),
+					("case %d, cell %d,%d"):format(n, ix, iy))
+			end
+		end
+		-- In order: the projections of the visited cells' centres onto a→b never go back by more than a cell's
+		-- diagonal.
+		local dx, dy = b.x - a.x, b.y - a.y
+		local len = math.max(1e-9, math.sqrt(dx * dx + dy * dy))
+		local prev = -math.huge
+		for __, i in ipairs(order) do
+			local c = grid.centre(g, (i - 1) % g.nx + 1, math.floor((i - 1) / g.nx) + 1)
+			local s = ((c.x - a.x) * dx + (c.y - a.y) * dy) / len
+			t.ok(s > prev - 100 * math.sqrt(2), "case " .. n .. " in order")
+			prev = math.max(prev, s)
+		end
+	end
+end)

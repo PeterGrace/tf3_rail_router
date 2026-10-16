@@ -57,30 +57,18 @@ local function platformCells(input : Input, station : Station) : {integer : bool
 	return cells
 end
 
--- Whether the straight from `a` to `b` is inside the grid and off blocked cells and other stations' platforms
--- (`taken`, less this station's own `own`), checked every quarter cell and at `b`.
+-- Whether the straight from `a` to `b` is inside the grid and every cell it passes through is off blocked cells and
+-- other stations' platforms (`taken`, less this station's own `own`).
 local function straightClear(input : Input, a : Pt, b : Pt, taken : {integer : boolean},
 		own : {integer : boolean}) : boolean
 	local g = input.grid
-	local length = geo.len(geo.sub(b, a))
-	local dir = geo.scale(geo.sub(b, a), 1 / math.max(length, 1e-9))
-	local step = g.cell / 4
-	local d = 0.0
-	while true do
-		local p = geo.add(a, geo.scale(dir, math.min(d, length)))
-		if not grid.inside(g, p) then
-			return false
-		end
-		local ix, iy = grid.cellOf(g, p)
-		local i = grid.index(g, ix, iy)
-		if g.blocked[i] or (taken ~= nil and taken[i] and not own[i]) then
-			return false
-		end
-		if d >= length then
-			return true
-		end
-		d = d + step
+	-- The grid is a rectangle, so a straight with both ends inside is inside.
+	if not grid.inside(g, a) or not grid.inside(g, b) then
+		return false
 	end
+	return grid.cellsAlong(g, a, b, function(i : integer) : boolean
+		return not (g.blocked[i] or (taken ~= nil and taken[i] and not own[i]))
+	end)
 end
 
 -- Where a station's platforms end, where its straight approach ends, and where the room to turn beyond it ends

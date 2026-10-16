@@ -66,6 +66,13 @@ global record PgraceRailRouterGrid
 	-- Whether the cell nearest to p is water.
 	waterAt : function(g : Grid, p : PgraceRailRouterGeo.Pt) : boolean
 
+	-- Calls fn with the index of every cell the segment a–b passes through, in order from a to b, stopping (and
+	-- returning false) as soon as fn returns false; true if it never did. Exact, and conservative: a cell the
+	-- segment only touches (along an edge, or at a corner) counts too. Cells off the grid are skipped, so check
+	-- that a and b are inside first.
+	cellsAlong : function(g : Grid, a : PgraceRailRouterGeo.Pt, b : PgraceRailRouterGeo.Pt,
+		fn : function(i : integer) : boolean) : boolean
+
 	-- Starts a search from `from` to `to`. startDir is the direction the track leaves `from` in (turns are counted
 	-- from it; zero-length = any). goalDir is the direction it must arrive at `to` in: the last move may turn at most
 	-- 90° from it, and that final turn is charged like any other (zero-length = any). A blocked goal cell finishes the

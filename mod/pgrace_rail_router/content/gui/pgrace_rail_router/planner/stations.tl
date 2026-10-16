@@ -10,7 +10,8 @@ local type Site = PgraceRailRouterStations.Site
 -- Directions tried at each spot: the wanted one first, then up to 30° either way.
 local TURNS : {number} = { 0, math.rad(15), -math.rad(15), math.rad(30), -math.rad(30) }
 
--- Distances along the run to check, from end to end: every quarter cell, and always both ends exactly.
+-- Distances along the run to sample its heights at, from end to end: every quarter cell, and always both ends
+-- exactly.
 local function offsets(g : Grid, runLength : number) : {number}
 	local half = runLength / 2
 	local step = g.cell / 4
@@ -24,22 +25,24 @@ local function offsets(g : Grid, runLength : number) : {number}
 	return ds
 end
 
--- Whether the run is inside, dry and clear (no building, road or track), and then (the dearer test, done only for
--- runs that pass) flat.
+-- Whether the run is inside, and every cell it passes through dry and clear (no building, road or track), and then
+-- (the dearer test, done only for runs that pass) flat.
 local function clear(g : Grid, centre : Pt, dir : Pt, runLength : number, maxRelief : number,
 		taken : {integer : boolean}) : boolean
-	local ds = offsets(g, runLength)
-	for __, d in ipairs(ds) do
-		local p : Pt = { x = centre.x + dir.x * d, y = centre.y + dir.y * d }
-		if not grid.inside(g, p) then
-			return false
-		end
-		local ix, iy = grid.cellOf(g, p)
-		local i = grid.index(g, ix, iy)
-		if g.blocked[i] or g.water[i] or g.road[i] or g.track[i] or (taken ~= nil and taken[i]) then
-			return false
-		end
+	local half = runLength / 2
+	local a : Pt = { x = centre.x - dir.x * half, y = centre.y - dir.y * half }
+	local b : Pt = { x = centre.x + dir.x * half, y = centre.y + dir.y * half }
+	-- The grid is a rectangle, so a run with both ends inside is inside.
+	if not grid.inside(g, a) or not grid.inside(g, b) then
+		return false
 	end
+	local free = grid.cellsAlong(g, a, b, function(i : integer) : boolean
+		return not (g.blocked[i] or g.water[i] or g.road[i] or g.track[i] or (taken ~= nil and taken[i]))
+	end)
+	if not free then
+		return false
+	end
+	local ds = offsets(g, runLength)
 	local lo, hi = math.huge, -math.huge
 	for __, d in ipairs(ds) do
 		local h = grid.heightAt(g, { x = centre.x + dir.x * d, y = centre.y + dir.y * d })

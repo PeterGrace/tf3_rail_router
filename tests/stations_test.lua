@@ -156,3 +156,18 @@ t.test("stations: the run's very ends are checked", function()
 	local free, at = runIsFree(g, site, 340)
 	t.ok(free, "run is clear to its ends (hit at " .. tostring(at) .. ")")
 end)
+
+t.test("stations: a run that only clips the corner of a building's cell is refused", function()
+	local g = openGrid()
+	-- A diagonal run through (0, 3) cuts the corner of the cell round (0, 100) for about 4 m, between the quarter-cell
+	-- points the check used to look at.
+	g.blocked[grid.index(g, 21, 22)] = true
+	local dir = { x = math.sqrt(0.5), y = math.sqrt(0.5) }
+	local site = stations.find(g, { x = 0, y = 3 }, dir, 340, 10, 1500)
+	t.ok(site ~= nil, "found")
+	local half = 170
+	for d = -half, half, 0.25 do
+		local p = { x = site.centre.x + site.dir.x * d, y = site.centre.y + site.dir.y * d }
+		t.ok(not g.blocked[grid.index(g, grid.cellOf(g, p))], "clear at " .. d)
+	end
+end)

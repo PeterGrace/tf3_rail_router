@@ -72,6 +72,64 @@ function grid.waterAt(g : Grid, p : Pt) : boolean
 	return g.water[grid.index(g, ix, iy)]
 end
 
+-- Cell coordinates within this much of a cell edge count as on it, so rounding never skips a cell the segment
+-- touches.
+local EDGE_SLACK = 1e-9
+
+-- Every cell is the closed square of side `cell` round its centre, so a segment along an edge or through a corner
+-- visits the cells on both sides: never fewer than it really crosses. Goes line by line of cells across the
+-- segment's main direction (columns if it runs more along x, rows if more along y), and along each line through the
+-- cells the segment spans there, both from a's end to b's, so the cells come in order along it.
+function grid.cellsAlong(g : Grid, a : Pt, b : Pt, fn : function(i : integer) : boolean) : boolean
+	-- Cell coordinates: cell ix spans u = ix − ½ .. ix + ½. u runs along the main direction, v across it.
+	local ax, ay = (a.x - g.x0) / g.cell + 1, (a.y - g.y0) / g.cell + 1
+	local bx, by = (b.x - g.x0) / g.cell + 1, (b.y - g.y0) / g.cell + 1
+	local alongX = math.abs(bx - ax) >= math.abs(by - ay)
+	local ua, va, ub, vb, nu, nv = ax, ay, bx, by, g.nx, g.ny
+	if not alongX then
+		ua, va, ub, vb, nu, nv = ay, ax, by, bx, g.ny, g.nx
+	end
+	local function first(lo : number) : integer
+		return math.max(1, math.ceil(lo - 0.5 - EDGE_SLACK))
+	end
+	local function last(hi : number, n : integer) : integer
+		return math.min(n, math.floor(hi + 0.5 + EDGE_SLACK))
+	end
+	local iu0, iu1 = first(math.min(ua, ub)), last(math.max(ua, ub), nu)
+	local ustep = 1
+	if ub < ua then
+		iu0, iu1, ustep = iu1, iu0, -1
+	end
+	local du = ub - ua
+	for iu = iu0, iu1, ustep do
+		-- The stretch of the segment within this line of cells (all of it for a single point).
+		local vlo, vhi = math.min(va, vb), math.max(va, vb)
+		if math.abs(du) > 1e-12 then
+			local f0 = math.max(0, math.min(1, (iu - 0.5 - ua) / du))
+			local f1 = math.max(0, math.min(1, (iu + 0.5 - ua) / du))
+			local v0, v1 = va + (vb - va) * f0, va + (vb - va) * f1
+			vlo, vhi = math.min(v0, v1), math.max(v0, v1)
+		end
+		local iv0, iv1 = first(vlo), last(vhi, nv)
+		local vstep = 1
+		if vb < va then
+			iv0, iv1, vstep = iv1, iv0, -1
+		end
+		for iv = iv0, iv1, vstep do
+			local i : integer
+			if alongX then
+				i = grid.index(g, iu, iv)
+			else
+				i = grid.index(g, iv, iu)
+			end
+			if not fn(i) then
+				return false
+			end
+		end
+	end
+	return true
+end
+
 -- A binary min-heap on f, with duplicates allowed (stale entries are skipped when popped).
 local function push(s : Search, node : integer, f : number)
 	local heap, keys = s.heap, s.heapF
