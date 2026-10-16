@@ -3294,6 +3294,9 @@ local function failureText(plan : Plan) : string
 			{ town = towns[1] or "?" })
 	elseif plan.failure == "no_path" then
 		return fill(_("No route found from {from} to {to}."), { from = towns[1] or "?", to = towns[2] or "?" })
+	elseif plan.failure == "too_close" then
+		return fill(_("The stations in {from} and {to} would be too close together. Untick one of them or use shorter platforms."),
+			{ from = towns[1] or "?", to = towns[2] or "?" })
 	end
 	return _("Choose two different towns.")
 end
@@ -3313,6 +3316,18 @@ local function resultRows(plan : Plan) : {TreeNodeId}
 	end
 	table.insert(rows, textRow(fill(_("Steepest grade {grade} · tightest curve {radius}"),
 		{ grade = formatPercent(sum.maxGrade), radius = curve }), "font-scale-body"))
+	-- Warnings: the plan is still shown, but these parts need the player's attention.
+	if sum.tightCurves > 0 then
+		table.insert(rows, textRow(fill(_("Warning: {count} curves are tighter than this mode allows."),
+			{ count = tostring(sum.tightCurves) }), "font-scale-body"))
+	end
+	if sum.steepLegs > 0 then
+		table.insert(rows, textRow(fill(_("Warning: {count} stretches between stations climb more steeply than this mode allows."),
+			{ count = tostring(sum.steepLegs) }), "font-scale-body"))
+	end
+	if sum.blockedSamples > 0 then
+		table.insert(rows, textRow(_("Warning: the curves cut across buildings or existing track in places."), "font-scale-body"))
+	end
 	for __, station in ipairs(plan.stations) do
 		table.insert(rows, textRow(fill(_("{town}: station {distance} from the centre"),
 			{ town = station.town.name, distance = formatLength(station.site.distance) }), "font-scale-annotation"))
