@@ -59,5 +59,54 @@ t.test("stations: steep ground is skipped for flat ground", function()
 	end
 	local site = stations.find(g, { x = 0, y = 0 }, { x = 0, y = 1 }, 360, 10, 1500)
 	t.ok(site ~= nil, "found")
-	t.ok(site.centre.x >= 1000, "on the flat: x " .. site.centre.x)
+	-- Heights blend over the last steep cell, so the run may sit a few metres short of x = 1000.
+	t.ok(site.centre.x > 950, "on the flat: x " .. site.centre.x)
+	local lo, hi = math.huge, -math.huge
+	for d = -180, 180, 10 do
+		local h = grid.heightAt(g, { x = site.centre.x + site.dir.x * d, y = site.centre.y + site.dir.y * d })
+		lo, hi = math.min(lo, h), math.max(hi, h)
+	end
+	t.ok(hi - lo <= 10 + 1e-6, "relief " .. (hi - lo))
+end)
+
+local function fill(g, field, inDisc)
+	for iy = 1, g.ny do
+		for ix = 1, g.nx do
+			if inDisc(grid.centre(g, ix, iy)) then
+				g[field][grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+end
+
+t.test("stations: water rejects a site", function()
+	local g = openGrid()
+	fill(g, "water", function(c) return math.sqrt(c.x * c.x + c.y * c.y) <= 400 end)
+	local site = stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 1500)
+	t.ok(site ~= nil, "found")
+	t.ok(site.distance > 300, "off the water: " .. site.distance)
+	for d = -180, 180, 25 do
+		local p = { x = site.centre.x + site.dir.x * d, y = site.centre.y + site.dir.y * d }
+		t.ok(not grid.waterAt(g, p), "dry at " .. d)
+	end
+end)
+
+t.test("stations: a turned run is used when straight is blocked", function()
+	local g = openGrid()
+	-- The cells at x = ±200 on the line block the straight run and the 15° ones; a 30° run passes them.
+	g.blocked[grid.index(g, 19, 21)] = true
+	g.blocked[grid.index(g, 23, 21)] = true
+	local site = stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 1500)
+	t.ok(site ~= nil, "found")
+	t.near(site.distance, 0, 1e-9, "at the centre")
+	t.ok(math.abs(site.dir.y) > 0.1, "turned: dir " .. site.dir.x .. ", " .. site.dir.y)
+	t.ok(runIsClear(g, site, 360), "run is clear")
+end)
+
+t.test("stations: nothing beyond maxRadius", function()
+	local g = openGrid()
+	fill(g, "blocked", function(c) return math.sqrt((c.x - 1200) * (c.x - 1200) + c.y * c.y) > 350 end)
+	t.eq(stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 800), nil, "none within 800 m")
+	local site = stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 1500)
+	t.ok(site ~= nil and site.distance > 800, "found further out")
 end)
