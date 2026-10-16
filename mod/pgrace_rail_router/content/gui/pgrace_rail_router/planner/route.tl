@@ -216,7 +216,7 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, ta
 	table.insert(raw, #path)
 	local fixed : {boolean} = {}
 	fixed[2], fixed[3], fixed[#pts - 2], fixed[#pts - 1] = true, true, true, true
-	local fitted = smooth.fillet(pts, w.minRadius, fixed, { step = step, clear = function(p : Pt, from : integer,
+	local fitted = smooth.fillet(pts, w.minRadius, fixed, { step = step, minRadius = w.minBuildRadius, clear = function(p : Pt, from : integer,
 			to : integer) : boolean
 		return clear(p, raw[from], raw[to])
 	end })

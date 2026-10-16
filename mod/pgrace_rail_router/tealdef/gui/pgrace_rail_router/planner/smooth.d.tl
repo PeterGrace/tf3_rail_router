@@ -36,6 +36,8 @@ global record PgraceRailRouterSmooth
 	-- that point's neighbours).
 	record Guard
 		step : number
+		-- Arcs are never tightened below this for the guard (nil: the step); the track type's buildable minimum.
+		minRadius : number
 		clear : function(p : PgraceRailRouterGeo.Pt, from : integer, to : integer) : boolean
 	end
 

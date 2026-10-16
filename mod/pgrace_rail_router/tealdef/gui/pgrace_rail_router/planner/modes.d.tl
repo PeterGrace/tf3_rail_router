@@ -32,6 +32,8 @@ global record PgraceRailRouterModes
 	record Weights
 		maxGrade : number
 		minRadius : number
+		-- The tightest curve the game builds for the track type (the guard on smoothing never goes below it).
+		minBuildRadius : number
 		-- Over the grade limit, each step costs 1 + slopePenalty × (grade − maxGrade) / maxGrade times as much.
 		slopePenalty : number
 		-- Steps over water cost this many times as much (they need a bridge).

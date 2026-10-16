@@ -2,7 +2,7 @@ local t = ...
 local grid = t.requireTl("gui/pgrace_rail_router/planner/grid.tl")
 local route = t.requireTl("gui/pgrace_rail_router/planner/route.tl")
 
-local W = { maxGrade = 0.085, minRadius = 220, slopePenalty = 3, bridgeFactor = 6, turnPenalty = 20,
+local W = { maxGrade = 0.085, minRadius = 220, minBuildRadius = 55, slopePenalty = 3, bridgeFactor = 6, turnPenalty = 20,
 	roadCrossing = 50, trackCrossing = 400, costPerMetre = 360, bridgeCostFactor = 5, tunnelCostFactor = 8,
 	bridgeAbove = 8, tunnelBelow = 12 }
 

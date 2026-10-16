@@ -52,6 +52,7 @@ function modes.weights(mode : Mode, t : TrackType) : Weights
 		return {
 			maxGrade = math.min(FASTEST_MAX_GRADE, t.maxSlopeBuild),
 			minRadius = math.min(FASTEST_MAX_RADIUS, radius),
+			minBuildRadius = t.minCurveRadiusBuild,
 			slopePenalty = 1.5,
 			bridgeFactor = 3.0,
 			turnPenalty = 150.0,
@@ -68,6 +69,7 @@ function modes.weights(mode : Mode, t : TrackType) : Weights
 	return {
 		maxGrade = t.maxSlopeBuild,
 		minRadius = cheapestRadius,
+		minBuildRadius = t.minCurveRadiusBuild,
 		slopePenalty = 3.0,
 		bridgeFactor = 6.0,
 		turnPenalty = 20.0,

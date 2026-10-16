@@ -204,16 +204,18 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 	if guard == nil then
 		return result
 	end
-	-- Halve the radius of each arc that leaves the guard's ground until every arc is clear, or one would get tighter
-	-- than a guard step (that one then stays as it is). Tightening one arc can give its neighbours room to widen
-	-- again, so every arc is checked each round.
+	-- Halve the radius of each arc that leaves the guard's ground until every arc is clear, or one reaches the floor
+	-- (the guard's minRadius, at least a guard step; that one then stays as it is: a curve the game can't build is
+	-- worse than one that cuts a corner). Tightening one arc can give its neighbours room to widen again, so every
+	-- arc is checked each round.
+	local floor = math.max(guard.step, guard.minRadius or 0)
 	local tightened : {boolean} = {}
 	while true do
 		local changed = false
 		for k, piece in ipairs(result.pieces) do
 			local i = corners[k]
-			if i ~= nil and piece.radius / 2 >= guard.step and not pieceClear(piece, guard, src[i - 1], src[i + 1]) then
-				t[i] = piece.radius / 2 * math.tan(theta[i] / 2)
+			if i ~= nil and piece.radius > floor + 1e-6 and not pieceClear(piece, guard, src[i - 1], src[i + 1]) then
+				t[i] = math.max(piece.radius / 2, floor) * math.tan(theta[i] / 2)
 				if not tightened[i] then
 					tightened[i] = true
 					guarded = guarded + 1

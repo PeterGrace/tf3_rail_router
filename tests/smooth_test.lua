@@ -184,6 +184,15 @@ t.test("smooth: a guarded fillet tightens an arc that crosses the disc", functio
 	t.near(r.minRadius, 50, 1e-6, "halved twice")
 end)
 
+t.test("smooth: the guard never tightens an arc below its minRadius", function()
+	local corner = { P(0, 0), P(1000, 0), P(1000, 1000) }
+	local guard = disc(P(960, 40), 30, 10)
+	guard.minRadius = 120
+	local r = smooth.fillet(corner, 200, {}, guard)
+	t.near(r.minRadius, 120, 1e-6, "stops at the floor")
+	t.ok(r.guarded > 0, "still counted")
+end)
+
 t.test("smooth: a guard that finds nothing changes nothing", function()
 	local jog = { P(0, 0), P(500, 0), P(550, 50), P(1000, 50) }
 	local plain = smooth.fillet(jog, 200, {})
