@@ -3,8 +3,43 @@ local profile : PgraceRailRouterProfile = {}
 local type Span = PgraceRailRouterProfile.Span
 local type Result = PgraceRailRouterProfile.Result
 
+-- Bridges, tunnels and stretches of ground shorter than this are merged into their neighbours (metres).
+local MIN_SPAN = 75.0
+
+-- Merges spans shorter than MIN_SPAN, shortest first: one between two of the same kind takes that kind, any other
+-- joins its longer neighbour.
+local function mergeShort(spans : {Span}) : {Span}
+	while #spans > 1 do
+		local shortest : integer = nil
+		local shortestLen = MIN_SPAN
+		for k, span in ipairs(spans) do
+			local l = span.s1 - span.s0
+			if l < shortestLen then
+				shortest, shortestLen = k, l
+			end
+		end
+		if shortest == nil then
+			break
+		end
+		local k = shortest
+		local prev, next = spans[k - 1], spans[k + 1]
+		if prev ~= nil and next ~= nil and prev.kind == next.kind then
+			prev.s1 = next.s1
+			table.remove(spans, k + 1)
+			table.remove(spans, k)
+		elseif next == nil or (prev ~= nil and prev.s1 - prev.s0 >= next.s1 - next.s0) then
+			prev.s1 = spans[k].s1
+			table.remove(spans, k)
+		else
+			next.s0 = spans[k].s0
+			table.remove(spans, k)
+		end
+	end
+	return spans
+end
+
 function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrade : number, bridgeAbove : number,
-		tunnelBelow : number) : Result
+		tunnelBelow : number, zStart ?: number, zEnd ?: number) : Result
 	local n = #s
 	-- What the track would like to follow: the ground, and over water a straight line between the banks.
 	local target : {number} = {}
@@ -36,8 +71,19 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 			i = i + 1
 		end
 	end
-	-- Forward then backward, each sample clamped to its neighbour ± the grade limit: afterwards every pair is within
-	-- it.
+	-- Pinned ends are where the track must be, whatever the ground.
+	if n > 0 and zStart ~= nil then
+		target[1] = zStart
+	end
+	if n > 0 and zEnd ~= nil then
+		target[n] = zEnd
+	end
+	local feasible = true
+	if n > 1 and zStart ~= nil and zEnd ~= nil and math.abs(zEnd - zStart) > maxGrade * (s[n] - s[1]) + 1e-9 then
+		feasible = false
+	end
+	-- Forward from the start, then backward from the end, each sample clamped to its neighbour ± the grade limit:
+	-- afterwards every pair is within it.
 	local z : {number} = {}
 	for k = 1, n do
 		z[k] = target[k]
@@ -46,9 +92,16 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 		local limit = maxGrade * (s[k] - s[k - 1])
 		z[k] = math.max(z[k - 1] - limit, math.min(z[k - 1] + limit, z[k]))
 	end
+	if n > 0 and zEnd ~= nil then
+		z[n] = zEnd
+	end
 	for k = n - 1, 1, -1 do
 		local limit = maxGrade * (s[k + 1] - s[k])
 		z[k] = math.max(z[k + 1] - limit, math.min(z[k + 1] + limit, z[k]))
+	end
+	-- When feasible the backward pass leaves the start alone; when not, the pins win over the grade.
+	if n > 0 and zStart ~= nil then
+		z[1] = zStart
 	end
 	local kinds : {string} = {}
 	local maxG = 0.0
@@ -76,7 +129,7 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 			start = k
 		end
 	end
-	return { z = z, spans = spans, maxGrade = maxG }
+	return { z = z, spans = mergeShort(spans), maxGrade = maxG, feasible = feasible }
 end
 
 return profile

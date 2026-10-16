@@ -70,3 +70,53 @@ t.test("profile: water is bridged straight between the banks", function()
 	t.eq(spanAt(r, 600), "bridge", "end of lake")
 	t.near(r.z[21], 0, 1e-9, "deck at bank height mid-lake")
 end)
+
+t.test("profile: pinned ends meet the given heights", function()
+	local s, ground, water = line(function(x) return 0.05 * x end)
+	local r = profile.fit(s, ground, water, 0.025, 8, 12, 5, 28)
+	t.ok(r.feasible, "feasible")
+	t.near(r.z[1], 5, 1e-9, "start")
+	t.near(r.z[#s], 28, 1e-9, "end")
+	t.ok(gradesWithin(r, s, 0.025), "grades")
+end)
+
+t.test("profile: free ends are feasible", function()
+	local s, ground, water = line(function(x) return 0.05 * x end)
+	local r = profile.fit(s, ground, water, 0.025, 8, 12)
+	t.ok(r.feasible, "feasible")
+	t.near(r.z[1], 0, 1e-9, "start follows the ground")
+end)
+
+t.test("profile: ends too far apart in height are infeasible", function()
+	local s, ground, water = line(function() return 0 end)
+	local r = profile.fit(s, ground, water, 0.025, 8, 12, 0, 100)
+	t.ok(not r.feasible, "infeasible")
+	t.near(r.z[1], 0, 1e-9, "start pinned")
+	t.near(r.z[#s], 100, 1e-9, "end pinned")
+end)
+
+t.test("profile: ground hovering at the bridge threshold isn't split into many spans", function()
+	-- 1.5 km, with a 500 m valley whose floor alternates 7 and 9 m below the (almost flat) track.
+	local s, ground, water = {}, {}, {}
+	for i = 0, 60 do
+		local x = i * 25
+		s[#s + 1] = x
+		local inValley = x >= 500 and x <= 1000
+		ground[#ground + 1] = inValley and ((i % 2 == 0) and -7 or -9) or 0
+		water[#water + 1] = false
+	end
+	local r = profile.fit(s, ground, water, 0.001, 8, 12)
+	local bridges = 0
+	for k, span in ipairs(r.spans) do
+		if span.kind == "bridge" then
+			bridges = bridges + 1
+		end
+		if k > 1 then
+			t.near(span.s0, r.spans[k - 1].s1, 1e-9, "contiguous")
+			t.ok(span.kind ~= r.spans[k - 1].kind, "neighbours differ")
+		end
+	end
+	t.ok(bridges <= 1, "at most one bridge, got " .. bridges)
+	t.near(r.spans[1].s0, 0, 1e-9, "starts at 0")
+	t.near(r.spans[#r.spans].s1, 1500, 1e-9, "covers the route")
+end)
