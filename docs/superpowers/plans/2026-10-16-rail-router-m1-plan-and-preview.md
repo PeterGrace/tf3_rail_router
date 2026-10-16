@@ -3416,6 +3416,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		local clock = api.type.Clock.new()
 		if work.surveyJob == nil then
 			work.surveyJob = survey.start(work.stops, CELL, SURVEY_MARGIN)
+			if work.surveyJob == nil then
+				error("survey: no area to survey")
+			end
 		end
 		if work.routeJob == nil then
 			if survey.step(work.surveyJob, BUDGET_US) then
