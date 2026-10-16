@@ -1,6 +1,9 @@
 # Rail Router (Transport Fever 3 mod)
 
-TODO: what the mod does.
+Pick two towns and Rail Router plans a double-track line between them: stations as close to each town centre as it
+can get without demolishing anything, stops in the towns along the way, and track that follows the terrain
+(**Cheapest**) or runs straight and flat (**Fastest**). It shows the length, bridges, tunnels, grades and a cost
+estimate, and draws the route on the map. Building it with one click comes in a later version.
 
 - Mod ID: `pgrace_rail_router`
 - Cosmetic: yes. It doesn't affect the simulation, so achievements stay enabled.
@@ -14,9 +17,10 @@ mod/pgrace_rail_router/                        # the mod folder TF3 loads
 ├── mod.json, _metadata/              # modinfo.json, description.html, screenshots
 ├── tealdef/                          # Teal type definitions (canonical; build.py mirrors them into content/)
 └── content/gui/pgrace_rail_router/
-    ├── industry_plugin.res.lua       # registers the card in the industry window
-    ├── pgrace_rail_router.script.tl           # UI
-    └── util.tl                       # pure helpers (unit-tested)
+    ├── window.res.lua / window.script.tl / window.css.lua   # mod button and window
+    ├── survey.tl                     # engine reads: towns, track types, terrain grid
+    ├── preview.tl                    # the route on the map
+    └── planner/                      # pure planner modules (unit-tested)
 tools/                                # type check, tests, install, release checks
 tests/                                # unit tests for pure modules
 ```
@@ -31,7 +35,7 @@ just install    # symlink into TF3's staging area (just install-copy to copy)
 ```
 
 Restart TF3 after code changes. The log is
-`~/.local/share/Steam/userdata/*/3493540/local/crash_dump/stdout.txt`; our lines start with `[pgrace_rail_router]`.
+`~/.local/share/Steam/userdata/*/3493540/local/crash_dump/stdout.txt`; our lines start with `[rail_router]`.
 
 ## Releasing
 

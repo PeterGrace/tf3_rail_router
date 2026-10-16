@@ -6,8 +6,8 @@
         }
     ],
     "name": "Rail Router",
-    "summary": "TODO: one line, at most 100 characters.",
-    "description": "TODO: plain-text description (description.html is what mod.io shows).",
+    "summary": "Plans a rail line between two towns: stations, stops on the way, bridges, tunnels and cost.",
+    "description": "Pick two towns and Rail Router plans a double-track line between them, with stations as close to each town centre as possible without demolishing anything. Cheapest or Fastest mode.",
     "tags": [
         "Script Mod"
     ],
