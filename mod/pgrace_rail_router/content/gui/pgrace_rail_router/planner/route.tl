@@ -75,7 +75,8 @@ end
 -- (minRadius × tan 22.5°: a 45° turn at full radius), on its leaving side (forward = true) or its arriving side.
 -- The leg's search starts or ends at the last, and the track runs straight to it, so it is pulled back (half a cell
 -- at a time, at most to the approach point) until that straight is inside the grid and clear of blocked cells and
--- other stations' platforms (`taken`). Where it's pulled back, the curve beyond may be tighter than minRadius.
+-- other stations' platforms (`taken`). Where it's pulled back, the curve beyond may be tighter than minRadius (and
+-- where that's below what can be built, buildLeg gives the extension up).
 local function stationEnds(input : Input, station : Station, forward : boolean, taken : {integer : boolean}) : Pt, Pt, Pt
 	local g = input.grid
 	local sign = forward and 1 or -1
@@ -217,8 +218,9 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, ta
 		end
 	end
 	-- path runs from a's extension point to b's; add the platform ends and approach points, and keep all of them
-	-- fixed so the line leaves and enters the platforms straight and has room to turn at full radius beyond.
-	-- (Where an extension point is its approach point, fillet merges the two.) raw maps each point to the path
+	-- fixed so the line leaves and enters the platforms straight and has room to turn at full radius beyond (unless
+	-- that makes a curve the game can't build: see below). (Where an extension point is its approach point, fillet
+	-- merges the two.) raw maps each point to the path
 	-- point it stands for, for the guard.
 	local middle, kept = smooth.simplify(path, g.cell * SIMPLIFY_SHARE, straightOnPath)
 	local pts : {Pt} = { aEnd, aApproach }
@@ -231,12 +233,44 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, ta
 	table.insert(pts, bEnd)
 	table.insert(raw, #path)
 	table.insert(raw, #path)
-	local fixed : {boolean} = {}
-	fixed[2], fixed[3], fixed[#pts - 2], fixed[#pts - 1] = true, true, true, true
-	local fitted = smooth.fillet(pts, w.minRadius, fixed, { step = step, minRadius = w.minBuildRadius, clear = function(p : Pt, from : integer,
-			to : integer) : boolean
-		return clear(p, raw[from], raw[to])
-	end })
+	local guard : PgraceRailRouterSmooth.Guard = { step = step, minRadius = w.minBuildRadius,
+		clear = function(p : Pt, from : integer, to : integer) : boolean
+			return clear(p, raw[from], raw[to])
+		end }
+	-- freeA and freeB give up a's or b's extension point: fillet may then drop it like any other.
+	local function fit(freeA : boolean, freeB : boolean) : PgraceRailRouterSmooth.Result
+		local fixed : {boolean} = {}
+		fixed[2], fixed[3], fixed[#pts - 2], fixed[#pts - 1] = true, not freeA, not freeB, true
+		return smooth.fillet(pts, w.minRadius, fixed, guard)
+	end
+	-- Whether a's end and b's end have an arc the game can't build (below minBuildRadius) at one of their fixed
+	-- points (platform end, approach, extension: the first three points, or the last three).
+	local function belowFloor(f : PgraceRailRouterSmooth.Result) : boolean, boolean
+		local atA, atB = false, false
+		for k, piece in ipairs(f.pieces) do
+			local i = f.corners[k]
+			if piece.kind == "arc" and i ~= nil and piece.radius < w.minBuildRadius - 1e-6 then
+				atA = atA or i <= 3
+				atB = atB or i >= #pts - 2
+			end
+		end
+		return atA, atB
+	end
+	local fitted = fit(false, false)
+	-- Where the fixed points squeeze an arc below what can be built (an extension pulled back short of a sharp turn),
+	-- give up that end's extension: the turn then starts at the approach, or the point after the extension, with
+	-- more room. An end that still can't reach the floor keeps its extension (and its tight arc, counted below).
+	local tightA, tightB = belowFloor(fitted)
+	if tightA or tightB then
+		local refit = fit(tightA, tightB)
+		local stillA, stillB = belowFloor(refit)
+		local freeA, freeB = tightA and not stillA, tightB and not stillB
+		if freeA == tightA and freeB == tightB then
+			fitted = refit
+		elseif freeA or freeB then
+			fitted = fit(freeA, freeB)
+		end
+	end
 	local tight = 0
 	for __, piece in ipairs(fitted.pieces) do
 		if piece.kind == "arc" and piece.radius < w.minRadius - 1e-6 then

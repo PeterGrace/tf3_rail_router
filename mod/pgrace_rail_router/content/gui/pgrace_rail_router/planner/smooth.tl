@@ -67,9 +67,10 @@ local function straight(pieces : {Piece}, a : Pt, b : Pt)
 end
 
 -- Pieces for points whose corner tangents (t) fit, tightening any that overlap between fixed points. Also returns,
--- for each arc (by piece index), the point whose corner it rounds.
-local function build(pts : {Pt}, theta : {number}, t : {number}, removed : integer, guarded : integer)
-		: Result, {integer : integer}
+-- for each arc (by piece index), the point whose corner it rounds; the result has it as the input point's index
+-- (src).
+local function build(pts : {Pt}, src : {integer}, theta : {number}, t : {number}, removed : integer,
+		guarded : integer) : Result, {integer : integer}
 	local n = #pts
 	local fit : {number} = {}
 	for i = 1, n do
@@ -86,6 +87,7 @@ local function build(pts : {Pt}, theta : {number}, t : {number}, removed : integ
 	end
 	local pieces : {Piece} = {}
 	local corners : {integer : integer} = {}
+	local inputCorners : {integer : integer} = {}
 	local minRadius = math.huge
 	local cur = pts[1]
 	for i = 2, n - 1 do
@@ -101,12 +103,14 @@ local function build(pts : {Pt}, theta : {number}, t : {number}, removed : integ
 			table.insert(pieces, { kind = "arc", a = a, b = b, length = r * theta[i], radius = r, centre = centre,
 				turn = side * theta[i] })
 			corners[#pieces] = i
+			inputCorners[#pieces] = src[i]
 			minRadius = math.min(minRadius, r)
 			cur = b
 		end
 	end
 	straight(pieces, cur, pts[n])
-	return { pieces = pieces, minRadius = minRadius, removed = removed, guarded = guarded }, corners
+	return { pieces = pieces, minRadius = minRadius, removed = removed, guarded = guarded, corners = inputCorners },
+		corners
 end
 
 -- Points closer than this to the one before are merged into it.
@@ -125,7 +129,7 @@ end
 
 function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard ?: Guard) : Result
 	if #points < 2 then
-		return { pieces = {}, minRadius = math.huge, removed = 0, guarded = 0 }
+		return { pieces = {}, minRadius = math.huge, removed = 0, guarded = 0, corners = {} }
 	end
 	-- Merge repeated points (a merged point is fixed if either was); the ends always stay. src is the input index
 	-- each point came from, for the guard.
@@ -214,7 +218,7 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 			guarded = guarded + 1
 		end
 	end
-	local result, corners = build(pts, theta, t, removed, guarded)
+	local result, corners = build(pts, src, theta, t, removed, guarded)
 	if guard == nil then
 		return result
 	end
@@ -239,7 +243,7 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 		if not changed then
 			return result
 		end
-		result, corners = build(pts, theta, t, removed, guarded)
+		result, corners = build(pts, src, theta, t, removed, guarded)
 	end
 end
 

@@ -417,3 +417,50 @@ t.test("route: a plain incline isn't mistaken for an obstacle", function()
 		end
 	end
 end)
+
+-- A two-town line, A (0, 0) to B (5000, 0), with a wall in the column round x = 300 from the bottom of the grid up to
+-- row `top` (y = −1500 + 100 (top − 1)): A's room to turn is pulled back from x = 271 to 221 (a 41 m straight past its
+-- approach at x = 180), and the line has to turn sharply north there.
+local function walledStart(top, extra)
+	local g = flatGrid()
+	for iy = 1, top do
+		g.blocked[grid.index(g, 14, iy)] = true
+	end
+	if extra then
+		extra(g)
+	end
+	return run(g, { town(1, "A", 0, 0), town(2, "B", 5000, 0) })
+end
+
+t.test("route: a sharp turn just past a short extension gives the extension up rather than build too tight", function()
+	-- Kept, the 41 m straight left room for a 33 m curve only.
+	local plan = walledStart(17)
+	t.ok(plan.ok, "ok")
+	local leg = plan.legs[1]
+	t.ok(leg.minRadius >= W.minBuildRadius - 1e-6, "no curve below the build minimum: " .. leg.minRadius)
+	t.eq(leg.blockedSamples, 0, "off the wall")
+	-- The platforms stay straight: the turn starts after their end.
+	local first = leg.pieces[1]
+	t.eq(first.kind, "straight", "leaves straight")
+	t.near(first.a.x, 80, 1e-6, "from the platform end")
+	t.ok(first.length > 0, "straight " .. first.length)
+end)
+
+t.test("route: a turn with no room at the floor even without the extension keeps it, counted as tight", function()
+	-- A second wall across the cells round (100..300, 200) turns the line back west 100 m past A's extension: a 140°
+	-- turn there. Without the extension it would start at the approach point, and 140° at the build minimum needs
+	-- more than the 100 m of approach behind it, so the extension stays, with its tight curve.
+	local plan = walledStart(20, function(g)
+		for ix = 12, 14 do
+			g.blocked[grid.index(g, ix, 18)] = true
+		end
+	end)
+	t.ok(plan.ok, "ok")
+	local leg = plan.legs[1]
+	t.ok(leg.minRadius < W.minBuildRadius, "tight: " .. leg.minRadius)
+	t.ok(leg.tightCurves >= 1, "counted")
+	t.eq(leg.blockedSamples, 0, "off the walls")
+	local first = leg.pieces[1]
+	t.eq(first.kind, "straight", "leaves straight")
+	t.ok(first.length >= 100 - 1e-6, "the whole approach is straight: " .. first.length)
+end)

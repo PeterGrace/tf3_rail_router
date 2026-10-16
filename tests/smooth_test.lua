@@ -238,3 +238,20 @@ t.test("smooth: the guard is asked about the input points each piece replaces", 
 	t.ok(seen["1-3"], "1-3")
 	t.ok(seen["1-4"], "1-4")
 end)
+
+t.test("smooth: each arc names the input point whose corner it rounds", function()
+	-- The repeated start is merged and (500, 0) doesn't turn, so the indices count past both: the corners are input
+	-- points 4 and 5.
+	local r = smooth.fillet({ P(0, 0), P(0, 0), P(500, 0), P(1000, 0), P(1000, 1000), P(0, 1000) }, 200, {})
+	local corners = {}
+	for k, piece in ipairs(r.pieces) do
+		if piece.kind == "arc" then
+			table.insert(corners, r.corners[k])
+		else
+			t.eq(r.corners[k], nil, "no corner for a straight")
+		end
+	end
+	t.eq(#corners, 2, "two arcs")
+	t.eq(corners[1], 4, "first corner")
+	t.eq(corners[2], 5, "second corner")
+end)

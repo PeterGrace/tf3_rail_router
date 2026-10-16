@@ -28,6 +28,8 @@ global record PgraceRailRouterSmooth
 		removed : integer
 		-- With a guard: points kept, and arcs tightened, because the guard refused the track without them.
 		guarded : integer
+		-- For each arc (by index into pieces), the index into fillet's `points` of the corner it rounds.
+		corners : {integer : integer}
 	end
 
 	-- Keeps fillet's track on ground the caller accepts. `clear` is asked about points every `step` metres (or less)
