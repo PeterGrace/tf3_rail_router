@@ -53,6 +53,7 @@ global record PgraceRailRouterModes
 	end
 
 	isAvailable : function(t : TrackType, year : integer) : boolean
+	isEverBuildable : function(t : TrackType) : boolean
 	-- Fastest: the fastest available type. Cheapest: the fastest available type up to 60 m/s (so not high-speed),
 	-- else the cheapest available. nil if none is available.
 	defaultTrack : function(types : {TrackType}, year : integer, mode : Mode) : TrackType

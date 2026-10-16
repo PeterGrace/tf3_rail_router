@@ -20,6 +20,16 @@ t.test("modes: availability respects yearFrom and yearTo", function()
 	t.ok(modes.isAvailable(TYPES[2], 1930), "from yearFrom on")
 end)
 
+t.test("modes: templates the player can never build are left out", function()
+	local function tpl(yearFrom, yearTo) return { name = "x", cost = 1, speed = 1, yearFrom = yearFrom, yearTo = yearTo } end
+	t.ok(modes.isEverBuildable(tpl(0, 0)), "always")
+	t.ok(modes.isEverBuildable(tpl(1930, 0)), "from 1930")
+	t.ok(modes.isEverBuildable(tpl(0, 1950)), "until 1950")
+	t.ok(not modes.isEverBuildable(tpl(100000, 0)), "depot track")
+	t.ok(not modes.isEverBuildable(tpl(100000, 1)), "industry track")
+	t.ok(not modes.isEverBuildable(tpl(1800, 1800)), "station mod track")
+end)
+
 t.test("modes: default track by year and mode", function()
 	t.eq(modes.defaultTrack(TYPES, 1900, "cheapest").name, "simple.lua", "1900 cheapest")
 	t.eq(modes.defaultTrack(TYPES, 1900, "fastest").name, "simple.lua", "1900 fastest")

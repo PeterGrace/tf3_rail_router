@@ -18,6 +18,14 @@ function modes.isAvailable(t : TrackType, year : integer) : boolean
 	return (t.yearFrom == 0 or year >= t.yearFrom) and (t.yearTo == 0 or year < t.yearTo)
 end
 
+-- Templates that are never offered to the player: depot and industry tracks (yearFrom 100000) and tracks that
+-- belong to station mods (yearTo at or before yearFrom, e.g. 1800–1800).
+local NEVER_YEAR = 100000
+
+function modes.isEverBuildable(t : TrackType) : boolean
+	return t.yearFrom < NEVER_YEAR and (t.yearTo == 0 or t.yearTo > t.yearFrom)
+end
+
 function modes.defaultTrack(types : {TrackType}, year : integer, mode : Mode) : TrackType
 	local best : TrackType = nil
 	for __, t in ipairs(types) do

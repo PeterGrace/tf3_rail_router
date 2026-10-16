@@ -1,4 +1,5 @@
 local grid = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/grid.tl" as PgraceRailRouterGrid
+local modes = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/modes.tl" as PgraceRailRouterModes
 
 local survey : PgraceRailRouterSurvey = {}
 
@@ -111,6 +112,7 @@ function survey.trackTypes() : {TrackType}
 	-- catenaryAdd (by id, or by base name if find doesn't know the name's form), or when it has a catenaryRemove.
 	-- Without any catenaryAdd at all, fall back on the name.
 	local dropped = 0
+	local hidden = 0
 	for id, tpl in pairs(tracks) do
 		local name = names[id]
 		local ok, err = pcall(function() : boolean
@@ -124,6 +126,14 @@ function survey.trackTypes() : {TrackType}
 				dropped = dropped + 1
 				return true
 			end
+			local yearFrom, yearTo = 0, 0
+			if tpl.availability ~= nil then
+				yearFrom, yearTo = tpl.availability.yearFrom, tpl.availability.yearTo
+			end
+			if not modes.isEverBuildable({ name = name, yearFrom = yearFrom, yearTo = yearTo } as TrackType) then
+				hidden = hidden + 1
+				return true
+			end
 			local speed = 0.0
 			for __, lane in ipairs(tpl.laneConfigs) do
 				speed = math.max(speed, lane.speed)
@@ -131,10 +141,6 @@ function survey.trackTypes() : {TrackType}
 			local label = name
 			if tpl.description ~= nil and nonEmpty(tpl.description.name) then
 				label = tpl.description.name
-			end
-			local yearFrom, yearTo = 0, 0
-			if tpl.availability ~= nil then
-				yearFrom, yearTo = tpl.availability.yearFrom, tpl.availability.yearTo
 			end
 			local catenary : string = nil
 			local catenaryYearFrom = 0
@@ -171,7 +177,8 @@ function survey.trackTypes() : {TrackType}
 	if not anyCatenaryAdd then
 		how = "by name (no template has a catenaryAdd)"
 	end
-	debugPrint(LOG_PREFIX .. "track types: " .. #result .. " kept, " .. dropped .. " catenary variants dropped " .. how)
+	debugPrint(LOG_PREFIX .. "track types: " .. #result .. " kept, " .. dropped .. " catenary variants dropped " .. how
+		.. ", " .. hidden .. " never buildable (depot, industry or station tracks)")
 	table.sort(result, function(a : TrackType, b : TrackType) : boolean
 		return a.speed < b.speed
 	end)
