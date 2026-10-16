@@ -215,3 +215,20 @@ t.test("grid: inside and cellOf", function()
 	t.eq(ix, 2, "nearest column")
 	t.eq(iy, 3, "row 4 is past the edge: clamped to 3")
 end)
+
+t.test("grid: a path doesn't follow a road when there's room beside it", function()
+	-- A road along the direct line (y = 500), free ground either side.
+	local g = grid.new(0, 0, 100, 21, 11)
+	for ix = 1, 21 do
+		g.road[grid.index(g, ix, 6)] = true
+	end
+	local path = run(g, { x = 0, y = 500 }, { x = 2000, y = 500 })
+	t.ok(path ~= nil, "found")
+	local onRoad = 0
+	for __, p in ipairs(path) do
+		if g.road[cellIndex(g, p)] then
+			onRoad = onRoad + 1
+		end
+	end
+	t.ok(onRoad <= 4, "mostly off the road: " .. onRoad .. " of " .. #path .. " points on it")
+end)

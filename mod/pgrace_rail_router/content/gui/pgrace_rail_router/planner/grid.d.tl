@@ -70,7 +70,9 @@ global record PgraceRailRouterGrid
 	-- from it; zero-length = any). goalDir is the direction it must arrive at `to` in: the last move may turn at most
 	-- 90° from it, and that final turn is charged like any other (zero-length = any). A blocked goal cell finishes the
 	-- search at once, not found. The first stepSearch calls flood-fill the cells from the start (about one cell per
-	-- unit of budget, no expansions counted) and finish, not found, if the goal can't be reached at all.
+	-- unit of budget, no expansions counted) and finish, not found, if the goal can't be reached at all. Entering a
+	-- road or track cell costs w.roadCrossing or w.trackCrossing; a step from road to road costs 1.5 × its length, so
+	-- the path doesn't run along roads.
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
 		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights) : Search
 	-- Expands up to maxExpansions states (or fills that many cells first); true once the search is finished (found

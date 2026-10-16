@@ -15,6 +15,10 @@ local DIRS : {{integer}} = {
 }
 -- A single move may turn at most this many 22.5° steps (90°).
 local MAX_TURN_STEPS = 4
+-- A step from one road cell to another costs this many times its length: entering a road is paid once
+-- (roadCrossing), so without it a path could run along a road for free, laid on it in Cheapest and on a long bridge
+-- in Fastest. At least 1, so the heuristic stays admissible.
+local ROAD_FOLLOW_FACTOR = 1.5
 
 function grid.new(x0 : number, y0 : number, cell : number, nx : integer, ny : integer) : Grid
 	local g : Grid = { x0 = x0, y0 = y0, cell = cell, nx = nx, ny = ny, height = {}, water = {}, blocked = {},
@@ -212,6 +216,9 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 		if grade > w.maxGrade then
 			factor = 1 + w.slopePenalty * (grade - w.maxGrade) / w.maxGrade
 		end
+	end
+	if g.road[a] and g.road[b] then
+		factor = factor * ROAD_FOLLOW_FACTOR
 	end
 	local cost = length * factor
 	if g.road[b] and not g.road[a] then
