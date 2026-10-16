@@ -151,6 +151,11 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 		end
 	end
 	fix[1], fix[#pts] = true, true
+	-- The guard never makes a curve tighter than this: its minRadius (the track's buildable minimum), at least a step.
+	local floor = 0.0
+	if guard ~= nil then
+		floor = math.max(guard.step, guard.minRadius or 0)
+	end
 	local removed, guarded = 0, 0
 	local theta : {number} = {}
 	local t : {number} = {}
@@ -187,6 +192,15 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 			local a, b = pts[victim - 1], pts[victim + 1]
 			dropOk = pieceClear({ kind = "straight", a = a, b = b, length = geo.dist(a, b) }, guard, src[victim - 1],
 				src[victim + 1])
+			if not dropOk then
+				-- Kept, it may only squeeze the curves on its two segments down to the floor: a curve the game can't
+				-- build is worse than one that cuts a corner, so if they don't fit even at the floor it goes anyway.
+				local tf = function(i : integer) : number
+					return floor * math.tan(theta[i] / 2)
+				end
+				dropOk = tf(victim - 1) + tf(victim) > geo.dist(a, pts[victim]) + 1e-6
+					or tf(victim) + tf(victim + 1) > geo.dist(pts[victim], b) + 1e-6
+			end
 		end
 		if dropOk then
 			table.remove(pts, victim)
@@ -208,7 +222,6 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 	-- (the guard's minRadius, at least a guard step; that one then stays as it is: a curve the game can't build is
 	-- worse than one that cuts a corner). Tightening one arc can give its neighbours room to widen again, so every
 	-- arc is checked each round.
-	local floor = math.max(guard.step, guard.minRadius or 0)
 	local tightened : {boolean} = {}
 	while true do
 		local changed = false

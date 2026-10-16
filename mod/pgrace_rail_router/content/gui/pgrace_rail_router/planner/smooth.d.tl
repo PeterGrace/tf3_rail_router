@@ -51,9 +51,10 @@ global record PgraceRailRouterSmooth
 	-- the gentler turn); points marked in `fixed` (by index) and the two ends are never dropped, and arcs between
 	-- them are tightened to fit instead. Consecutive points closer than 1e-6 m are merged first (fixed if either
 	-- was; the ends stay). Fewer than two points give no pieces.
-	-- With a guard, a point is only dropped if the straight between its neighbours is clear (otherwise it is kept as
-	-- if fixed), and an arc that isn't clear has its radius halved until it is, or until it would be tighter than
-	-- guard.step (then it stays as it is).
+	-- With a guard (floor: the larger of guard.step and guard.minRadius), a point is only dropped if the straight
+	-- between its neighbours is clear; otherwise it is kept as if fixed, unless the arcs on its two segments wouldn't
+	-- fit even at the floor (then it is dropped anyway: a cut corner is better than a curve that can't be built). An
+	-- arc that isn't clear has its radius halved until it is, stopping at the floor (then it stays as it is).
 	fillet : function(points : {PgraceRailRouterGeo.Pt}, radius : number, fixed : {boolean}, guard ?: Guard) : Result
 	-- The point `d` metres along a piece.
 	pointAt : function(piece : Piece, d : number) : PgraceRailRouterGeo.Pt

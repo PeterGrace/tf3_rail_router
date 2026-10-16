@@ -40,8 +40,9 @@ global record PgraceRailRouterRoute
 		-- track and roads are crossed by bridges instead (see the spans).
 		blockedSamples : integer
 		-- Path points kept, and arcs tightened, so that the smoothed track keeps to the ground the grid path chose:
-		-- inside the grid, off blocked cells, over water only where the path is, and within 4 m of the ground under
-		-- the nearest path point (smooth.Result.guarded). For the log.
+		-- inside the grid, off blocked cells, over water only where the path is, and with ground within 4 m of a
+		-- uniform slope across the path (no hills or hollows it went round). Never below weights.minBuildRadius
+		-- (smooth.Result.guarded). For the log.
 		guarded : integer
 	end
 

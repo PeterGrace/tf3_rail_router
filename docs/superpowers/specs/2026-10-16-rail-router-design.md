@@ -109,10 +109,13 @@ Turns the grid path into straights and arcs, every arc at least the mode's minim
 each station end.
 
 **Guard:** simplifying and filleting are checked against the ground the grid path chose, every quarter cell: track
-must stay inside the grid and off blocked cells, may be over water only where the nearest path point is, and must be
-within 4 m (a starting value, tuned in-game) of the ground under that point. A straight that fails keeps an extra path
-point, a point whose removal would leave a failing straight is kept, and an arc that fails has its radius halved until
-it passes (down to the check spacing); `guarded` in the plan's summary counts these, and the log shows it.
+must stay inside the grid and off blocked cells, may be over water only where the nearest point of the path line is,
+and its ground must be within 4 m (a starting value, tuned in-game) of a uniform slope across the path there (taken
+from the ground at that path point and at the mirror image of the track point, so a plain incline never trips it). A
+straight that fails keeps an extra path point, a point whose removal would leave a failing straight is kept, and an
+arc that fails has its radius halved until it passes; the floor for both is the track type's build minimum radius (a
+point whose curves wouldn't fit at the floor is dropped anyway: a cut corner beats an unbuildable curve). `guarded` in
+the plan's summary counts these, and the log shows it.
 
 ### Height profile (`profile.tl`)
 

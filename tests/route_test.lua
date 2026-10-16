@@ -343,8 +343,29 @@ t.test("route: the curves go round the end of a steep hill, not through it", fun
 	local g = roundGrid(function(g, i)
 		g.height[i] = 60
 	end)
-	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 6000, 0) }, 160, withWeights({ minRadius = 600 }))
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 6000, 0) },
+		weights = withWeights({ minRadius = 600 }), platformLength = 160 })
+	local path = nil
+	while not route.step(job, 500) do
+		path = job.path or path
+	end
+	local plan = route.plan(job)
 	t.ok(plan.ok, "ok")
+	-- The path's knight moves pass between hill and plain cells, so the path itself climbs a little way up the
+	-- hill's edge (bilinear heights): the track may go no higher than that.
+	local pathTop = 0
+	for k = 2, #path do
+		for f = 0, 1, 0.05 do
+			local p = { x = path[k - 1].x + (path[k].x - path[k - 1].x) * f,
+				y = path[k - 1].y + (path[k].y - path[k - 1].y) * f }
+			pathTop = math.max(pathTop, grid.heightAt(g, p))
+		end
+	end
+	t.ok(pathTop <= 30 + 1e-6, "the path keeps to the hill's foot: " .. pathTop)
+	for __, sample in ipairs(plan.legs[1].samples) do
+		t.ok(grid.heightAt(g, sample.p) <= pathTop + 1e-6,
+			("no higher than the path at (%.0f, %.0f)"):format(sample.p.x, sample.p.y))
+	end
 	t.eq(countKind(plan.legs[1], "tunnel"), 0, "no tunnel")
 	t.ok(plan.legs[1].guarded > 0, "guarded")
 end)
@@ -364,6 +385,35 @@ t.test("route: on flat open ground the guard changes nothing", function()
 			t.near(leg.length, legs[k][2], 1e-3, radius .. ": leg " .. k .. " length")
 			t.near(leg.minRadius, radius, 1e-6, radius .. ": leg " .. k .. " radius")
 			t.eq(leg.guarded, 0, radius .. ": leg " .. k .. " guarded")
+		end
+	end
+end)
+
+t.test("route: a plain incline isn't mistaken for an obstacle", function()
+	-- Ground tilted across the line (north-south), so the stations still find level runs; the grade limit is high
+	-- enough that the search never sees a slope. The track should be just what it is on flat ground.
+	local stops = { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 1000) }
+	for __, radius in ipairs({ 220, 1000, 3000 }) do
+		local w = withWeights({ minRadius = radius, maxGrade = 0.2 })
+		local flat = run(flatGrid(), stops, 160, w)
+		t.ok(flat.ok, "flat ok")
+		for __, slope in ipairs({ 0.04, 0.08, -0.08 }) do
+			local label = ("radius %d, slope %.2f"):format(radius, slope)
+			local g = flatGrid()
+			for iy = 1, 31 do
+				for ix = 1, 81 do
+					g.height[grid.index(g, ix, iy)] = 100 + slope * grid.centre(g, ix, iy).y
+				end
+			end
+			local plan = run(g, stops, 160, w)
+			t.ok(plan.ok, label .. ": ok")
+			t.eq(plan.summary.guarded, 0, label .. ": guarded")
+			for k, leg in ipairs(plan.legs) do
+				local ref = flat.legs[k]
+				t.eq(#leg.pieces, #ref.pieces, label .. ": leg " .. k .. " pieces")
+				t.near(leg.length, ref.length, 1e-6, label .. ": leg " .. k .. " length")
+				t.eq(leg.minRadius, ref.minRadius, label .. ": leg " .. k .. " radius")
+			end
 		end
 	end
 end)

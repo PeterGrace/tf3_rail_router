@@ -26,9 +26,9 @@ local MAX_STATION_RADIUS = 1500.0
 local SAMPLE_STEP = 25.0
 -- Grid paths are simplified to within this share of a cell before the curves are fitted.
 local SIMPLIFY_SHARE = 0.75
--- Most the ground under the smoothed track may differ from the ground under the nearest point of the grid path it
--- replaces (metres): more, and it has left the path's level for a hillside, where it would need a cutting or a tunnel
--- the search didn't pay for. A starting value, tuned in-game.
+-- How far the ground under the smoothed track may stray from a uniform slope across the grid path it replaces
+-- (metres; see pathGuard): more, and it has climbed a hill or dropped into a hollow the search went round, where it
+-- would need a tunnel, a bridge or a cutting the search didn't pay for. A starting value, tuned in-game.
 local MAX_GROUND_DIFF = 4.0
 -- For progress: a station site counts as 1 unit of work, a leg as this many.
 local LEG_WEIGHT = 10
@@ -122,21 +122,31 @@ local function fail(job : Job, failure : string, towns : {string}) : boolean
 	return true
 end
 
+-- The point nearest to p on the segment a–b.
+local function project(p : Pt, a : Pt, b : Pt) : Pt
+	local ab = geo.sub(b, a)
+	local l2 = geo.dot(ab, ab)
+	if l2 < 1e-18 then
+		return a
+	end
+	local f = math.max(0, math.min(1, geo.dot(geo.sub(p, a), ab) / l2))
+	return geo.add(a, geo.scale(ab, f))
+end
+
 -- Whether track at a point stays on the kind of ground the grid path had, so that smoothing doesn't take it where
--- the search chose not to go: clear(p, from, to) is true when p is inside the grid and off blocked cells, over water
--- only where the nearest of path[from..to] is, and within MAX_GROUND_DIFF of that point's ground.
+-- the search chose not to go. clear(p, from, to) takes q, the point of the path line path[from..to] nearest to p,
+-- and is true when p is inside the grid and off blocked cells, over water only where q is, and its ground is within
+-- MAX_GROUND_DIFF of the uniform slope across the path at q. That slope comes from the mirror image of p, q' = 2q − p:
+-- on any plane the rise from q to p equals the rise from q' to q, so h(p) − 2h(q) + h(q') is zero on a tilted plane
+-- (bilinear heights are exact there) and measures only the bend in the ground across the path, at the scale of the
+-- offset: a hill beside the path, or the valley side above it. Comparing h(p) with h(q) alone would refuse any
+-- offset on a plain incline.
 local function pathGuard(g : Grid, path : {Pt}) : function(p : Pt, from : integer, to : integer) : boolean
 	local n = #path
-	local pathZ : {number} = {}
-	local pathWet : {boolean} = {}
 	-- The longest step between neighbouring path points: the nearest-point search skips ahead by it.
 	local maxGap = 1e-9
-	for k, q in ipairs(path) do
-		pathZ[k] = grid.heightAt(g, q)
-		pathWet[k] = grid.waterAt(g, q)
-		if k > 1 then
-			maxGap = math.max(maxGap, geo.dist(path[k - 1], q))
-		end
+	for k = 2, n do
+		maxGap = math.max(maxGap, geo.dist(path[k - 1], path[k]))
 	end
 	-- Checks come in runs along a piece, so the last answer is a good first guess for the next.
 	local hint = 1
@@ -145,10 +155,14 @@ local function pathGuard(g : Grid, path : {Pt}) : function(p : Pt, from : intege
 		if hint < from or hint > to then
 			hint = from
 		end
-		local best, bestD = hint, geo.dist(p, path[hint])
+		-- Plain arithmetic rather than geo.dist: this is the guard's inner loop, and geo allocates a table per call.
+		local px, py = p.x, p.y
+		local h = path[hint]
+		local best, bestD = hint, math.sqrt((h.x - px) * (h.x - px) + (h.y - py) * (h.y - py))
 		local k = from
 		while k <= to do
-			local d = geo.dist(p, path[k])
+			local q = path[k]
+			local d = math.sqrt((q.x - px) * (q.x - px) + (q.y - py) * (q.y - py))
 			if d < bestD then
 				best, bestD = k, d
 			end
@@ -168,11 +182,26 @@ local function pathGuard(g : Grid, path : {Pt}) : function(p : Pt, from : intege
 		if g.blocked[cell] then
 			return false
 		end
+		from, to = math.max(1, from), math.min(n, to)
 		local k = nearest(p, from, to)
-		if g.water[cell] and not pathWet[k] then
+		-- The nearest point of the path line lies on a segment either side of its nearest vertex.
+		local q = path[k]
+		local qd = geo.dist(p, q)
+		for __, m in ipairs({ k - 1, k + 1 }) do
+			if m >= from and m <= to then
+				local c = project(p, path[k], path[m])
+				local cd = geo.dist(p, c)
+				if cd < qd then
+					q, qd = c, cd
+				end
+			end
+		end
+		if g.water[cell] and not grid.waterAt(g, q) then
 			return false
 		end
-		return math.abs(grid.heightAt(g, p) - pathZ[k]) <= MAX_GROUND_DIFF
+		local mirror = geo.sub(geo.scale(q, 2), p)
+		local bend = grid.heightAt(g, p) - 2 * grid.heightAt(g, q) + grid.heightAt(g, mirror)
+		return math.abs(bend) <= MAX_GROUND_DIFF
 	end
 end
 

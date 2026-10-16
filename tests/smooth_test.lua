@@ -193,6 +193,30 @@ t.test("smooth: the guard never tightens an arc below its minRadius", function()
 	t.ok(r.guarded > 0, "still counted")
 end)
 
+-- Distance from p to the polyline through pts.
+local function polylineDist(p, pts)
+	local best = math.huge
+	for k = 2, #pts do
+		local a, b = pts[k - 1], pts[k]
+		local abx, aby = b.x - a.x, b.y - a.y
+		local f = math.max(0, math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / (abx * abx + aby * aby)))
+		local dx, dy = p.x - a.x - abx * f, p.y - a.y - aby * f
+		best = math.min(best, math.sqrt(dx * dx + dy * dy))
+	end
+	return best
+end
+
+t.test("smooth: the guard lets a point go rather than keep it with curves below its minRadius", function()
+	-- Keeping (500, 0) would squeeze both 45° turns onto the 71 m between it and (550, 50): 85 m curves. Cutting the
+	-- corner is the lesser evil.
+	local jog = { P(0, 0), P(500, 0), P(550, 50), P(1000, 50) }
+	local r = smooth.fillet(jog, 200, {}, { step = 5, minRadius = 120, clear = function(p)
+		return polylineDist(p, jog) <= 1
+	end })
+	t.ok(r.minRadius >= 120 - 1e-6, "radius " .. r.minRadius)
+	t.eq(r.removed, 1, "dropped anyway")
+end)
+
 t.test("smooth: a guard that finds nothing changes nothing", function()
 	local jog = { P(0, 0), P(500, 0), P(550, 50), P(1000, 50) }
 	local plain = smooth.fillet(jog, 200, {})
