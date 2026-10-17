@@ -103,6 +103,14 @@ global record PgraceRailRouterRoute
 		guard : PgraceRailRouterSmooth.Guard
 	end
 
+	-- A leg's heights being fitted (spread over steps): its samples, and what finishing it needs. Internal.
+	record LegHeights
+		fitted : PgraceRailRouterSmooth.Result
+		samples : {PgraceRailRouterSmooth.Sample}
+		blockedSamples : integer
+		fit : PgraceRailRouterProfile.FitJob
+	end
+
 	-- A leg as built so far: its path, simplified and fitted, the radius it was searched for, and its search cost.
 	-- Internal.
 	record LegTry
@@ -172,6 +180,7 @@ global record PgraceRailRouterRoute
 		resited : {integer : boolean}
 		simplified : Simplified
 		fitted : PgraceRailRouterSmooth.Result
+		heights : LegHeights
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
 		-- is never changed.
 		taken : {integer : boolean}
@@ -180,8 +189,8 @@ global record PgraceRailRouterRoute
 
 	start : function(input : Input) : Job
 	-- One unit of work: part of a station's site search (see stations.stepFind), starting a search (a scout or a leg's), up to maxExpansions states of it,
-	-- turning a station to face the scouted line, or building a leg from its path (curves, heights). true once the
-	-- plan is finished (whether it succeeded or not).
+	-- turning a station to face the scouted line, or building a leg from its path (its curves; then its heights, over
+	-- one step or more). true once the plan is finished (whether it succeeded or not).
 	-- Where weights.minSearchRadius is below weights.minRadius, a leg is searched several times: first with turns
 	-- spaced for minSearchRadius (the fallback; no path there fails the plan with "no_path"), then for minRadius,
 	-- halving while above minSearchRadius, until a path costs at most 10% more than the fallback's; if none does,

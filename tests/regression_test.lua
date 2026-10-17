@@ -44,7 +44,8 @@ local SWEEP_SLACK = 30
 
 -- base: length (m), estimate, tight (curves below the mode's radius), bridges, bridgeLength, tunnels, tunnelLength
 -- (m), sweep (the widest any leg's heading swings, degrees). Recorded 2026-10-17 (mod commit after the pocketed-site,
--- area and re-siting fixes).
+-- area and re-siting fixes); re-recorded the same day for the cost-optimal height profile (Fastest estimates down by
+-- up to 27%, 5% over the set; Cheapest unchanged but Pensacola → Columbus, 5% down).
 local ROUTES = {
 	{ map = TEST_MAP, from = "Bangor", to = "Imperial Beach", mode = "cheapest", track = "Standard Tracks", quick = true,
 		stopsSeen = "Bangor, Mercer Island, Antelope, Aloha, Imperial Beach",
@@ -65,35 +66,35 @@ local ROUTES = {
 	-- Before the fixes: an 8 m and a 48 m curve, and 2 samples on blocked cells (a loop between Temple City and Miami).
 	{ map = BIG_MAP, from = "Ames", to = "Bridgeport", mode = "fastest", track = "High-Speed Tracks",
 		stopsSeen = "Ames, Foster City, Temple City, Miami, Bridgeport",
-		base = { length = 11813, estimate = 34240310, tight = 21, bridges = 9, bridgeLength = 2594, tunnels = 3, tunnelLength = 1359, sweep = 154 } },
+		base = { length = 11813, estimate = 27135207, tight = 21, bridges = 9, bridgeLength = 1861, tunnels = 1, tunnelLength = 839, sweep = 154 } },
 	{ map = BIG_MAP, from = "Pensacola", to = "Columbus", mode = "cheapest",
 		stopsSeen = "Pensacola, Napa, Novato, Columbus",
-		base = { length = 7155, estimate = 2713578, tight = 5, bridges = 1, bridgeLength = 96, tunnels = 0, tunnelLength = 0, sweep = 121 } },
+		base = { length = 7155, estimate = 2575686, tight = 5, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 121 } },
 	-- Known: 4 samples on a blocked cell just past Napa. Buildings pull Napa's room to turn back to 3 m, and the grid
 	-- path (searched at the 220 m fallback radius, which turns freely) jogs 78° right then 77° left 66 m apart. Those
 	-- two corners don't fit even at 55 m, so smoothing drops them and cuts the corner over the cell (a cut corner rather
 	-- than a curve the game can't build). Fixing it needs the search to space turns for the build minimum.
 	{ map = BIG_MAP, from = "Pensacola", to = "Columbus", mode = "fastest", knownBlocked = 4,
 		stopsSeen = "Pensacola, Napa, Novato, Columbus",
-		base = { length = 7831, estimate = 16859649, tight = 12, bridges = 4, bridgeLength = 1945, tunnels = 0, tunnelLength = 0, sweep = 155 } },
+		base = { length = 7831, estimate = 16122673, tight = 12, bridges = 4, bridgeLength = 1774, tunnels = 0, tunnelLength = 0, sweep = 155 } },
 	{ map = BIG_MAP, from = "Englewood", to = "Weston", mode = "cheapest",
 		stopsSeen = "Englewood, Sulphur, Weston",
 		base = { length = 5776, estimate = 2244955, tight = 1, bridges = 1, bridgeLength = 115, tunnels = 0, tunnelLength = 0, sweep = 129 } },
 	{ map = BIG_MAP, from = "Englewood", to = "Weston", mode = "fastest",
 		stopsSeen = "Englewood, Sulphur, Weston",
-		base = { length = 4771, estimate = 12370321, tight = 10, bridges = 3, bridgeLength = 1671, tunnels = 0, tunnelLength = 0, sweep = 177 } },
+		base = { length = 4771, estimate = 11759586, tight = 10, bridges = 3, bridgeLength = 1529, tunnels = 0, tunnelLength = 0, sweep = 177 } },
 	{ map = BIG_MAP, from = "Gardner", to = "Herndon", mode = "cheapest",
 		stopsSeen = "Gardner, Eldersburg, Pottstown, Herndon",
 		base = { length = 7878, estimate = 2836021, tight = 1, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 87 } },
 	{ map = BIG_MAP, from = "Gardner", to = "Herndon", mode = "fastest",
 		stopsSeen = "Gardner, Eldersburg, Pottstown, Herndon",
-		base = { length = 8054, estimate = 16813858, tight = 9, bridges = 6, bridgeLength = 974, tunnels = 1, tunnelLength = 517, sweep = 71 } },
+		base = { length = 8054, estimate = 16637729, tight = 9, bridges = 6, bridgeLength = 974, tunnels = 1, tunnelLength = 493, sweep = 71 } },
 	-- Failed no_path until station sites had to connect to open country: Bartlesville's lay 170 m from the map's
 	-- south edge with buildings across its whole arriving side.
 	{ map = BIG_MAP, from = "Durham", to = "Bartlesville", mode = "cheapest",
 		stopsSeen = "Durham, Pasadena, Bartlesville", base = { length = 6711, estimate = 2415864, tight = 2, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 132 } },
 	{ map = BIG_MAP, from = "Durham", to = "Bartlesville", mode = "fastest",
-		stopsSeen = "Durham, Pasadena, Bartlesville", base = { length = 6789, estimate = 11798944, tight = 15, bridges = 4, bridgeLength = 1034, tunnels = 0, tunnelLength = 0, sweep = 187 } },
+		stopsSeen = "Durham, Pasadena, Bartlesville", base = { length = 6789, estimate = 8564554, tight = 15, bridges = 3, bridgeLength = 285, tunnels = 0, tunnelLength = 0, sweep = 187 } },
 
 	-- PottstownTown. Dover to Camarillo failed no_path in-game (Gillette to Pottstown, after two wider areas):
 	-- Pottstown's site was clear but walled in, 18 cells with no way out. Then South Valley's station faced so the
@@ -103,17 +104,17 @@ local ROUTES = {
 		base = { length = 24986, estimate = 9655580, tight = 11, bridges = 4, bridgeLength = 459, tunnels = 0, tunnelLength = 0, sweep = 208 } },
 	{ map = POTTSTOWN_MAP, from = "Dover", to = "Camarillo", mode = "fastest", knownBlocked = 4,
 		stopsSeen = "Dover, Bronx, New Bedford, Gillette, Pottstown, South Valley, Pullman, Silverdale, Hartford, Camarillo",
-		base = { length = 25372, estimate = 50017625, tight = 56, bridges = 23, bridgeLength = 5065, tunnels = 1, tunnelLength = 97, sweep = 230 } },
+		base = { length = 25372, estimate = 49280954, tight = 56, bridges = 23, bridgeLength = 5065, tunnels = 0, tunnelLength = 0, sweep = 230 } },
 	{ map = POTTSTOWN_MAP, from = "Gillette", to = "Pottstown", mode = "cheapest", stops = {},
 		stopsSeen = "Gillette, Pottstown", base = { length = 1375, estimate = 667773, tight = 1, bridges = 1, bridgeLength = 120, tunnels = 0, tunnelLength = 0, sweep = 68 } },
 	{ map = POTTSTOWN_MAP, from = "Elkhart", to = "Fernley", mode = "cheapest",
 		stopsSeen = "Elkhart, West Haven, Brooklyn, Fernley", base = { length = 8815, estimate = 3173221, tight = 1, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 138 } },
 	{ map = POTTSTOWN_MAP, from = "Elkhart", to = "Fernley", mode = "fastest",
-		stopsSeen = "Elkhart, West Haven, Brooklyn, Fernley", base = { length = 8781, estimate = 15980614, tight = 15, bridges = 3, bridgeLength = 418, tunnels = 1, tunnelLength = 620, sweep = 143 } },
+		stopsSeen = "Elkhart, West Haven, Brooklyn, Fernley", base = { length = 8781, estimate = 15610309, tight = 15, bridges = 3, bridgeLength = 418, tunnels = 1, tunnelLength = 571, sweep = 143 } },
 	{ map = POTTSTOWN_MAP, from = "Chicopee", to = "Colleyville", mode = "cheapest",
 		stopsSeen = "Chicopee, Roswell, Des Moines, Colleyville", base = { length = 6506, estimate = 2342212, tight = 4, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 144 } },
 	{ map = POTTSTOWN_MAP, from = "Chicopee", to = "Colleyville", mode = "fastest",
-		stopsSeen = "Chicopee, Roswell, Des Moines, Colleyville", base = { length = 8627, estimate = 20673464, tight = 20, bridges = 3, bridgeLength = 1498, tunnels = 1, tunnelLength = 646, sweep = 192 } },
+		stopsSeen = "Chicopee, Roswell, Des Moines, Colleyville", base = { length = 8627, estimate = 19699274, tight = 20, bridges = 3, bridgeLength = 1272, tunnels = 1, tunnelLength = 646, sweep = 192 } },
 
 	-- New Game. Alliance to Aloha needed the wider area in-game (Turlock's first site was in a dead end); then the line
 	-- hooked round into Owings Mills with an 8 m curve, until stations were re-sited by their legs' costs.
@@ -124,13 +125,13 @@ local ROUTES = {
 	{ map = NEWGAME_MAP, from = "Alliance", to = "Aloha", mode = "cheapest", knownBelow = 1, knownBlocked = 1,
 		stopsSeen = "Alliance, Hemet, Turlock, Owings Mills, Aloha", base = { length = 13885, estimate = 6122831, tight = 10, bridges = 2, bridgeLength = 781, tunnels = 0, tunnelLength = 0, sweep = 219 } },
 	{ map = NEWGAME_MAP, from = "Alliance", to = "Aloha", mode = "fastest",
-		stopsSeen = "Alliance, Hemet, Turlock, Owings Mills, Aloha", base = { length = 11327, estimate = 26390024, tight = 21, bridges = 9, bridgeLength = 2850, tunnels = 2, tunnelLength = 244, sweep = 137 } },
+		stopsSeen = "Alliance, Hemet, Turlock, Owings Mills, Aloha", base = { length = 11327, estimate = 24550290, tight = 21, bridges = 9, bridgeLength = 2851, tunnels = 0, tunnelLength = 0, sweep = 137 } },
 	-- Known: leg 1 still hooks round into Los Altos (sweep 267°): re-siting both its stations found nothing cheaper, and
 	-- the 55 m curves at Los Altos' arriving end cut a building's buffer (6 samples, guarded at the build minimum).
 	{ map = NEWGAME_MAP, from = "Bossier City", to = "Ashland", mode = "cheapest", knownBlocked = 6,
 		stopsSeen = "Bossier City, Los Altos, Fairborn, Ashland", base = { length = 8985, estimate = 3234525, tight = 5, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 267 } },
 	{ map = NEWGAME_MAP, from = "Bossier City", to = "Ashland", mode = "fastest",
-		stopsSeen = "Bossier City, Los Altos, Fairborn, Ashland", base = { length = 8956, estimate = 31369502, tight = 18, bridges = 4, bridgeLength = 2911, tunnels = 2, tunnelLength = 1206, sweep = 194 } },
+		stopsSeen = "Bossier City, Los Altos, Fairborn, Ashland", base = { length = 8956, estimate = 31091805, tight = 18, bridges = 4, bridgeLength = 2889, tunnels = 2, tunnelLength = 1183, sweep = 194 } },
 	{ map = NEWGAME_MAP, from = "Galt", to = "Bell Gardens", mode = "cheapest",
 		stopsSeen = "Galt, Bel Air North, Des Moines, Bell Gardens", base = { length = 6374, estimate = 2294498, tight = 3, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 81 } },
 	{ map = NEWGAME_MAP, from = "Galt", to = "Bell Gardens", mode = "fastest",
@@ -140,11 +141,11 @@ local ROUTES = {
 	{ map = NEWGAME2_MAP, from = "Adelanto", to = "Deltona", mode = "cheapest",
 		stopsSeen = "Adelanto, Middle River, Great Falls, Deltona", base = { length = 11953, estimate = 4539411, tight = 10, bridges = 2, bridgeLength = 164, tunnels = 0, tunnelLength = 0, sweep = 165 } },
 	{ map = NEWGAME2_MAP, from = "Adelanto", to = "Deltona", mode = "fastest",
-		stopsSeen = "Adelanto, Middle River, Great Falls, Deltona", base = { length = 9595, estimate = 31350789, tight = 15, bridges = 6, bridgeLength = 4604, tunnels = 1, tunnelLength = 145, sweep = 90 } },
+		stopsSeen = "Adelanto, Middle River, Great Falls, Deltona", base = { length = 9595, estimate = 30450128, tight = 15, bridges = 6, bridgeLength = 4650, tunnels = 0, tunnelLength = 0, sweep = 90 } },
 	{ map = NEWGAME2_MAP, from = "Cornelius", to = "Perth Amboy", mode = "cheapest",
 		stopsSeen = "Cornelius, Salinas, Oshkosh, Bonney Lake, Perth Amboy", base = { length = 11072, estimate = 3986080, tight = 3, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 100 } },
 	{ map = NEWGAME2_MAP, from = "Cornelius", to = "Perth Amboy", mode = "fastest",
-		stopsSeen = "Cornelius, Salinas, Oshkosh, Bonney Lake, Perth Amboy", base = { length = 10615, estimate = 29927226, tight = 11, bridges = 5, bridgeLength = 1447, tunnels = 3, tunnelLength = 1615, sweep = 82 } },
+		stopsSeen = "Cornelius, Salinas, Oshkosh, Bonney Lake, Perth Amboy", base = { length = 10615, estimate = 26202146, tight = 11, bridges = 5, bridgeLength = 1265, tunnels = 2, tunnelLength = 1227, sweep = 82 } },
 }
 
 -- The in-game route captures beside the maps, and how far the maps are from them (tools/compare_capture.lua's

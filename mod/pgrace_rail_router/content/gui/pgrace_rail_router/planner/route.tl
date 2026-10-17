@@ -15,6 +15,7 @@ local type Leg = PgraceRailRouterRoute.Leg
 local type Summary = PgraceRailRouterRoute.Summary
 local type Plan = PgraceRailRouterRoute.Plan
 local type Job = PgraceRailRouterRoute.Job
+local type LegHeights = PgraceRailRouterRoute.LegHeights
 
 -- Straight track before and after each platform, so trains run in line with it (metres).
 local APPROACH = 100.0
@@ -32,6 +33,9 @@ local EXIT_RADIUS = MAX_STATION_RADIUS + 1000.0
 local SITE_WORK_PER_STEP = 500
 -- Spacing of the height samples along the track (metres).
 local SAMPLE_STEP = 25.0
+-- Work a leg's height fit does per step (see profile.step; about 32 units a µs on desktop Lua, so 0.6 ms, about
+-- 2.5 ms in-game). Most legs fit in one step; a 10 km leg over 80 m hills takes about 13.
+local PROFILE_WORK_PER_STEP = 20000
 -- Grid paths are simplified to within this share of a cell before the curves are fitted.
 local SIMPLIFY_SHARE = 0.75
 -- How far the ground under the smoothed track may stray from a uniform slope across the grid path it replaces
@@ -366,7 +370,7 @@ local function startResite(job : Job, i : integer)
 
 		bestCost = math.huge, best = station.site, keep = { path = job.path, simplified = job.simplified,
 		fitted = job.fitted, radius = job.searchRadius, cost = job.pathCost } }
-	job.path, job.simplified, job.fitted = nil, nil, nil
+	job.path, job.simplified, job.fitted, job.heights = nil, nil, nil, nil
 end
 
 -- One step of re-siting (see startResite): part of a candidate's site search, starting or running one of its legs'
@@ -661,14 +665,9 @@ local function fitLeg(input : Input, simplified : PgraceRailRouterRoute.Simplifi
 	return fitted
 end
 
-local function finishLeg(input : Input, a : Station, b : Station, fitted : PgraceRailRouterSmooth.Result) : Leg
+-- Samples a fitted leg's ground and starts fitting its heights (profile.start; stepped by route.step).
+local function startHeights(input : Input, a : Station, b : Station, fitted : PgraceRailRouterSmooth.Result) : LegHeights
 	local g, w = input.grid, input.weights
-	local tight = 0
-	for __, piece in ipairs(fitted.pieces) do
-		if piece.kind == "arc" and piece.radius < w.minRadius - 1e-6 then
-			tight = tight + 1
-		end
-	end
 	local samples = smooth.sample(fitted.pieces, SAMPLE_STEP)
 	local s : {number} = {}
 	local ground : {number} = {}
@@ -687,14 +686,29 @@ local function finishLeg(input : Input, a : Station, b : Station, fitted : Pgrac
 		end
 		crossing[i] = g.track[cell] or (w.bridgeRoads and g.road[cell]) or false
 	end
-	local fit = profile.fit(s, ground, water, w.maxGrade, w.bridgeAbove, w.tunnelBelow, a.z, b.z, crossing)
+	local fit = profile.start(s, ground, water, { maxGrade = w.maxGrade, bridgeAbove = w.bridgeAbove,
+		tunnelBelow = w.tunnelBelow, bridgeCostFactor = w.bridgeCostFactor, tunnelCostFactor = w.tunnelCostFactor,
+		zStart = a.z, zEnd = b.z, crossing = crossing })
+	return { fitted = fitted, samples = samples, blockedSamples = blockedSamples, fit = fit }
+end
+
+-- The leg, once its heights are fitted.
+local function finishLeg(input : Input, heights : LegHeights) : Leg
+	local w = input.weights
+	local fitted, samples, fit = heights.fitted, heights.samples, heights.fit.result
+	local tight = 0
+	for __, piece in ipairs(fitted.pieces) do
+		if piece.kind == "arc" and piece.radius < w.minRadius - 1e-6 then
+			tight = tight + 1
+		end
+	end
 	local length = 0.0
-	if #s > 0 then
-		length = s[#s]
+	if #samples > 0 then
+		length = samples[#samples].s
 	end
 	return { pieces = fitted.pieces, samples = samples, z = fit.z, spans = fit.spans, length = length,
 		minRadius = fitted.minRadius, maxGrade = fit.maxGrade, tightCurves = tight, steepEnds = not fit.feasible,
-		blockedSamples = blockedSamples, guarded = fitted.guarded }
+		blockedSamples = heights.blockedSamples, guarded = fitted.guarded }
 end
 
 local function summarise(input : Input, plan : Plan) : Summary
@@ -888,8 +902,14 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			end
 			return false
 		end
-		local leg = finishLeg(input, a, b, job.fitted)
-		job.simplified, job.fitted = nil, nil
+		if job.heights == nil then
+			job.heights = startHeights(input, a, b, job.fitted)
+		end
+		if not profile.step(job.heights.fit, PROFILE_WORK_PER_STEP) then
+			return false
+		end
+		local leg = finishLeg(input, job.heights)
+		job.simplified, job.fitted, job.heights = nil, nil, nil
 		leg.searchRadius, leg.searchExpansions = job.searchRadius, job.searchExpansions
 		table.insert(plan.legs, leg)
 		job.path = nil
