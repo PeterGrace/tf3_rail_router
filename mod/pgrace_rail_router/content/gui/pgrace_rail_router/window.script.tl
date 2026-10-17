@@ -54,12 +54,12 @@ local record Settings
 	ticked : {integer : boolean}
 end
 
--- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
 -- "Show all towns" in the stop list, kept until the game restarts.
 local rememberedShowAll = false
 -- Unticked candidates listed besides the ticked ones while the list is short.
 local EXTRA_STOPS = 5
 
+-- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
 local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, ticked = {} }
 
 local record GameData
