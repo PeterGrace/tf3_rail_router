@@ -62,6 +62,9 @@ end
 
 -- "Show all towns" in the stop list, kept until the game restarts.
 local rememberedShowAll = false
+-- Whether the station list and (PROBE) the dev tools are unfolded, kept between openings like the settings.
+local rememberedStations = false
+local rememberedProbes = false -- PROBE (remove before release)
 -- Unticked candidates listed besides the ticked ones while the list is short.
 local EXTRA_STOPS = 5
 
@@ -249,6 +252,21 @@ local function textRow(text : string, class : string) : TreeNodeId
 		children = {
 			builtin.TextView{ meta = { class = class or "font-scale-body" }, text = text },
 		},
+	}
+end
+
+-- A row that shows or hides what follows it: the combobox arrow (down when shown) and a label.
+local function expander(expanded : boolean, label : string, onClick : function()) : TreeNodeId
+	return builtin.Button{
+		content = builtin.BoxLayout{
+			orientation = builtin.type.Orientation.Horizontal,
+			children = {
+				builtin.ImageView{ path = expanded and "::/gui/builtin/combobox/arrow_down.tga"
+					or "::/gui/builtin/combobox/arrow_right.tga" },
+				builtin.TextView{ text = label },
+			},
+		},
+		onClick = onClick,
 	}
 end
 
@@ -443,10 +461,6 @@ local function resultRows(plan : Plan, priceFactor : number) : {TreeNodeId}
 	if sum.blockedSamples > 0 then
 		table.insert(rows, textRow(_("Warning: the curves cut across buildings in places."), "font-scale-body"))
 	end
-	for __, station in ipairs(plan.stations) do
-		table.insert(rows, textRow(fill(_("{town}: station {distance} from the centre"),
-			{ town = station.town.name, distance = formatLength(station.site.distance) }), "font-scale-annotation"))
-	end
 	return rows
 end
 
@@ -474,6 +488,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local priceState : ReactStateT<{string : number}> = react.useState({})
 	local generationState = react.useState(0) as ReactStateT<integer>
 	local showAllState = react.useState(rememberedShowAll) as ReactStateT<boolean>
+	local stationsState = react.useState(rememberedStations) as ReactStateT<boolean>
+	local probesState = react.useState(rememberedProbes) as ReactStateT<boolean> -- PROBE (remove before release)
 	local showState = react.useState(false) as ReactStateT<boolean>
 	local progressState : ReactStateT<Progress> = react.useState(nil)
 	local errorState = react.useState(false) as ReactStateT<boolean>
@@ -1055,20 +1071,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	if #candidates > 0 and (showAllState:old() or #candidates > EXTRA_STOPS) then
 		local expanded = showAllState:old()
 		local toggleLabel = expanded and _("Show fewer") or fill(_("Show all {count} towns"), { count = tostring(#candidates) })
-		table.insert(body, builtin.Button{
-			content = builtin.BoxLayout{
-				orientation = builtin.type.Orientation.Horizontal,
-				children = {
-					builtin.ImageView{ path = expanded and "::/gui/builtin/combobox/arrow_down.tga"
-						or "::/gui/builtin/combobox/arrow_right.tga" },
-					builtin.TextView{ text = toggleLabel },
-				},
-			},
-			onClick = function()
-				rememberedShowAll = not expanded
-				showAllState:set(not expanded)
-			end,
-		})
+		table.insert(body, expander(expanded, toggleLabel, function()
+			rememberedShowAll = not expanded
+			showAllState:set(not expanded)
+		end))
 	end
 	table.insert(body, builtin.Button{
 		meta = { class = "primary" },
@@ -1096,45 +1102,6 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 	if errorState:old() then
 		table.insert(body, textRow(_("Planning failed (see log)"), "font-scale-body"))
-	end
-	-- PROBE (remove before release): not translated.
-	table.insert(body, builtin.Button{
-		content = builtin.TextView{ text = "Capture whole map (probe)" },
-		onClick = startCapture,
-	})
-	-- PROBE (remove before release): the milestone 2 probes, at the camera's look-at point; not translated.
-	local function startProbe(name : string)
-		if track == nil or workRef:get() ~= nil or captureRef:get() ~= nil or checkRef:get() ~= nil
-				or probeRef:get() ~= nil then
-			return
-		end
-		probeRef:set({ name = name, track = track, electrified = electrified })
-		probeStatusState:set("Probe " .. name .. " running…")
-	end
-	for __, p in ipairs({
-		{ "P1", "Probe P1: log track near camera" },
-		{ "P2", "Probe P2: dry-run test track" },
-		{ "P4", "Probe P4: dry-run across a street" },
-		{ "P8", "Probe P8: bridge clearance over track and street" },
-		{ "P6", "Probe P6: dry-run a station" },
-	}) do
-		table.insert(body, builtin.Button{
-			content = builtin.TextView{ text = p[2] },
-			onClick = function()
-				startProbe(p[1])
-			end,
-		})
-	end
-	if probeStatusState:old() ~= nil then
-		table.insert(body, textRow(probeStatusState:old(), "font-scale-annotation"))
-	end
-	local capturePercent = capturePercentState:old()
-	if capturePercent ~= nil then
-		table.insert(body, textRow("Capturing map… " .. tostring(capturePercent) .. "%", "font-scale-annotation"))
-	elseif captureResultState:old() == "done" then
-		table.insert(body, textRow("Map captured (see log)", "font-scale-annotation"))
-	elseif captureResultState:old() == "failed" then
-		table.insert(body, textRow("Map capture failed (see log)", "font-scale-annotation"))
 	end
 	local plan = planState:old()
 	if plan ~= nil then
@@ -1220,7 +1187,65 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 					table.insert(body, textRow(_("The check failed (see log)"), "font-scale-body"))
 				end
 			end
+			-- Each station's distance from its town centre, folded away: a long line has many.
+			table.insert(body, expander(stationsState:old(), fill(_("Stations ({count})"),
+				{ count = tostring(#plan.stations) }), function()
+				rememberedStations = not stationsState:old()
+				stationsState:set(rememberedStations)
+			end))
+			if stationsState:old() then
+				for __, station in ipairs(plan.stations) do
+					table.insert(body, textRow(fill(_("{town}: station {distance} from the centre"),
+						{ town = station.town.name, distance = formatLength(station.site.distance) }),
+						"font-scale-annotation"))
+				end
+			end
 		end
+	end
+	-- PROBE (remove before release): the milestone 2 probes, at the camera's look-at point; not translated.
+	local function startProbe(name : string)
+		if track == nil or workRef:get() ~= nil or captureRef:get() ~= nil or checkRef:get() ~= nil
+				or probeRef:get() ~= nil then
+			return
+		end
+		probeRef:set({ name = name, track = track, electrified = electrified })
+		probeStatusState:set("Probe " .. name .. " running…")
+	end
+	-- PROBE (remove before release): the dev tools, folded away so the route and its check stay on screen.
+	table.insert(body, expander(probesState:old(), "Probes", function()
+		rememberedProbes = not probesState:old()
+		probesState:set(rememberedProbes)
+	end))
+	if probesState:old() then
+		table.insert(body, builtin.Button{
+			content = builtin.TextView{ text = "Capture whole map (probe)" },
+			onClick = startCapture,
+		})
+		for __, p in ipairs({
+			{ "P1", "Probe P1: log track near camera" },
+			{ "P2", "Probe P2: dry-run test track" },
+			{ "P4", "Probe P4: dry-run across a street" },
+			{ "P8", "Probe P8: bridge clearance over track and street" },
+			{ "P6", "Probe P6: dry-run a station" },
+		}) do
+			table.insert(body, builtin.Button{
+				content = builtin.TextView{ text = p[2] },
+				onClick = function()
+					startProbe(p[1])
+				end,
+			})
+		end
+	end
+	if probeStatusState:old() ~= nil then
+		table.insert(body, textRow(probeStatusState:old(), "font-scale-annotation"))
+	end
+	local capturePercent = capturePercentState:old()
+	if capturePercent ~= nil then
+		table.insert(body, textRow("Capturing map… " .. tostring(capturePercent) .. "%", "font-scale-annotation"))
+	elseif captureResultState:old() == "done" then
+		table.insert(body, textRow("Map captured (see log)", "font-scale-annotation"))
+	elseif captureResultState:old() == "failed" then
+		table.insert(body, textRow("Map capture failed (see log)", "font-scale-annotation"))
 	end
 
 	return builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = body }
