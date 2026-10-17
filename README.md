@@ -30,7 +30,8 @@ tests/                                # unit tests for pure modules
 
 ```bash
 just check      # type-check against the game's API definitions
-just test       # unit tests
+just test       # unit tests, plus the quick regression routes
+just regress    # unit tests plus every regression route (about 4 s)
 just verify     # check + test + release-check
 just install    # symlink into TF3's staging area (just install-copy to copy)
 ```
@@ -38,21 +39,25 @@ just install    # symlink into TF3's staging area (just install-copy to copy)
 Restart TF3 after code changes. The log is
 `~/.local/share/Steam/userdata/*/3493540/local/crash_dump/stdout.txt`; our lines start with `[rail_router]`.
 
-## Map captures (dev tool)
+## Map captures and regression routes
 
 A temporary **Capture whole map (probe)** button in the window writes the whole map to the log as `MAP` records
-(format: `docs/map-capture-format.md`); **Find route** writes its own input as `CAPTURE` records. Offline:
+(format: `docs/map-capture-format.md`); **Find route** writes its own input as `CAPTURE` records. Shared maps live in
+the kit's `../maps/` folder (`../maps/README.md`); `tests/regression_test.lua` plans fixed routes on them and checks
+invariants (no curve below the build minimum, nothing on blocked cells, step time) and figures against a baseline
+(how to re-record is at its top). It skips with a message if `../maps/` isn't there. Offline:
 
 ```bash
 python3 tools/extract_captures.py                     # complete MAP / CAPTURE blocks from stdout.txt into captures/
-lua tools/replay.lua --map captures/<map> --list      # the map's towns and track types
-lua tools/replay.lua --map captures/<map> --from Ames --to Bridgeport [--mode fastest] [out.ppm]
+lua tools/replay.lua --map ../maps/<map> --list       # the map's towns and track types
+lua tools/replay.lua --map ../maps/<map> --from Ames --to Bridgeport [--mode fastest] [--stops a,b|none] [out.ppm]
 lua tools/replay.lua captures/<capture> [out.ppm]     # replay one in-game Find route
 lua tools/compare_capture.lua captures/<map> captures/<capture>   # map rasterised vs the in-game grid
 ```
 
 `mod/.../mapcapture.tl` + `mapformat.tl`, `tools/maplib.lua` and `tools/extract_captures.py` depend on nothing else
-in Rail Router, so other mods can copy them.
+in Rail Router; the kit's template carries copies, so every new mod gets them (`maplib.lua` is the same file).
+`tools/replaylib.lua` is the offline planning that `replay.lua` and the regression tests share.
 
 ## Releasing
 
