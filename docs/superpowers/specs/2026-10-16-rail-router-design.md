@@ -194,8 +194,10 @@ over that plan). Now the grid has one store (`grid.Store`), made by its first se
 in pages of 16 cells along a row (256 states), made where a search first goes, each state's cost and parent stamped
 with the id of the search that set them (so nothing is cleared between searches), plus the heap and the reachability
 fill's stamps and queue. Only the latest search may step or give its path (an older one errors); a finished search's
-copy (`grid.finished`, the search cache) keeps its own. Plans are byte-identical. That plan now allocates 14.6 MB,
-at most about 300 KB in a step (a new row's pages); the guard (Smoothing) works in plain numbers too. The regression
+copy (`grid.finished`, the search cache) keeps its own. Plans are byte-identical. With the guard in plain numbers
+too (Smoothing), that plan allocated 14.6 MB, at most about 300 KB in a step (a new row's pages); 26 MB since
+re-siting weighs time (more of it). Its slowest step is 1.4 ms on the desktop (min of three runs), 2.0 ms in a Lua
+5.2.2 built from source (3.0 ms before; 4.5 ms with a collector kept cycling over a 160 MB heap, 2.1 ms now). The regression
 set holds every step to 768 KB (`STEP_ALLOC_KB`; the most is about 600 KB, re-siting building a candidate's leg).
 `route.stepKind` names what each step does; the window logs the slowest step per kind and the most one allocated,
 and the replay tool prints both.
