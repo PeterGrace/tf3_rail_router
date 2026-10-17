@@ -31,7 +31,7 @@ tests/                                # unit tests for pure modules
 ```bash
 just check      # type-check against the game's API definitions
 just test       # unit tests, plus the quick regression routes
-just regress    # unit tests plus every regression route (about 4 s)
+just regress    # unit tests plus every regression route (about 13 s)
 just verify     # check + test + release-check
 just install    # symlink into TF3's staging area (just install-copy to copy)
 ```

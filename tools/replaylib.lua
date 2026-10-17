@@ -66,8 +66,8 @@ return function(root)
 	end
 
 	-- Runs the planner to the end with `expansions` per step (default: as the window). Returns the plan, the grid paths
-	-- per leg, the slowest single route.step per phase (ms; in-game Lua runs about 4 times slower), the slowest step
-	-- overall (ms) and the total time (ms).
+	-- per leg, the slowest single route.step per phase (ms, garbage collection left out; in-game Lua runs about 4 times
+	-- slower), the slowest step overall (ms) and the total time (ms).
 	function lib.runPlan(g, stops, weights, platform, expansions)
 		expansions = expansions or lib.STEP_EXPANSIONS
 		local start = clock()
@@ -76,9 +76,16 @@ return function(root)
 		local slowest, worst = {}, 0
 		while true do
 			local phase = job.phase
+			-- The collector is held off while a step is timed, and catches up between steps: a collection costs in
+			-- proportion to the whole heap, here the maps loaded (five in the regression test, hundreds of MB) and in
+			-- the game everything else, and lands on whichever step allocates past its threshold (one step "took"
+			-- 21 ms and 46 ms that way, 2 ms without).
+			collectgarbage("stop")
 			local before = clock()
 			local done = route.step(job, expansions)
 			local ms = (clock() - before) * 1000
+			collectgarbage("restart")
+			collectgarbage("step")
 			slowest[phase] = math.max(slowest[phase] or 0, ms)
 			worst = math.max(worst, ms)
 			if done then
