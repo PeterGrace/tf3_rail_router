@@ -4,7 +4,6 @@ local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/are
 
 local survey : PgraceRailRouterSurvey = {}
 
-local type Pt = PgraceRailRouterGeo.Pt
 local type Town = PgraceRailRouterCorridor.Town
 local type TrackType = PgraceRailRouterModes.TrackType
 local type Grid = PgraceRailRouterGrid.Grid

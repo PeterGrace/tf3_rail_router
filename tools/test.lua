@@ -11,6 +11,17 @@ local modId = idPipe:read("l")
 idPipe:close()
 assert(modId and modId ~= "", "tools/mod_id.sh found no mod")
 
+t.root, t.modId = root, modId
+
+-- The Lua that Teal generates for a content file (as the game runs it).
+function t.genTl(relPath)
+	local path = root .. "/mod/" .. modId .. "/content/" .. relPath
+	local f = assert(io.open(path, "r"))
+	local src = f:read("a")
+	f:close()
+	return (tl.gen(src, tl.new_env({ defaults = { gen_target = "5.1" } })))
+end
+
 function t.requireTl(relPath)
 	local path = root .. "/mod/" .. modId .. "/content/" .. relPath
 	local f = assert(io.open(path, "r"))
