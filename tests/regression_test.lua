@@ -16,7 +16,30 @@ local t = ...
 --   RAIL_ROUTER_REGRESS=full RAIL_ROUTER_RECORD=1 lua tools/test.lua | grep "^RECORD"
 -- and paste each printed `base = {...}` over the route's own below. Say in the commit why the figures moved.
 
-local mapsDir = t.root .. "/../maps"
+-- The kit's maps: RAIL_ROUTER_MAPS if set, else ../maps beside the repo; from a worktree (.worktrees/<name>), beside
+-- the main checkout, found through git's common directory.
+local function findMapsDir()
+	local env = os.getenv("RAIL_ROUTER_MAPS")
+	if env ~= nil and env ~= "" then
+		return env
+	end
+	local dir = t.root .. "/../maps"
+	local f = io.open(dir .. "/README.md", "r")
+	if f ~= nil then
+		f:close()
+		return dir
+	end
+	local p = io.popen('git -C "' .. t.root .. '" rev-parse --path-format=absolute --git-common-dir 2>/dev/null')
+	local common = p and p:read("l")
+	if p then
+		p:close()
+	end
+	if common ~= nil and common:match("/%.git$") then
+		return common:sub(1, -6) .. "/../maps"
+	end
+	return dir
+end
+local mapsDir = findMapsDir()
 local full = os.getenv("RAIL_ROUTER_REGRESS") == "full"
 local recording = os.getenv("RAIL_ROUTER_RECORD") == "1"
 
