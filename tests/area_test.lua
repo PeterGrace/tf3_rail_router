@@ -97,3 +97,44 @@ t.test("area.markCurve with zero tangents follows the chord like markLine", func
 	end
 	t.ok(n >= 15, "marked a line of cells")
 end)
+
+t.test("area.box: bounds clamp the box to the map's extent", function()
+	local stops = { town(-6000, -6000), town(6000, 7000) }
+	local bounds = { minX = -8192, minY = -8192, maxX = 8192, maxY = 8192 }
+	local b = area.box(stops, 100, 1.0, bounds)
+	-- Cut whole cells at a time: the edge cell straddles the map's edge.
+	t.ok(b.minX <= -8192 and b.minX > -8292, "minX " .. b.minX)
+	t.ok(b.minY <= -8192 and b.minY > -8292, "minY " .. b.minY)
+	t.ok(b.maxX >= 8192 - 100 and b.maxX < 8292 and b.maxY < 8292, "max at the edge")
+	local unclamped = area.box(stops, 100, 1.0)
+	t.near((b.minX - unclamped.minX) % 100, 0, 1e-6, "same cells as unclamped")
+	t.eq(b.cell, 100, "no coarsening needed on the map")
+	t.eq(b.nx, math.floor((b.maxX - b.minX) / 100) + 1, "nx")
+	-- Unclamped it would reach 11 km past the edge.
+	local wide = area.box(stops, 100, 1.0)
+	t.ok(wide.minX < -18000, "unclamped is wider")
+end)
+
+t.test("area.box: bounds well outside the box change nothing", function()
+	local stops = { town(-1000, 0), town(1000, 500) }
+	local a = area.box(stops, 100, 0.25)
+	local b = area.box(stops, 100, 0.25, { minX = -50000, minY = -50000, maxX = 50000, maxY = 50000 })
+	for _, k in ipairs({ "minX", "minY", "maxX", "maxY", "cell", "nx", "ny" }) do
+		t.eq(b[k], a[k], k)
+	end
+end)
+
+t.test("area.box: a clamped box still coarsens past MAX_CELLS", function()
+	local b = area.box({ town(-30000, -30000), town(30000, 30000) }, 100, 0.25,
+		{ minX = -40000, minY = -40000, maxX = 40000, maxY = 40000 })
+	t.ok(b.minX <= -40000 and b.minX > -40000 - b.cell * 1.25, "clamped")
+	t.ok(b.cell > 100, "coarser")
+	t.ok(b.nx * b.ny <= 250000, "within MAX_CELLS")
+end)
+
+t.test("area.box: widening a box already clamped on every side gives the same box", function()
+	local stops = { town(-6000, -6000), town(6000, 6000) }
+	local bounds = { minX = -8192, minY = -8192, maxX = 8192, maxY = 8192 }
+	t.ok(area.same(area.box(stops, 100, 0.5, bounds), area.box(stops, 100, 1.0, bounds)), "same")
+	t.ok(not area.same(area.box(stops, 100, 0.25), area.box(stops, 100, 1.0)), "unclamped differs")
+end)

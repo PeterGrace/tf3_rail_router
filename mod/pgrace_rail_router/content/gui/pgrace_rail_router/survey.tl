@@ -8,13 +8,17 @@ local type Town = PgraceRailRouterCorridor.Town
 local type TrackType = PgraceRailRouterModes.TrackType
 local type Grid = PgraceRailRouterGrid.Grid
 local type Job = PgraceRailRouterSurvey.Job
+local type Bounds = PgraceRailRouterArea.Bounds
 
 local LOG_PREFIX = "[rail_router] "
 -- Cells within this distance of a building or other construction are blocked (metres).
 local BUILDING_BUFFER = area.BUILDING_BUFFER
--- Buildings and edges are looked up in tiles this wide, one tile per task: a single city-wide lookup took 60 ms in
--- Jam Session.
-local TILE = 1000.0
+-- Buildings and edges are looked up in tiles this wide: a single city-wide lookup took 60 ms in Jam Session, and a
+-- 1 km tile's whole work (three lookups and marking what they found) up to 62 ms in-game on a dense 2254 save. At
+-- 500 m one lookup returns about a quarter as much; the marking is spread over steps anyway (tileTask).
+local TILE = 500.0
+-- A terrain tile's side (TERRAIN.size counts these), metres.
+local TERRAIN_TILE = 256.0
 
 local logged : {string : boolean} = {}
 local function logOnce(key : string, message : string)
@@ -175,6 +179,33 @@ function survey.trackTypes() : {TrackType}
 	return result
 end
 
+local function isFinite(x : number) : boolean
+	return x ~= nil and x == x and x ~= math.huge and x ~= -math.huge
+end
+
+function survey.extent() : Bounds
+	local ok, bb = pcall(function() : Box2f
+		return api.engine.terrain.getBoundingBox()
+	end)
+	if ok and bb ~= nil then
+		local box = bb as Box2f
+		local x0, y0, x1, y1 = box.min.x, box.min.y, box.max.x, box.max.y
+		if isFinite(x0) and isFinite(y0) and isFinite(x1) and isFinite(y1) and x1 > x0 and y1 > y0 then
+			return { minX = x0, minY = y0, maxX = x1, maxY = y1 }
+		end
+	end
+	local ok2, w, h = pcall(function() : number, number
+		local terrain = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.TERRAIN) as Engine.Component.Terrain
+		return terrain.size.x * TERRAIN_TILE, terrain.size.y * TERRAIN_TILE
+	end)
+	if ok2 and isFinite(w as number) and isFinite(h as number) and (w as number) > 0 and (h as number) > 0 then
+		local hw, hh = 0.5 * (w as number), 0.5 * (h as number)
+		return { minX = -hw, minY = -hh, maxX = hw, maxY = hh }
+	end
+	logOnce("extent", "survey: the map's extent is unknown; the area isn't cut to it")
+	return nil
+end
+
 function survey.year() : integer
 	local ok, result = pcall(function() : integer
 		return api.engine.util.getYear()
@@ -186,10 +217,14 @@ function survey.year() : integer
 	return result as integer
 end
 
-local function surveyRow(job : Job, iy : integer)
+-- A row's terrain from column `from` on, until the clock passes budgetUs (at least one cell). The next column to do;
+-- past the row's end when it's done. A whole row took up to 35 ms in-game (391 cells, about 90 µs a cell), so rows
+-- are cut wherever the frame's budget runs out.
+local function surveyRow(job : Job, iy : integer, from : integer, clock : Clock, budgetUs : number) : integer
 	local g = job.grid
 	local terrain = api.engine.terrain
-	for ix = 1, g.nx do
+	local ix = from
+	while ix <= g.nx do
 		local c = grid.centre(g, ix, iy)
 		local v = api.type.Vec2f.new(c.x, c.y)
 		local i = grid.index(g, ix, iy)
@@ -200,7 +235,12 @@ local function surveyRow(job : Job, iy : integer)
 			g.height[i] = terrain.getHeightAt(v)
 			g.water[i] = terrain.isOnWater(v)
 		end
+		ix = ix + 1
+		if clock:getTime() >= budgetUs then
+			break
+		end
 	end
+	return ix
 end
 
 local function markConstruction(job : Job, entity : Engine.Entity)
@@ -262,48 +302,70 @@ local function markEdge(job : Job, entity : Engine.Entity)
 	area.markLine(job.grid, { x = n0.position.x, y = n0.position.y }, { x = n1.position.x, y = n1.position.y }, cells)
 end
 
-local function surveyTile(job : Job, cx : number, cy : number)
-	local centre = api.type.Vec2f.new(cx, cy)
-	-- Covers the tile's corners (half the diagonal is 0.71 tiles).
-	local radius = TILE * 0.75
-	local octree = api.engine.util.octree
-	for __, kind in ipairs({ api.type.ComponentType.CONSTRUCTION, api.type.ComponentType.TOWN_BUILDING }) do
-		for __, entity in ipairs(octree.findEntitiesInCircle(centre, radius, kind)) do
-			if not job.seen[entity] then
-				job.seen[entity] = true
-				if kind == api.type.ComponentType.CONSTRUCTION then
-					job.constructions = job.constructions + 1
-				else
-					job.townBuildings = job.townBuildings + 1
-				end
-				local ok, err = pcall(function() : boolean
-					markConstruction(job, entity)
-					return true
-				end)
-				if not ok then
-					job.failures = job.failures + 1
-					logOnce("construction", "construction " .. tostring(entity) .. ": " .. tostring(err))
-				end
-			end
-		end
+-- Marks one entity a tile's lookup found (of the given kind), once per survey.
+local function markFound(job : Job, kind : Engine.ComponentType, entity : Engine.Entity)
+	if job.seen[entity] then
+		return
 	end
-	for __, entity in ipairs(octree.findEntitiesInCircle(centre, radius, api.type.ComponentType.BASE_EDGE)) do
-		if not job.seen[entity] then
-			job.seen[entity] = true
-			local ok, err = pcall(function() : boolean
-				markEdge(job, entity)
-				return true
-			end)
-			if not ok then
-				job.failures = job.failures + 1
-				logOnce("edge", "edge " .. tostring(entity) .. ": " .. tostring(err))
+	job.seen[entity] = true
+	local ok, err = pcall(function() : boolean
+		if kind == api.type.ComponentType.BASE_EDGE then
+			markEdge(job, entity)
+		else
+			if kind == api.type.ComponentType.CONSTRUCTION then
+				job.constructions = job.constructions + 1
+			else
+				job.townBuildings = job.townBuildings + 1
 			end
+			markConstruction(job, entity)
 		end
+		return true
+	end)
+	if not ok then
+		job.failures = job.failures + 1
+		logOnce("mark" .. tostring(kind), "entity " .. tostring(entity) .. ": " .. tostring(err))
 	end
 end
 
-function survey.start(stops : {Town}, cell : number, margin : number) : Job
-	local box = area.box(stops, cell, margin)
+-- A tile's work, resumable: for each kind in turn, one octree lookup in a call of its own, then marking what it found
+-- until the clock passes budgetUs (at least one entity a call). true once the tile is done.
+local function tileTask(job : Job, cx : number, cy : number) : function(Clock, number) : boolean
+	local kinds : {Engine.ComponentType} = { api.type.ComponentType.CONSTRUCTION, api.type.ComponentType.TOWN_BUILDING,
+		api.type.ComponentType.BASE_EDGE }
+	local kindIndex = 1
+	local found : {Engine.Entity} = nil
+	local nextEntity = 1
+	return function(clock : Clock, budgetUs : number) : boolean
+		local kind = kinds[kindIndex]
+		if found == nil then
+			local before = clock:getTime()
+			-- Covers the tile's corners (half the diagonal is 0.71 tiles).
+			found = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(cx, cy), TILE * 0.75, kind)
+			job.slowestQueryUs = math.max(job.slowestQueryUs, math.floor(clock:getTime() - before))
+			job.queries = job.queries + 1
+			nextEntity = 1
+			return false
+		end
+		local before = clock:getTime()
+		while nextEntity <= #found do
+			markFound(job, kind, found[nextEntity])
+			nextEntity = nextEntity + 1
+			if clock:getTime() >= budgetUs then
+				break
+			end
+		end
+		job.slowestMarkUs = math.max(job.slowestMarkUs, math.floor(clock:getTime() - before))
+		if nextEntity <= #found then
+			return false
+		end
+		found = nil
+		kindIndex = kindIndex + 1
+		return kindIndex > #kinds
+	end
+end
+
+function survey.start(stops : {Town}, cell : number, margin : number, bounds ?: Bounds) : Job
+	local box = area.box(stops, cell, margin, bounds)
 	if box == nil then
 		if #stops > 0 then
 			logOnce("bounds", "survey: stops have no finite bounds")
@@ -313,15 +375,17 @@ function survey.start(stops : {Town}, cell : number, margin : number) : Job
 	local minX, minY, maxX, maxY = box.minX, box.minY, box.maxX, box.maxY
 	local nx, ny = box.nx, box.ny
 	cell = box.cell
-	local job : Job = { grid = grid.new(minX, minY, cell, nx, ny), tasks = {}, next = 1, seen = {}, reported = false,
-		constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, trackEdges = 0,
-		tunnelsSkipped = 0, curveFallbacks = 0, invalidCells = 0, failures = 0, slowestRowUs = 0, slowestTileUs = 0,
-		stepCalls = 0, totalUs = 0 }
+	local job : Job = { box = box, grid = grid.new(minX, minY, cell, nx, ny), tasks = {}, next = 1, seen = {},
+		reported = false, constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, trackEdges = 0,
+		tunnelsSkipped = 0, curveFallbacks = 0, invalidCells = 0, failures = 0, slowestRowUs = 0, slowestQueryUs = 0,
+		slowestMarkUs = 0, slowestTaskUs = 0, queries = 0, slices = 0, stepCalls = 0, totalUs = 0 }
 	for iy = 1, ny do
-		table.insert(job.tasks, function()
-			local clock = api.type.Clock.new()
-			surveyRow(job, iy)
-			job.slowestRowUs = math.max(job.slowestRowUs, math.floor(clock:getTime()))
+		local nextCol = 1
+		table.insert(job.tasks, function(clock : Clock, budgetUs : number) : boolean
+			local before = clock:getTime()
+			nextCol = surveyRow(job, iy, nextCol, clock, budgetUs)
+			job.slowestRowUs = math.max(job.slowestRowUs, math.floor(clock:getTime() - before))
+			return nextCol > nx
 		end)
 	end
 	-- Tiles run to half a cell past maxX/maxY: after coarsening, the last cells' centres can sit close to the edge.
@@ -329,17 +393,13 @@ function survey.start(stops : {Town}, cell : number, margin : number) : Job
 	while tx < maxX + cell / 2 do
 		local ty = minY
 		while ty < maxY + cell / 2 do
-			local cx, cy = tx + TILE / 2, ty + TILE / 2
-			table.insert(job.tasks, function()
-				local clock = api.type.Clock.new()
-				surveyTile(job, cx, cy)
-				job.slowestTileUs = math.max(job.slowestTileUs, math.floor(clock:getTime()))
-			end)
+			table.insert(job.tasks, tileTask(job, tx + TILE / 2, ty + TILE / 2))
 			ty = ty + TILE
 		end
 		tx = tx + TILE
 	end
-	debugPrint(LOG_PREFIX .. "survey: " .. nx .. " × " .. ny .. " cells of " .. cell .. " m, " .. #job.tasks .. " tasks")
+	debugPrint(LOG_PREFIX .. "survey: " .. nx .. " × " .. ny .. " cells of " .. cell .. " m (" .. minX .. " " .. minY
+		.. " to " .. maxX .. " " .. maxY .. (bounds ~= nil and ", cut to the map" or "") .. "), " .. #job.tasks .. " tasks")
 	return job
 end
 
@@ -357,8 +417,9 @@ local function report(job : Job)
 	local g = job.grid
 	local n = g.nx * g.ny
 	debugPrint(LOG_PREFIX .. "survey done: " .. #job.tasks .. " tasks, " .. string.format("%.1f", job.totalUs / 1000)
-		.. " ms over " .. job.stepCalls .. " steps, slowest row " .. job.slowestRowUs .. " µs, slowest tile "
-		.. job.slowestTileUs .. " µs; constructions " .. job.constructions .. ", town buildings " .. job.townBuildings
+		.. " ms over " .. job.stepCalls .. " steps; " .. job.slices .. " slices, the slowest " .. job.slowestTaskUs
+		.. " µs (terrain " .. job.slowestRowUs .. " µs, octree lookup " .. job.slowestQueryUs .. " µs of "
+		.. job.queries .. ", marking " .. job.slowestMarkUs .. " µs); constructions " .. job.constructions .. ", town buildings " .. job.townBuildings
 		.. ", no box " .. job.noBox .. ", edges " .. job.edges .. " (streets " .. job.streetEdges .. ", track "
 		.. job.trackEdges .. ", tunnels skipped " .. job.tunnelsSkipped .. ", straight fallbacks " .. job.curveFallbacks
 		.. "), failures " .. job.failures .. "; cells " .. n .. ": blocked " .. count(g.blocked, n) .. ", road "
@@ -374,14 +435,18 @@ function survey.step(job : Job, budgetUs : integer) : boolean
 			break
 		end
 		local task = job.tasks[job.next]
-		job.next = job.next + 1
-		local ok, err = pcall(function() : boolean
-			task()
-			return true
+		local before = clock:getTime()
+		local ok, result = pcall(function() : boolean
+			return task(clock, budgetUs)
 		end)
+		job.slices = job.slices + 1
+		job.slowestTaskUs = math.max(job.slowestTaskUs, math.floor(clock:getTime() - before))
 		if not ok then
 			job.failures = job.failures + 1
-			logOnce("task", "survey task: " .. tostring(err))
+			logOnce("task", "survey task: " .. tostring(result))
+			job.next = job.next + 1
+		elseif result as boolean then
+			job.next = job.next + 1
 		end
 	until clock:getTime() >= budgetUs
 	job.totalUs = job.totalUs + math.floor(clock:getTime())

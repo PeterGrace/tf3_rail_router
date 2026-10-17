@@ -23,10 +23,21 @@ global record PgraceRailRouterArea
 		ny : integer
 	end
 
-	-- The stops' bounding box grown by `margin` × its larger side (at least MIN_MARGIN) on every side, with
-	-- `cell`-metre cells, made 1.25 times coarser at a time (up to MAX_CELL) while there would be more than
-	-- MAX_CELLS. nil if there are no stops, or a stop's position isn't a finite number.
-	box : function(stops : {PgraceRailRouterCorridor.Town}, cell : number, margin : number) : Box
+	-- The map's extent (world metres), the most a box may cover.
+	record Bounds
+		minX : number
+		minY : number
+		maxX : number
+		maxY : number
+	end
+
+	-- The stops' bounding box grown by `margin` × its larger side (at least MIN_MARGIN) on every side, cut to
+	-- `bounds` if given (and finite), with `cell`-metre cells, made 1.25 times coarser at a time (up to MAX_CELL)
+	-- while there would be more than MAX_CELLS. nil if there are no stops, or a stop's position isn't a finite
+	-- number.
+	box : function(stops : {PgraceRailRouterCorridor.Town}, cell : number, margin : number, bounds ?: Bounds) : Box
+	-- Whether two boxes are the same (both nil counts): a wider margin that gives the same box can't help.
+	same : function(a : Box, b : Box) : boolean
 
 	-- Marks the cells whose centres are nearest to the box's corners and everything between (world coordinates).
 	-- Boxes wholly outside the grid are skipped.

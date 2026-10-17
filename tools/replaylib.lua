@@ -173,9 +173,12 @@ return function(root)
 		end
 		local r = { year = year, track = track, mode = mode, weights = weights, stops = stops, candidates = candidates,
 			platform = platform, areas = {} }
+		-- As the window: the area cut to the map's extent, and on "no path" a wider one, unless widening gives the same
+		-- box (already the whole map that way).
+		local bounds = { minX = map.extent.x0, minY = map.extent.y0, maxX = map.extent.x1, maxY = map.extent.y1 }
 		local margin = lib.SURVEY_MARGIN
+		local box = assert(area.box(stops, lib.CELL, margin, bounds), "no area")
 		for retry = 0, lib.MAX_RETRIES do
-			local box = assert(area.box(stops, lib.CELL, margin), "no area")
 			local g, stats = lib.gridFor(map, box)
 			table.insert(r.areas, { box = box, margin = margin, stats = stats })
 			r.grid = g
@@ -183,7 +186,12 @@ return function(root)
 			if r.plan.ok or r.plan.failure ~= "no_path" or retry == lib.MAX_RETRIES then
 				break
 			end
-			margin = 2 * margin
+			local wider = area.box(stops, lib.CELL, 2 * margin, bounds)
+			if area.same(wider, box) then
+				r.sameArea = true
+				break
+			end
+			margin, box = 2 * margin, wider
 		end
 		return r
 	end
