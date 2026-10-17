@@ -549,6 +549,11 @@ Each ends with one in-game test by the user.
   search (Owings Mills' west-facing site on the 2154 capture passes it, but no leg can leave it). Re-siting is also
   most of Fastest's planning work: on the 2154 capture 191,000 of its expansions (132,000 before it weighed time; one
   candidate's leg in ran 68,000 before giving up). In-game that plan took 3.4 s over 798 frames.
+- **Bridges cap high-speed lines at 280 km/h.** The builder takes the bridge type the game's track tool would
+  (`modes.structureFor`): the slowest auto-selectable rail type at least as fast as the track, else the fastest. The
+  only base type faster than concrete (280 km/h) is the tied arch (350), which isn't auto-selectable, so a 350 km/h
+  line gets concrete bridges. The base tunnels set no speed limit at all; the tool's rule then takes the first in the
+  menu (rock, `tunnel_a`), whatever the year.
 
 ## Out of scope for version 1
 

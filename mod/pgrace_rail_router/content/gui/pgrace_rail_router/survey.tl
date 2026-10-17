@@ -6,6 +6,7 @@ local survey : PgraceRailRouterSurvey = {}
 
 local type Town = PgraceRailRouterCorridor.Town
 local type TrackType = PgraceRailRouterModes.TrackType
+local type StructureType = PgraceRailRouterModes.StructureType
 local type Grid = PgraceRailRouterGrid.Grid
 local type Job = PgraceRailRouterSurvey.Job
 local type Bounds = PgraceRailRouterArea.Bounds
@@ -176,6 +177,52 @@ function survey.trackTypes() : {TrackType}
 	table.sort(result, function(a : TrackType, b : TrackType) : boolean
 		return a.speed < b.speed
 	end)
+	return result
+end
+
+-- The bridge ("bridge") or tunnel ("tunnel") types the construction menu lists (menu_category_util.tl
+-- getAvailableObjectsSorted: those with a menu category), whatever the year; modes.structureFor picks one. A type that
+-- can't be read is logged once and left out.
+function survey.structureTypes(which : string) : {StructureType}
+	local result : {StructureType} = {}
+	local rep = api.res.bridgeTypeRep
+	if which == "tunnel" then
+		rep = api.res.tunnelTypeRep
+	end
+	local rail = api.type["enum"].Carrier.RAIL
+	for index, name in pairs(rep.getAll()) do
+		local ok, err = pcall(function() : boolean
+			local ty = rep.get(index)
+			if ty == nil or ty.menuCategory == nil or ty.menuCategory.categories == nil
+				or #ty.menuCategory.categories == 0 then
+				return true
+			end
+			-- As the menu (construction_react_util.tl makeFilterObjectsFn): rail only if the list names it.
+			local carriesRail = false
+			for __, c in ipairs(ty.carriers or {}) do
+				if c == rail then
+					carriesRail = true
+				end
+			end
+			local availability = ty.availability
+			table.insert(result, {
+				name = name,
+				index = index,
+				order = ty.menuCategory.categories[1].order or 0,
+				cost = ty.cost or 0,
+				speedLimit = ty.speedLimit or 0,
+				yearFrom = availability ~= nil and availability.yearFrom or 0,
+				yearTo = availability ~= nil and availability.yearTo or 0,
+				rail = carriesRail,
+				-- nil means true.
+				autoSelectable = ty.isAutoSelectable ~= false,
+			})
+			return true
+		end)
+		if not ok then
+			logOnce(which .. tostring(index), which .. " type " .. tostring(name) .. ": " .. tostring(err))
+		end
+	end
 	return result
 end
 
