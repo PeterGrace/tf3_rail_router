@@ -282,6 +282,13 @@ Each ends with one in-game test by the user.
    turnouts and joining track (new after M3), longer and wider station sites (about 30 m wide, a few hundred metres
    of straight for the fans at each end), and signals, which version 1 leaves out. To probe then: whether that mod's
    game script also signals our fans when it's installed.
+   **Use existing stations** (decided with the player, 2026-10-16): where a town on the route already has a rail
+   station, the line uses it instead of placing a new one: the window offers "use the existing station in <town>"
+   (ticked by default), and the legs run to that station's free track ends, joining them (the same joins as the
+   fans). Needs: finding a town's rail stations and their free track ends and directions, deciding whether one is
+   usable (a through station with an end free on the side the line comes from; a terminus only at the line's ends),
+   and planning a leg to a fixed end instead of a site. First test case: Pottstown on the player's third save
+   (`maps/third-save-16x16km.map`), whose existing station boxed in the new site the planner looked for.
 5. **Tuning and polish:** thresholds and weights from real maps, translations, release.
 
 ## Known issues after milestone 1 (to settle with in-game data)
@@ -310,5 +317,5 @@ Each ends with one in-game test by the user.
 
 ## Out of scope for version 1
 
-Signals and Halt 2+2 stations (milestone 4); creating lines or buying trains; routes that join existing track; terminus
-stations; single track.
+Signals, Halt 2+2 stations and using existing stations (milestone 4); creating lines or buying trains; routes that join
+other existing track; terminus stations; single track.
