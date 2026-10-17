@@ -181,7 +181,24 @@ never past half way, stopping at blocked, water, road or track cells, each costi
 straight is then just longer. It helps little: along one of the 16 headings the search could already run straight
 on, so it matters only for stations facing between them.
 
-A leg is built over three steps (simplify, fillet, heights), so no frame does all three.
+A leg is built over several steps (simplify; fillet, one fillet a step, up to four: see Smoothing's station ends;
+heights, over one step or more), so no step does more than one of them.
+
+**Memory.** The game's Lua is 5.2 (the executable says so), whose incremental collector pays a step's garbage
+collection debt, work in proportion to what was allocated, at its next allocation, over the game's whole heap. A step
+that allocates megabytes at once is a hitch in-game that the desktop, timing steps with the collector held off, never
+shows: Alliance → Aloha's in-game capture (New Game, 2154) logged a 48.7 ms legs step where its slowest desktop step
+was about 3 ms (min of three runs; in-game is usually 2–4 × the desktop). A search's states used to be kept in hash
+tables of its own, and each doubled within a step as the search grew, two at a time (up to 1.5 MB in one step; 49.6 MB
+over that plan). Now the grid has one store (`grid.Store`), made by its first search and reused by every later one:
+in pages of 16 cells along a row (256 states), made where a search first goes, each state's cost and parent stamped
+with the id of the search that set them (so nothing is cleared between searches), plus the heap and the reachability
+fill's stamps and queue. Only the latest search may step or give its path (an older one errors); a finished search's
+copy (`grid.finished`, the search cache) keeps its own. Plans are byte-identical. That plan now allocates 14.6 MB,
+at most about 300 KB in a step (a new row's pages); the guard (Smoothing) works in plain numbers too. The regression
+set holds every step to 768 KB (`STEP_ALLOC_KB`; the most is about 600 KB, re-siting building a candidate's leg).
+`route.stepKind` names what each step does; the window logs the slowest step per kind and the most one allocated,
+and the replay tool prints both.
 
 **Search radii, weighed by time.** A Fastest leg is searched first with turns spaced for the Cheapest radius (the
 fallback; if that finds nothing, the plan fails "no_path"), then for the mode's radius, halving while above the
@@ -212,7 +229,9 @@ time inside the free-turning search was not tried: its corners only know the hal
 every corner of a gentle curve would be priced as a sharp one. Cost on the captured Fastest map (4 legs, R = 3000 m): about twice the expansions of the one-step
 search (7,400 against 3,900; about 45 ms against 28 ms offline), Cheapest unchanged. Weighing every radius and
 re-siting slow legs' stations (below) about doubled Fastest's planning work on the regression maps (4.5 s to 9.6 s
-desktop over its 15 routes); the slowest single step stayed about 7 ms (fitting a leg's curves). Known cost (plain Lua, desktop): a 500 × 500 grid with 15% clutter took about 1.6 s and 35 MB in Cheapest
+desktop over its 15 routes). The slowest single step was about 7 ms (fitting a leg's curves, every fillet in one
+step); with a fillet a step and the guard allocation-free it is about 2 ms (min of three runs; a long leg's fillet on
+Dover → Camarillo, or a re-siting step), Lua 5.2 on the desktop about 1.5 × that. Known cost (plain Lua, desktop): a 500 × 500 grid with 15% clutter took about 1.6 s and 35 MB in Cheapest
 mode and about 6 s and 90 MB in Fastest mode, spread over frames. If that's too slow in-game, weight the heuristic
 (f = g + 1.2·h) in Fastest mode, giving up exact optimality that smoothing hides anyway.
 
@@ -238,7 +257,13 @@ The path is simplified to within 0.6 of a cell (0.75 folded such a loop into one
 **Station ends.** Where the curve at an extension point can't be built (below the build minimum), or the track near
 an end crosses blocked cells (a corner cut there), the extension is given up: it is put on the approach point, so the
 curve starts there, with the approach behind it, as the search allowed for. A refit that crosses fewer blocked cells
-is taken.
+is taken. Each fillet (the first, the refits) has a step of its own (`route.Fitting`): all in one step took 4.7 ms on
+the desktop on a long leg.
+
+**Cost.** The guard is asked thousands of times per leg, so it, the simplifier's straights and the blocked-sample
+count work in plain numbers, with no point made per check (`smooth.pointAtXY`, a reused probe point): a fit step
+allocated up to 856 KB before, 275 KB at most now. Fillet doesn't check an arc again that is the same as when it was
+last found clear (only its neighbours were tightened since), which took the slowest fillet from 2.2 ms to 1.6 ms.
 
 ### Height profile (`profile.tl`)
 
@@ -320,7 +345,8 @@ and turned back up into it, with an 8 m curve). After each leg is fitted, if its
 widest spread of its arcs' signed turns; ordinary legs on the regression maps reach 192°) or it has a curve below the
 build minimum, the station nearer the trouble (else the one it arrives at) is weighed again, once: its site against
 sites facing 8 axes, within 300 m more of the town, by the costs of the fallback-radius searches for its two legs. A
-site 2% cheaper replaces it, and the legs either side are built again. The searches price a hook's tight curves
+site 2% cheaper replaces it, and the legs either side are built again (in Fastest the legs are weighed by cost and
+time: below). The searches price a hook's tight curves
 (Grid search), so the comparison is fair, but a hook still happens where every site within reach faces badly.
 Re-siting is still worth it: without it the regression set's estimates were 4% higher (Dover → Camarillo, Fastest
 29%) and as many routes hooked. In Fastest, a leg whose curves lose more than 10 s (`RESITE_TIME_LOST`; Speed model)
@@ -331,6 +357,33 @@ Aloha lost 41 s to its curves instead of 58 s and cost 14% less. Over the Fastes
 current site's two legs are the legs' own searches, kept (the last 4 finished searches without a cost limit, by
 their inputs), and a candidate's leg in is cut off once it costs more than the best less the straight distance of its
 leg out.
+
+**Re-siting weighs time in Fastest.** By cost alone, re-siting moved stations for legs that cost a little less and
+lost far more time: on Alliance → Aloha on New Game in 2154 (an in-game capture) Turlock was moved for a leg out 5%
+cheaper that lost 56 s to its curves. With time priced, a candidate's legs are now weighed the way the legs
+themselves are built: every search radius tried (each try's rooms sized for it, its search cut off at the best so
+far), each path found built (simplified, filleted) and weighed by its search cost plus `timeCost` × the seconds its
+curves lose, the least total taken. The current site's legs that are already built are weighed as built (the leg just
+built, and where the station is the one that leg leaves from, the leg before it, by its `searchCost` and
+`timeLost`), and a candidate must also lose no more time over its two legs than the current site. Variants measured
+on the regression set (Fastest, 423 s lost before):
+
+- the candidates' legs at the fallback radius alone, by cost plus time: candidates beat current sites whose legs had
+  taken a wider radius once built (Bangor → Imperial Beach via Antelope, Aloha: 0 s became 15 s);
+- every radius tried, the current site's built legs as built, by cost plus time: 423 s, estimates 1.5% up
+  (Alliance → Aloha 41 s to 21 s, but Adelanto → Deltona 13 s to 28 s and 22% dearer: its new site's leg out took
+  the 3 km radius, few turns and so a low search cost, but lost 19 s at the station ends);
+- the same, and no more time lost (chosen): 398 s (−6%), estimates 1.3% up, tight curves 230 to 235. Alliance →
+  Aloha 41 s to 21 s (Hemet faces west), Elkhart → Fernley 55 s to 43 s, Dover → Camarillo 130 s to 128 s; worse:
+  Englewood → Weston 7 s to 13 s (35% dearer: cost alone moved Sulphur for a leg out that lost 28 s, then re-siting
+  Weston mended that leg; weighing a station's two legs can't see that), Bangor → Imperial Beach via 0 s to 4 s.
+  Cheapest is unchanged (byte-identical plans).
+
+The capture itself is unchanged, 91 s lost, 56 s on Turlock → Owings Mills: the leg threads a bay studded with
+buildings and hooks round into Owings Mills. Of Owings Mills' sites within reach, the one west-facing site whose leg in
+is fast (6 s) can't be left towards Aloha (its leaving end is walled in: the leg out's search dies after 2
+expansions, though the site's way-out check passed), and the others lose 62–67 s; Turlock's sites all lose 48 s or
+more on that leg. Forcing each candidate site in turn, the best whole line lost 82 s.
 
 **Room to turn beyond the approach** (the leg's search starts and ends there): enough for the search's first turn at
 its radius (each of a Fastest leg's tries has its own; the stations' turning checks size it for the mode's). Where every move may turn (Cheapest) that may be anything up to 90°, so room for 45°
@@ -411,6 +464,8 @@ don't keep engine components across a `sendCommand`.
   nothing above the speed reached, and two close limits slow the train once.
 - `route`: with time priced, a wider radius whose curves lose less time is taken through a chicane when time is worth a
   lot, and the cheapest when it isn't; progress never goes back while radii are weighed and stations re-sited.
+- `grid`: a grid's searches share its store, one at a time, and find what they would alone; an older search can't
+  be stepped or give its path once a newer one has started.
 - `profile`: grades stay under the limit (also on rough random ground and unevenly spaced samples); a valley becomes
   one bridge, a ridge one tunnel, a hill within the grade neither; a crossing a bridge with 7 m of clearance; flat
   ground before a ridge that's tunnelled isn't bridged; a fit spread over steps gives the same heights.
@@ -484,9 +539,14 @@ Each ends with one in-game test by the user.
   out 29% dearer with the turn pricing (long bridges over the lake before Owings Mills): Turlock's turned site moved,
   and no leg hooked or curved below the build minimum any more to set off the re-siting that had turned Owings Mills
   west. (Re-siting slow legs' stations turned it west again: leg 3 now runs north over land.)
-- **The regression set's samples on blocked cells:** 3 now (Bossier City → Ashland, Cheapest; Gardner → Herndon and
-  Dover → Camarillo, Fastest), each a straight or a curve held at the build minimum grazing a building buffer's corner
-  between the guard's checks.
+- **The regression set's samples on blocked cells:** 2 now (Bossier City → Ashland, Cheapest; Gardner → Herndon,
+  Fastest), each a straight or a curve held at the build minimum grazing a building buffer's corner between the
+  guard's checks. (Dover → Camarillo, Fastest, lost its one when re-siting weighed time.)
+- **Re-siting sees one station's two legs.** It can't foresee that re-siting the next station mends a leg out
+  (Englewood → Weston, Fastest: see Re-siting weighs time), and the station's way-out check is weaker than a leg's
+  search (Owings Mills' west-facing site on the 2154 capture passes it, but no leg can leave it). Re-siting is also
+  most of Fastest's planning work: on the 2154 capture 191,000 of its expansions (132,000 before it weighed time; one
+  candidate's leg in ran 68,000 before giving up). In-game that plan took 3.4 s over 798 frames.
 
 ## Out of scope for version 1
 
