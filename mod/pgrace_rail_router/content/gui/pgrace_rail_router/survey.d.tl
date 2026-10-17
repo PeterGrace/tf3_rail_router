@@ -23,6 +23,8 @@ global record PgraceRailRouterSurvey
 		-- Edges seen, and how many were streets or track; tunnels are counted and left out.
 		edges : integer
 		streetEdges : integer
+		-- Street nodes joining three or more pieces, marked as junctions.
+		junctions : integer
 		trackEdges : integer
 		tunnelsSkipped : integer
 		-- Edges drawn as a straight node-to-node line because their curve couldn't be read.

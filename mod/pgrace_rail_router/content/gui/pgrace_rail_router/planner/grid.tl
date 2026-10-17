@@ -29,13 +29,14 @@ local ROAD_FOLLOW_FACTOR = 1.5
 
 function grid.new(x0 : number, y0 : number, cell : number, nx : integer, ny : integer) : Grid
 	local g : Grid = { x0 = x0, y0 = y0, cell = cell, nx = nx, ny = ny, height = {}, water = {}, blocked = {},
-		road = {}, track = {} }
+		road = {}, track = {}, junction = {} }
 	for i = 1, nx * ny do
 		g.height[i] = 0
 		g.water[i] = false
 		g.blocked[i] = false
 		g.road[i] = false
 		g.track[i] = false
+		g.junction[i] = false
 	end
 	return g
 end
@@ -445,7 +446,8 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 	if g.road[b] and not g.road[a] then
 		cost = cost + w.roadCrossing
 	end
-	if g.track[b] and not g.track[a] then
+	-- A road junction is bridged as track is (route.tl), so it costs as much to cross.
+	if (g.track[b] and not g.track[a]) or (g.junction[b] and not g.junction[a]) then
 		cost = cost + w.trackCrossing
 	end
 	return cost

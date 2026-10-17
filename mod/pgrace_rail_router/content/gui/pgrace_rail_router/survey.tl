@@ -312,6 +312,30 @@ local function isZero(v : Vec3f) : boolean
 	return v.x == 0 and v.y == 0 and v.z == 0
 end
 
+-- A street piece's end nodes that join three or more pieces (streetSystem.getNodeSegments), each looked at once:
+-- their cells (within JUNCTION_BUFFER) are junctions.
+local function markJunctions(job : Job, edge : Engine.Component.BaseEdge)
+	for __, node in ipairs({ edge.node0, edge.node1 }) do
+		if not job.seen[node] then
+			job.seen[node] = true
+			local segments = 0
+			pcall(function() : boolean
+				segments = #api.engine.system.streetSystem.getNodeSegments(node)
+				return true
+			end)
+			if segments >= 3 then
+				local n = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+				if n ~= nil then
+					local b = area.JUNCTION_BUFFER
+					area.markBox(job.grid, n.position.x - b, n.position.y - b, n.position.x + b, n.position.y + b,
+						job.grid.junction)
+					job.junctions = job.junctions + 1
+				end
+			end
+		end
+	end
+end
+
 local function markEdge(job : Job, entity : Engine.Entity)
 	local edge = api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
 	if edge == nil then
@@ -327,6 +351,7 @@ local function markEdge(job : Job, entity : Engine.Entity)
 	if street ~= nil then
 		cells = job.grid.road
 		job.streetEdges = job.streetEdges + 1
+		markJunctions(job, edge)
 	else
 		job.trackEdges = job.trackEdges + 1
 	end
@@ -424,7 +449,7 @@ function survey.start(stops : {Town}, cell : number, margin : number, bounds ?: 
 	local nx, ny = box.nx, box.ny
 	cell = box.cell
 	local job : Job = { box = box, grid = grid.new(minX, minY, cell, nx, ny), tasks = {}, next = 1, seen = {},
-		reported = false, constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, trackEdges = 0,
+		reported = false, constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, junctions = 0, trackEdges = 0,
 		tunnelsSkipped = 0, curveFallbacks = 0, invalidCells = 0, failures = 0, slowestRowUs = 0, slowestQueryUs = 0,
 		slowestMarkUs = 0, slowestTaskUs = 0, slowestStepUs = 0, queries = 0, slices = 0, stepCalls = 0, totalUs = 0 }
 	for iy = 1, ny do
@@ -472,7 +497,8 @@ local function report(job : Job)
 		.. ", no box " .. job.noBox .. ", edges " .. job.edges .. " (streets " .. job.streetEdges .. ", track "
 		.. job.trackEdges .. ", tunnels skipped " .. job.tunnelsSkipped .. ", straight fallbacks " .. job.curveFallbacks
 		.. "), failures " .. job.failures .. "; cells " .. n .. ": blocked " .. count(g.blocked, n) .. ", road "
-		.. count(g.road, n) .. ", track " .. count(g.track, n) .. ", water " .. count(g.water, n) .. ", invalid "
+		.. count(g.road, n) .. " (junctions " .. job.junctions .. ", " .. count(g.junction, n) .. " cells), track "
+		.. count(g.track, n) .. ", water " .. count(g.water, n) .. ", invalid "
 		.. job.invalidCells)
 end
 

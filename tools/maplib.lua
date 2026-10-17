@@ -17,6 +17,8 @@ local maplib = {}
 maplib.VERSION = 1
 -- rasterise's default margin round object boxes (metres), as Rail Router's planner/area.tl.
 maplib.BUILDING_BUFFER = 30.0
+-- Rail Router's area.JUNCTION_BUFFER: how far round a road junction's node its cells are marked.
+maplib.JUNCTION_BUFFER = 30.0
 
 local function split(s)
 	local out = {}
@@ -340,6 +342,33 @@ function maplib.rasterise(map, x0, y0, cell, nx, ny, opts)
 			markBox(g, o.min.x - buffer, o.min.y - buffer, o.max.x + buffer, o.max.y + buffer, g.blocked)
 		else
 			stats.noBox = stats.noBox + 1
+		end
+	end
+	-- Road junctions: street nodes that three or more pieces (of street or track, tunnels included) end at.
+	g.junction = {}
+	for i = 1, nx * ny do
+		g.junction[i] = false
+	end
+	local ends, at, streetNode = {}, {}, {}
+	for _, e in ipairs(map.edges) do
+		for _, end_ in ipairs({ { e.node0, e.p0 }, { e.node1, e.p1 } }) do
+			local node = end_[1]
+			if node ~= nil then
+				ends[node] = (ends[node] or 0) + 1
+				at[node] = end_[2]
+				if e.kind == "s" then
+					streetNode[node] = true
+				end
+			end
+		end
+	end
+	stats.junctions = 0
+	local jb = maplib.JUNCTION_BUFFER
+	for node, n in pairs(ends) do
+		if n >= 3 and streetNode[node] then
+			local p = at[node]
+			markBox(g, p.x - jb, p.y - jb, p.x + jb, p.y + jb, g.junction)
+			stats.junctions = stats.junctions + 1
 		end
 	end
 	for _, e in ipairs(map.edges) do

@@ -4,6 +4,8 @@
 global record PgraceRailRouterArea
 	-- Cells within this distance of a building or other construction are blocked (metres).
 	BUILDING_BUFFER : number
+	-- How far round a road junction's node its cells are marked (Grid.junction; metres).
+	JUNCTION_BUFFER : number
 	-- At least this much room around the stops (metres).
 	MIN_MARGIN : number
 	-- Larger grids get coarser cells instead (memory and search time).

@@ -273,7 +273,9 @@ Fits the track's height to the terrain under the grade limit, as cheaply as it c
 above the ground it becomes a bridge, and more than 12 m below a tunnel. These thresholds are starting values, tuned
 in-game.
 
-**Crossings:** samples over existing track, and over roads in Fastest mode (`Weights.bridgeRoads`), are bridges and
+**Crossings:** samples over existing track, road junctions (nodes joining three or more pieces, and 30 m round them:
+a level crossing can't go through one; the grid search prices crossing one as crossing track), and over roads in
+Fastest mode (`Weights.bridgeRoads`), are bridges and
 are never merged away. The track there is lifted to at least 9 m above the ground, ramping up and down within the
 grade limit (probe P8: a double-track bridge square across existing track collided with it 7 m above, rail to rail,
 and was clean from 8 m; over a street 6 m was clean); the station heights pinned at a leg's ends win if a crossing is too close to them. In Cheapest mode

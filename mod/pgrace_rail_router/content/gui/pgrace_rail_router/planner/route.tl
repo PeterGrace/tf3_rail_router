@@ -758,7 +758,8 @@ local function startHeights(input : Input, a : Station, b : Station, fitted : Pg
 		if g.blocked[cell] then
 			blockedSamples = blockedSamples + 1
 		end
-		crossing[i] = g.track[cell] or (w.bridgeRoads and g.road[cell]) or false
+		-- A level crossing can't go through a road junction: bridge it as track is.
+		crossing[i] = g.track[cell] or g.junction[cell] or (w.bridgeRoads and g.road[cell]) or false
 	end
 	local fit = profile.start(s, ground, water, { maxGrade = w.maxGrade, bridgeAbove = w.bridgeAbove,
 		tunnelBelow = w.tunnelBelow, bridgeCostFactor = w.bridgeCostFactor, tunnelCostFactor = w.tunnelCostFactor,

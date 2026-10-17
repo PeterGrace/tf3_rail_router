@@ -2,6 +2,7 @@ local grid = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/gri
 
 local area : PgraceRailRouterArea = {
 	BUILDING_BUFFER = 30.0,
+	JUNCTION_BUFFER = 30.0,
 	MIN_MARGIN = 2000.0,
 	MAX_CELLS = 250000,
 	MAX_CELL = 5000.0,

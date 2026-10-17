@@ -168,7 +168,7 @@ return function(root)
 		local g = grid.new(box.minX, box.minY, box.cell, box.nx, box.ny)
 		for i = 1, box.nx * box.ny do
 			g.height[i], g.water[i], g.blocked[i] = cells.height[i], cells.water[i], cells.blocked[i]
-			g.road[i], g.track[i] = cells.road[i], cells.track[i]
+			g.road[i], g.track[i], g.junction[i] = cells.road[i], cells.track[i], cells.junction[i]
 		end
 		return g, stats
 	end
