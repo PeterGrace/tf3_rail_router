@@ -66,8 +66,8 @@ return function(root)
 	end
 
 	-- Runs the planner to the end with `expansions` per step (default: as the window). Returns the plan, the grid paths
-	-- per leg, the slowest single route.step per phase (ms; in-game Lua runs about 4 times slower), the slowest step
-	-- overall (ms) and the total time (ms).
+	-- per leg, the slowest single route.step per phase (ms, garbage collection left out; in-game Lua runs about 4 times
+	-- slower), the slowest step overall (ms) and the total time (ms).
 	function lib.runPlan(g, stops, weights, platform, expansions)
 		expansions = expansions or lib.STEP_EXPANSIONS
 		local start = clock()
@@ -76,9 +76,16 @@ return function(root)
 		local slowest, worst = {}, 0
 		while true do
 			local phase = job.phase
+			-- The collector is held off while a step is timed, and catches up between steps: a collection costs in
+			-- proportion to the whole heap, here the maps loaded (five in the regression test, hundreds of MB) and in
+			-- the game everything else, and lands on whichever step allocates past its threshold (one step "took"
+			-- 21 ms and 46 ms that way, 2 ms without).
+			collectgarbage("stop")
 			local before = clock()
 			local done = route.step(job, expansions)
 			local ms = (clock() - before) * 1000
+			collectgarbage("restart")
+			collectgarbage("step")
 			slowest[phase] = math.max(slowest[phase] or 0, ms)
 			worst = math.max(worst, ms)
 			if done then
@@ -173,9 +180,12 @@ return function(root)
 		end
 		local r = { year = year, track = track, mode = mode, weights = weights, stops = stops, candidates = candidates,
 			platform = platform, areas = {} }
+		-- As the window: the area cut to the map's extent, and on "no path" a wider one, unless widening gives the same
+		-- box (already the whole map that way).
+		local bounds = { minX = map.extent.x0, minY = map.extent.y0, maxX = map.extent.x1, maxY = map.extent.y1 }
 		local margin = lib.SURVEY_MARGIN
+		local box = assert(area.box(stops, lib.CELL, margin, bounds), "no area")
 		for retry = 0, lib.MAX_RETRIES do
-			local box = assert(area.box(stops, lib.CELL, margin), "no area")
 			local g, stats = lib.gridFor(map, box)
 			table.insert(r.areas, { box = box, margin = margin, stats = stats })
 			r.grid = g
@@ -183,7 +193,12 @@ return function(root)
 			if r.plan.ok or r.plan.failure ~= "no_path" or retry == lib.MAX_RETRIES then
 				break
 			end
-			margin = 2 * margin
+			local wider = area.box(stops, lib.CELL, 2 * margin, bounds)
+			if area.same(wider, box) then
+				r.sameArea = true
+				break
+			end
+			margin, box = 2 * margin, wider
 		end
 		return r
 	end
@@ -223,6 +238,24 @@ return function(root)
 					table.insert(out, { leg = i, radius = piece.radius, a = piece.a })
 				end
 			end
+		end
+		return out
+	end
+
+	-- Each leg's sweep (degrees): how far its heading swings, the widest spread of the arcs' turns added up with their
+	-- signs (left positive) from the leg's start. A line that bends one way and back stays low; one that loops or
+	-- hooks round to enter a station the other way sweeps 270° or more.
+	function lib.sweep(plan)
+		local out = {}
+		for i, leg in ipairs(plan.legs or {}) do
+			local heading, lo, hi = 0, 0, 0
+			for _, piece in ipairs(leg.pieces) do
+				if piece.kind == "arc" then
+					heading = heading + piece.turn
+					lo, hi = math.min(lo, heading), math.max(hi, heading)
+				end
+			end
+			out[i] = math.deg(hi - lo)
 		end
 		return out
 	end

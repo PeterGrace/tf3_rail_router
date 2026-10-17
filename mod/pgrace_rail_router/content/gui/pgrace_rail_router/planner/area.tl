@@ -11,12 +11,13 @@ local type Pt = PgraceRailRouterGeo.Pt
 local type Town = PgraceRailRouterCorridor.Town
 local type Grid = PgraceRailRouterGrid.Grid
 local type Box = PgraceRailRouterArea.Box
+local type Bounds = PgraceRailRouterArea.Bounds
 
 local function isFinite(x : number) : boolean
 	return x == x and x ~= math.huge and x ~= -math.huge
 end
 
-function area.box(stops : {Town}, cell : number, margin : number) : Box
+function area.box(stops : {Town}, cell : number, margin : number, bounds ?: Bounds) : Box
 	if #stops == 0 then
 		return nil
 	end
@@ -30,6 +31,21 @@ function area.box(stops : {Town}, cell : number, margin : number) : Box
 	end
 	local pad = math.max(area.MIN_MARGIN, margin * math.max(maxX - minX, maxY - minY))
 	minX, maxX, minY, maxY = minX - pad, maxX + pad, minY - pad, maxY + pad
+	-- Nothing to survey or plan beyond the map: on a wide margin most of the box was off it (121,684 of 148,580
+	-- cells on a 16 km map), which only cost memory, search time and resolution.
+	if bounds ~= nil and isFinite(bounds.minX) and isFinite(bounds.minY) and isFinite(bounds.maxX)
+			and isFinite(bounds.maxY) and bounds.maxX > bounds.minX and bounds.maxY > bounds.minY then
+		-- Whole cells at a time, so the cells that stay are where they were (the same grid, less what's off the map):
+		-- the edge cells straddle the map's edge.
+		minX = minX + math.max(0, math.floor((bounds.minX - minX) / cell)) * cell
+		minY = minY + math.max(0, math.floor((bounds.minY - minY) / cell)) * cell
+		maxX = maxX - math.max(0, math.floor((maxX - bounds.maxX) / cell)) * cell
+		maxY = maxY - math.max(0, math.floor((maxY - bounds.maxY) / cell)) * cell
+		-- Stops off the map (they shouldn't be) still get a box round themselves.
+		if maxX < minX or maxY < minY then
+			return area.box(stops, cell, margin)
+		end
+	end
 	local nx = math.floor((maxX - minX) / cell) + 1
 	local ny = math.floor((maxY - minY) / cell) + 1
 	while nx * ny > area.MAX_CELLS and cell < area.MAX_CELL do
@@ -38,6 +54,14 @@ function area.box(stops : {Town}, cell : number, margin : number) : Box
 		ny = math.floor((maxY - minY) / cell) + 1
 	end
 	return { minX = minX, minY = minY, maxX = maxX, maxY = maxY, cell = cell, nx = nx, ny = ny }
+end
+
+function area.same(a : Box, b : Box) : boolean
+	if a == nil or b == nil then
+		return a == b
+	end
+	return a.minX == b.minX and a.minY == b.minY and a.maxX == b.maxX and a.maxY == b.maxY and a.cell == b.cell
+		and a.nx == b.nx and a.ny == b.ny
 end
 
 function area.markBox(g : Grid, x0 : number, y0 : number, x1 : number, y1 : number, cells : {boolean})

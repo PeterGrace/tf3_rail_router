@@ -28,7 +28,7 @@ global record PgraceRailRouterGrid
 		cost : number
 	end
 
-	-- A search in progress. The fields other than done, found and expansions are internal.
+	-- A search in progress. The fields other than done, found, expansions and enclosed are internal.
 	-- Its states are (cell, arriving direction): node id (cell - 1) * 16 + k, k = 1..16 the move direction that
 	-- entered the cell; node 0 is the virtual finish, past the goal cell.
 	record Search
@@ -83,6 +83,11 @@ global record PgraceRailRouterGrid
 		fillQueue : {integer}
 		fillHead : integer
 		fillSeen : {integer : boolean}
+		-- The fill reached a cell on the grid's edge.
+		fillEdge : boolean
+		-- Finished, not found, because the fill used up every cell it could reach from the start without meeting the
+		-- goal or the grid's edge: the start is closed off inside the grid, and a wider grid wouldn't help.
+		enclosed : boolean
 	end
 
 	-- A flat (height 0), dry, empty grid.
@@ -104,6 +109,17 @@ global record PgraceRailRouterGrid
 	-- that a and b are inside first.
 	cellsAlong : function(g : Grid, a : PgraceRailRouterGeo.Pt, b : PgraceRailRouterGeo.Pt,
 		fn : function(i : integer) : boolean) : boolean
+
+	-- The 16 move directions as {dx, dy} in cells, counter-clockwise from +x.
+	DIRS : {{integer}}
+
+	-- Where a path may go first from the point p heading about `out` (or, the other way round, arrive at p heading
+	-- against it), as a search's first or last segment: the neighbours of p's cell (by the search's 16 moves, the
+	-- knight moves' rule included) within the 90° a free-turning search may turn from `out` (any way for a zero
+	-- `out`), not blocked nor in `skip`, with the straight from p itself to the neighbour's centre clear of blocked
+	-- cells. Their cell indices; empty if the path can't leave there.
+	leaveCells : function(g : Grid, p : PgraceRailRouterGeo.Pt, out : PgraceRailRouterGeo.Pt,
+		skip : {integer : boolean}) : {integer}
 
 	-- Starts a search from `from` to `to`. startDir is the direction the track leaves `from` in (turns are counted
 	-- from it; zero-length = any). goalDir is the direction it must arrive at `to` in: the last move may turn from it

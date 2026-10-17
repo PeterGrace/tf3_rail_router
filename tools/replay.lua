@@ -11,8 +11,8 @@
 --   lua tools/replay.lua --map <file> --list
 -- Towns by name (case-insensitive) or entity id. As the window does: the default track for the mode and the map's
 -- year, modes.weights, the stops corridor.select picks (or --stops: the ones between, in order), the area round them
--- (planner/area.tl) rasterised from the map (tools/maplib.lua), and on "no path" up to two retries with the margin
--- doubled. The planning itself is tools/replaylib.lua (the regression tests use it too), stepped as the window steps
+-- (planner/area.tl, cut to the map's extent) rasterised from the map (tools/maplib.lua), and on "no path" up to two
+-- retries with the margin doubled, while that gives a bigger area. The planning itself is tools/replaylib.lua (the regression tests use it too), stepped as the window steps
 -- it (150 expansions a step), so "slowest step" is the longest single route.step, about 4 times longer in-game.
 --
 -- Prints the plan's summary and per-leg figures; with out.ppm, draws the map (20 m per pixel): terrain shaded by
@@ -109,6 +109,9 @@ if opts.map then
 		print(("  area %.0f %.0f, %d × %d cells of %.0f m (margin %.2f): %d off the map, %d objects, %d edges (%d tunnels skipped)"):format(
 			box.minX, box.minY, box.nx, box.ny, box.cell, a.margin, stats.invalid, stats.objects, stats.edges, stats.tunnels))
 	end
+	if r.sameArea then
+		print("  no path: a wider margin gives the same area (the whole map that way), so no retry")
+	end
 	label = opts.map
 else
 	local capPath = plain[1] or usage()
@@ -149,8 +152,8 @@ for i, leg in ipairs(plan.legs) do
 			table.insert(arcs, ("%.0f@(%.0f,%.0f)"):format(piece.radius, piece.a.x, piece.a.y))
 		end
 	end
-	print(("  leg %d: %.0f m, search radius %.0f (%d expansions), grid path %d points, pieces %d, tight %d, blocked %d, guarded %d%s"):format(i,
-		leg.length, leg.searchRadius, leg.searchExpansions, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves,
+	print(("  leg %d: %.0f m, sweep %.0f°, search radius %.0f (%d expansions), grid path %d points, pieces %d, tight %d, blocked %d, guarded %d%s"):format(i,
+		leg.length, lib.sweep(plan)[i], leg.searchRadius, leg.searchExpansions, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves,
 		leg.blockedSamples, leg.guarded,
 		#arcs > 0 and (", tight arcs " .. table.concat(arcs, " ")) or ""))
 	for __, span in ipairs(leg.spans) do

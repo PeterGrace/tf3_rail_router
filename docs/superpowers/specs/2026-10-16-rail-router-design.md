@@ -55,10 +55,16 @@ is pure, so it can be tested end to end on artificial maps.
 
 ## Survey (`survey.tl`)
 
-- **Corridor:** the box around the chosen towns, plus a 25% margin (at least 2 km). If a leg's grid search finds no
-  path, the window starts the work over (survey and plan) with the margin doubled, up to twice (0.25 → 0.5 → 1.0),
-  showing "Widening the search… N%"; only then is "No route found" shown. The grid coarsens past 250,000 cells, so
-  a wider margin costs resolution rather than memory.
+- **Corridor:** the box around the chosen towns, plus a 25% margin (at least 2 km), cut to the map's extent (the
+  terrain's bounding box, else TERRAIN.size × 256 m) whole cells at a time. If a leg's grid search finds no path,
+  the window starts the work over (survey and plan) with the margin doubled, up to twice (0.25 → 0.5 → 1.0), while
+  that gives a bigger box, showing "Widening the search… N%"; only then is "No route found" shown. A station walled
+  in by buildings ("no_exit", below) never retries. The grid coarsens past 250,000 cells, so a wider margin costs
+  resolution rather than memory. (Uncut, margin 1.0 on a 16 km map had 121,684 of 148,580 cells off the map.)
+- **Spread over frames:** every task stops at the frame's budget and carries on in the next: a row's terrain
+  mid-row, a 500 m tile's octree lookups one per call and the marking of what they found in slices. On a dense 2254
+  save a whole row took 35 ms in-game and a 1 km tile 62 ms. The log's summary gives the slowest slice of each
+  kind.
 - **Per 100 m cell:** `api.engine.terrain.getHeightAt` and `isOnWater` at the cell centre.
 - **Buildings and other constructions:** `octree.findEntitiesInCircle(..., CONSTRUCTION / TOWN_BUILDING)` over the
   corridor in ~1 km tiles; mark cells within 30 m of any of them (town buildings, stations, industries, depots) as
@@ -171,6 +177,17 @@ at most: out to 1.5 km it passes some 3,000 spots of up to 5 runs each, and one 
 step in-game. A spot whose centre cell is taken is passed over, and a run's end cells are looked at before its cells
 are walked, so a built-up town is cheap (4.4 ms → 0.5 ms for the slowest site on the Ames–Bridgeport capture).
 
+**A way out.** A clear run is no use if no leg can reach it: buildings and their 30 m buffer can wall in an open
+spot (Pottstown on PottstownTown: 18 cells with no way out), or one end of it. So each site's centre cell must
+connect over unblocked cells (the search's moves) to a cell 2.5 km from the town's centre (a kilometre past the
+farthest site) or to the grid's edge, remembered per town; and each end a leg uses (arriving at every station but
+the first, leaving every one but the last) must too, starting as the leg's search would (from the end point itself,
+within 90° of the platform's direction) and never back along the run. The floods are stepped with the site search.
+A town with clear spots but none that connects fails **no_exit** ("There's no way out of the station site in X:
+buildings surround it. Try another stop."), as does a leg whose search finds its start closed off inside the grid; a
+wider area can't help either. A station's room to turn is also pulled back where the search couldn't leave its end
+point (off its cell's centre, between two buildings' corners).
+
 **Facing the line** (`route.tl`). The first sites face from the previous stop to the next. Then each leg is scouted:
 a search between the two site centres, free to start and end in any direction and turning as freely as the Cheapest
 radius allows (with the mode's costs). Each station's direction is then taken from the scouts: from the point D before
@@ -181,6 +198,16 @@ the town than the first; if there is none, or it leaves no room to the stations 
 room to turn (below) shorter than the first site's on a side a leg leaves from, the first site stays.
 One round; a second moved stations again without settling. Scouts are searches like the legs', stepped through
 `route.step`, and count towards the progress.
+
+**Re-siting by the legs.** The scouts turn freely between site centres, so a station can still face a way its leg
+can only enter by hooking round (Owings Mills on New Game: the line came down past the station and turned back up
+into it, with an 8 m curve). After each leg is fitted, if its heading swings more than 200° (the widest spread of
+its arcs' signed turns; ordinary legs on the regression maps reach 192°) or it has a curve below the build minimum,
+the station nearer the trouble (else the one it arrives at) is weighed again, once: its site against sites facing
+8 axes, within 300 m more of the town, by the costs of the fallback-radius searches for its two legs. A site 2%
+cheaper replaces it, and the legs either side are built again. The search's costs don't see a hook (free turning is
+cheap), so this only helps where a better-facing site is also cheaper: on the regression maps it fixed three of the
+four hooking routes.
 
 **Room to turn beyond the approach** (the leg's search starts and ends there): enough for the search's first turn at
 full radius. Where the search turns freely (Cheapest) that may be anything up to 90°, so room for 45°
@@ -259,7 +286,8 @@ don't keep engine components across a `sendCommand`.
 - `smooth`: every arc is at least the minimum radius, and the end directions are kept.
 - `profile`: grades stay under the limit; a valley becomes a bridge, a ridge a tunnel; a crossing a bridge with 7 m
   of clearance.
-- `stations`: the chosen spot is clear (of buildings, water, roads and track) and as near the centre as possible.
+- `stations`: the chosen spot is clear (of buildings, water, roads and track) and as near the centre as possible;
+  a clear spot walled in by buildings, or whose leaving end is a dead end, is refused for the next one out.
 - `corridor`: the detour budget includes and excludes the right towns; the default stops fit the budget together and
   no town left out would; ticked towns are ordered by cheapest insertion, not projection.
 
@@ -287,8 +315,9 @@ Each ends with one in-game test by the user.
    (ticked by default), and the legs run to that station's free track ends, joining them (the same joins as the
    fans). Needs: finding a town's rail stations and their free track ends and directions, deciding whether one is
    usable (a through station with an end free on the side the line comes from; a terminus only at the line's ends),
-   and planning a leg to a fixed end instead of a site. First test case: Pottstown on the player's third save
-   (`maps/third-save-16x16km.map`), whose existing station boxed in the new site the planner looked for.
+   and planning a leg to a fixed end instead of a site. First test case: Pottstown on the player's third save,
+   "PottstownTown" (`maps/pottstowntown-16x16km.map`), whose existing station boxed in the new site the planner
+   looked for.
 5. **Tuning and polish:** thresholds and weights from real maps, translations, release.
 
 ## Known issues after milestone 1 (to settle with in-game data)

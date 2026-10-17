@@ -7,6 +7,7 @@ local modes = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/mo
 local corridor = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/corridor.tl" as PgraceRailRouterCorridor
 local route = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/route.tl" as PgraceRailRouterRoute
 local survey = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/survey.tl" as PgraceRailRouterSurvey
+local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/area.tl" as PgraceRailRouterArea
 local preview = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/preview.tl" as PgraceRailRouterPreview
 local mapcapture = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/mapcapture.tl" as PgraceRailRouterMapCapture
 
@@ -27,8 +28,9 @@ local BUDGET_US = 6000
 -- Cells a leg's search expands per call between clock checks.
 local EXPANSIONS_PER_CALL = 150
 local CELL = 100.0
--- The surveyed area is the stops' bounding box grown by this share of its larger side; when a leg finds no path,
--- the work starts over with it doubled, up to MAX_RETRIES times (0.25, 0.5, 1.0).
+-- The surveyed area is the stops' bounding box grown by this share of its larger side, cut to the map; when a leg
+-- finds no path, the work starts over with it doubled, up to MAX_RETRIES times (0.25, 0.5, 1.0), while that gives a
+-- bigger area.
 local SURVEY_MARGIN = 0.25
 local MAX_RETRIES = 2
 -- Towns adding at most this share of the direct distance on their own are offered as stops; those ticked by default
@@ -69,10 +71,13 @@ local record Work
 	-- The survey margin in use, and how many times the work was started over with a wider one.
 	margin : number
 	retries : integer
+	-- The map's extent, read on the first survey (the area is cut to it); nil if unknown.
+	bounds : PgraceRailRouterArea.Bounds
+	boundsRead : boolean
 	surveyJob : PgraceRailRouterSurvey.Job
 	routeJob : PgraceRailRouterRoute.Job
 	-- Timing diagnostics for the planning part (after the survey) of the current attempt, logged when the plan is
-	-- done: the slowest single route.step per phase ("sites", "legs") and the total, microseconds, and the frames it
+	-- done: the slowest single route.step per phase ("sites", "scout", "turn", "legs") and the total, microseconds, and the frames it
 	-- took. Reset on each retry.
 	slowestStepUs : {string : integer}
 	planUs : integer
@@ -208,6 +213,9 @@ local function failureText(plan : Plan) : string
 	if plan.failure == "no_site" then
 		return fill(_("No room for a station near the centre of {town} without demolishing anything."),
 			{ town = towns[1] or "?" })
+	elseif plan.failure == "no_exit" then
+		return fill(_("There's no way out of the station site in {town}: buildings surround it. Try another stop."),
+			{ town = towns[1] or "?" })
 	elseif plan.failure == "no_path" then
 		return fill(_("No route found from {from} to {to}."), { from = towns[1] or "?", to = towns[2] or "?" })
 	elseif plan.failure == "too_close" then
@@ -341,7 +349,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			end
 		end
 		workRef:set({ stops = corridor.order(fromTown, toTown, picked), weights = modes.weights(settings.mode, track),
-			platform = settings.platform, margin = SURVEY_MARGIN, retries = 0, slowestStepUs = { sites = 0, legs = 0 },
+			platform = settings.platform, margin = SURVEY_MARGIN, retries = 0, slowestStepUs = {},
 			planUs = 0, planFrames = 0 })
 		planState:set(nil)
 		showState:set(false)
@@ -393,7 +401,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local function advance(work : Work)
 		local clock = api.type.Clock.new()
 		if work.surveyJob == nil then
-			work.surveyJob = survey.start(work.stops, CELL, work.margin)
+			if not work.boundsRead then
+				work.bounds, work.boundsRead = survey.extent(), true
+			end
+			work.surveyJob = survey.start(work.stops, CELL, work.margin, work.bounds)
 			if work.surveyJob == nil then
 				error("survey: no area to survey")
 			end
@@ -438,19 +449,23 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			end
 			debugPrint(LOG_PREFIX .. "plan done: " .. (plan.ok and "ok" or tostring(plan.failure)) .. ", "
 				.. tostring(math.floor(work.planUs / 1000)) .. " ms over " .. tostring(work.planFrames)
-				.. " frames; slowest step sites " .. tostring(work.slowestStepUs.sites or 0) .. " us, legs "
-				.. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
+				.. " frames; slowest step sites " .. tostring(work.slowestStepUs.sites or 0) .. " us, scout "
+				.. tostring(work.slowestStepUs.scout or 0) .. " us, turn " .. tostring(work.slowestStepUs.turn or 0)
+				.. " us, legs " .. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
 				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0) .. ", survey margin " .. tostring(work.margin)
 				.. ", retries " .. tostring(work.retries) .. ", guarded "
 				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0) .. ", leg searches (radius/expansions) "
 				.. table.concat(searches, " "))
-			if not plan.ok and plan.failure == "no_path" and work.retries < MAX_RETRIES then
-				-- Perhaps the way round lies outside the surveyed area: start over on a wider one.
+			-- Perhaps the way round lies outside the surveyed area: start over on a wider one, unless that is the same
+			-- area (already the whole map that way). no_exit (walled in) never gets better with a wider area.
+			local wider = not plan.ok and plan.failure == "no_path" and work.retries < MAX_RETRIES
+				and not area.same(area.box(work.stops, CELL, 2 * work.margin, work.bounds), work.surveyJob.box)
+			if wider then
 				work.retries = work.retries + 1
 				work.margin = 2 * work.margin
 				work.surveyJob = nil
 				work.routeJob = nil
-				work.slowestStepUs = { sites = 0, legs = 0 }
+				work.slowestStepUs = {}
 				work.planUs = 0
 				work.planFrames = 0
 				setProgress(work, "survey", 0)
