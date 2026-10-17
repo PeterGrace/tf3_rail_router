@@ -48,7 +48,8 @@ global record PgraceRailRouterModes
 		trackCrossing : number
 		-- Money per metre of double track.
 		costPerMetre : number
-		-- Cost estimate: a metre of bridge or tunnel costs this many times a metre on the ground.
+		-- The height fit's cost: a metre of bridge or tunnel costs this many times a metre on the ground (more than the
+		-- game charges, which the estimate uses: route.tl's BRIDGE_PRICE, TUNNEL_PRICE).
 		bridgeCostFactor : number
 		tunnelCostFactor : number
 		-- Track more than this far above the ground is a bridge, more than tunnelBelow below it a tunnel (metres).

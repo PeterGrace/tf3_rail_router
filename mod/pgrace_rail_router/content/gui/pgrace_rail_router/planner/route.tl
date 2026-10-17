@@ -20,6 +20,11 @@ local type LegHeights = PgraceRailRouterRoute.LegHeights
 
 -- Straight track before and after each platform, so trains run in line with it (metres).
 local APPROACH = 100.0
+-- The estimate's price for a metre of bridge and of tunnel, as a multiple of plain track: what the game charged.
+-- Probe P3 (300 m of each on flat ground): 1.8 and 3.0; Bangor - Imperial Beach, Fastest, 985 m of bridges: 1.8.
+-- Not the planner's own weights (Weights.bridgeCostFactor, tunnelCostFactor), which also steer it off structures.
+local BRIDGE_PRICE = 1.8
+local TUNNEL_PRICE = 3.0
 -- Most height change a station's run may have (metres).
 local MAX_STATION_RELIEF = 10.0
 -- How far from a town's centre to look for room for its station (metres).
@@ -814,11 +819,11 @@ local function summarise(input : Input, plan : Plan) : Summary
 			if span.kind == "bridge" then
 				sum.bridges = sum.bridges + 1
 				sum.bridgeLength = sum.bridgeLength + l
-				factor = w.bridgeCostFactor
+				factor = BRIDGE_PRICE
 			elseif span.kind == "tunnel" then
 				sum.tunnels = sum.tunnels + 1
 				sum.tunnelLength = sum.tunnelLength + l
-				factor = w.tunnelCostFactor
+				factor = TUNNEL_PRICE
 			end
 			sum.estimate = sum.estimate + l * w.costPerMetre * factor
 		end
