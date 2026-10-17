@@ -1,1 +1,11 @@
-require "gui.pgrace_rail_router.util"
+-- Registry of the mod's type definitions: one require per .d.tl under tealdef/gui/.
+require "gui.pgrace_rail_router.planner.geo"
+require "gui.pgrace_rail_router.planner.modes"
+require "gui.pgrace_rail_router.planner.corridor"
+require "gui.pgrace_rail_router.planner.grid"
+require "gui.pgrace_rail_router.planner.stations"
+require "gui.pgrace_rail_router.planner.smooth"
+require "gui.pgrace_rail_router.planner.profile"
+require "gui.pgrace_rail_router.planner.route"
+require "gui.pgrace_rail_router.survey"
+require "gui.pgrace_rail_router.preview"

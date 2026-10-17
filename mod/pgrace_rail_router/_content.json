@@ -1,9 +1,28 @@
 {
     "archives": null,
     "files": [
-        "gui/pgrace_rail_router/industry_plugin.res.lua",
-        "gui/pgrace_rail_router/pgrace_rail_router.script.tl",
-        "gui/pgrace_rail_router/util.d.tl",
-        "gui/pgrace_rail_router/util.tl"
+        "gui/pgrace_rail_router/planner/corridor.d.tl",
+        "gui/pgrace_rail_router/planner/corridor.tl",
+        "gui/pgrace_rail_router/planner/geo.d.tl",
+        "gui/pgrace_rail_router/planner/geo.tl",
+        "gui/pgrace_rail_router/planner/grid.d.tl",
+        "gui/pgrace_rail_router/planner/grid.tl",
+        "gui/pgrace_rail_router/planner/modes.d.tl",
+        "gui/pgrace_rail_router/planner/modes.tl",
+        "gui/pgrace_rail_router/planner/profile.d.tl",
+        "gui/pgrace_rail_router/planner/profile.tl",
+        "gui/pgrace_rail_router/planner/route.d.tl",
+        "gui/pgrace_rail_router/planner/route.tl",
+        "gui/pgrace_rail_router/planner/smooth.d.tl",
+        "gui/pgrace_rail_router/planner/smooth.tl",
+        "gui/pgrace_rail_router/planner/stations.d.tl",
+        "gui/pgrace_rail_router/planner/stations.tl",
+        "gui/pgrace_rail_router/preview.d.tl",
+        "gui/pgrace_rail_router/preview.tl",
+        "gui/pgrace_rail_router/survey.d.tl",
+        "gui/pgrace_rail_router/survey.tl",
+        "gui/pgrace_rail_router/window.css.lua",
+        "gui/pgrace_rail_router/window.res.lua",
+        "gui/pgrace_rail_router/window.script.tl"
     ]
 }
