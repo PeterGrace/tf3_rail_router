@@ -1,7 +1,18 @@
--- Replays a route plan offline from a capture (the "CAPTURE" lines the window's probe writes to the game log), and
--- draws it. usage: lua tools/replay.lua <capture file> [out.ppm] [key=value weight overrides...] [reselect=true]
+-- Replays a route plan offline, and draws it. Two sources:
+--
+-- From a route capture (the "CAPTURE" lines the window's probe writes to the game log):
+--   lua tools/replay.lua <capture file> [out.ppm] [key=value weight overrides...] [reselect=true]
 -- reselect=true picks the stops again as the window would by default: the capture's first and last stops are the ends,
 -- the ones between are the towns (corridor.candidates, select, order with the window's 15% budget).
+--
+-- From a whole-map capture (the "MAP" lines, docs/map-capture-format.md), any route on that map:
+--   lua tools/replay.lua --map <file> --from <town> --to <town> [--mode cheapest|fastest] [--track <label or name>]
+--       [--platform 160] [out.ppm] [key=value weight overrides...]
+--   lua tools/replay.lua --map <file> --list
+-- Towns by name (case-insensitive) or entity id. As the window does: the default track for the mode and the map's
+-- year, modes.weights, the stops corridor.select picks, the area round them (planner/area.tl) rasterised from the map
+-- (tools/maplib.lua), and on "no path" up to two retries with the margin doubled.
+--
 -- Prints the plan's summary and per-leg figures; with out.ppm, draws the map (20 m per pixel): terrain shaded by
 -- height, water blue, blocked cells red, roads grey, track black, the grid path yellow, the planned track green
 -- (ground), blue (bridge) or orange (tunnel), and samples over blocked cells magenta.
@@ -33,103 +44,199 @@ end
 local grid = ug_require(modId .. "::/gui/pgrace_rail_router/planner/grid.tl")
 local route = ug_require(modId .. "::/gui/pgrace_rail_router/planner/route.tl")
 local corridor = ug_require(modId .. "::/gui/pgrace_rail_router/planner/corridor.tl")
--- As the window's DETOUR_BUDGET.
+local modes = ug_require(modId .. "::/gui/pgrace_rail_router/planner/modes.tl")
+local area = ug_require(modId .. "::/gui/pgrace_rail_router/planner/area.tl")
+local maplib = dofile(root .. "/tools/maplib.lua")
+local capture = dofile(root .. "/tools/capture_file.lua")
+-- As the window's DETOUR_BUDGET, CELL, SURVEY_MARGIN and MAX_RETRIES.
 local DETOUR_BUDGET = 0.15
+local CELL = 100.0
+local SURVEY_MARGIN = 0.25
+local MAX_RETRIES = 2
 
-local capPath, outPath = arg[1], arg[2]
-assert(capPath, "usage: lua tools/replay.lua <capture> [out.ppm] [key=value...]")
-local overrides = {}
-for i = 3, #arg do
-	local k, v = arg[i]:match("^([%w_]+)=(.*)$")
-	overrides[k] = v
-end
-if outPath and outPath:match("=") then
-	local k, v = outPath:match("^([%w_]+)=(.*)$")
-	overrides[k] = v
-	outPath = nil
+local function usage()
+	io.stderr:write("usage: lua tools/replay.lua <capture> [out.ppm] [key=value...]\n"
+		.. "       lua tools/replay.lua --map <file> --from <town> --to <town> [--mode cheapest|fastest] "
+		.. "[--track <label or name>] [--platform 160] [out.ppm] [key=value...]\n"
+		.. "       lua tools/replay.lua --map <file> --list\n")
+	os.exit(2)
 end
 
-local g, weights, platform = nil, {}, 160
-local stops = {}
-for line in io.lines(capPath) do
-	local kind, rest = line:match("^CAPTURE (%w+) ?(.*)$")
-	if kind == "begin" then
-		local x0, y0, cell, nx, ny = rest:match("(%S+) (%S+) (%S+) (%S+) (%S+)")
-		g = grid.new(tonumber(x0), tonumber(y0), tonumber(cell), math.floor(tonumber(nx)), math.floor(tonumber(ny)))
-	elseif kind == "weights" then
-		for k, v in rest:gmatch("([%w_]+)=([^;]*)") do
-			if v == "true" or v == "false" then
-				weights[k] = v == "true"
-			else
-				weights[k] = tonumber(v)
+-- Options: --name value pairs (--list alone), key=value overrides, and up to two plain arguments.
+local opts, overrides, plain = {}, {}, {}
+do
+	local i = 1
+	while i <= #arg do
+		local a = arg[i]
+		local name = a:match("^%-%-(%w+)$")
+		if name == "list" then
+			opts.list = true
+		elseif name then
+			opts[name] = arg[i + 1] or usage()
+			i = i + 1
+		elseif a:match("^[%w_]+=") then
+			local k, v = a:match("^([%w_]+)=(.*)$")
+			overrides[k] = v
+		else
+			table.insert(plain, a)
+		end
+		i = i + 1
+	end
+end
+
+local function applyOverrides(weights)
+	for k, v in pairs(overrides) do
+		if v == "true" or v == "false" then
+			weights[k] = v == "true"
+		else
+			weights[k] = tonumber(v)
+		end
+	end
+end
+
+-- Runs the planner to the end; the plan, the grid paths per leg, the slowest step per phase (ms) and the time (ms).
+local function runPlan(g, stops, weights, platform)
+	local clock = os.clock()
+	local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform })
+	local paths = {}
+	-- The slowest single step per phase (ms), as the window logs it in-game (where Lua runs about 4 times slower).
+	local slowest = {}
+	while true do
+		local phase = job.phase
+		local before = os.clock()
+		local done = route.step(job, 1000000)
+		slowest[phase] = math.max(slowest[phase] or 0, (os.clock() - before) * 1000)
+		if done then
+			break
+		end
+		if job.path ~= nil and paths[job.legIndex] == nil then
+			paths[job.legIndex] = job.path
+		end
+	end
+	return route.plan(job), paths, slowest, (os.clock() - clock) * 1000
+end
+
+local function findTown(towns, key)
+	local id = tonumber(key)
+	for _, town in ipairs(towns) do
+		if town.id == id or town.name:lower() == key:lower() then
+			return town
+		end
+	end
+	io.stderr:write("no town " .. key .. " on this map (--list shows them)\n")
+	os.exit(2)
+end
+
+local function baseName(name)
+	local last = name:match("([^/\\:]+)$") or name
+	return last:match("^([^%.]+)") or last
+end
+
+local g, weights, platform, stops, label
+local plan, paths, slowest, ms
+local outPath
+if opts.map then
+	outPath = plain[1]
+	local map = maplib.load(opts.map)
+	local towns = maplib.towns(map)
+	local year = tonumber(map.meta.gameYear) or 0
+	local tracks = {}
+	for _, t in ipairs(map.tracks) do
+		table.insert(tracks, { name = t.name, label = t.label or t.name, cost = t.cost or 0, speed = t.speed or 0,
+			maxSlopeBuild = t.maxSlopeBuild or 0, minCurveRadiusBuild = t.minCurveRadiusBuild or 0,
+			trackDistance = t.trackDistance or 5, yearFrom = t.yearFrom or 0, yearTo = t.yearTo or 0,
+			catenary = t.catenary, catenaryYearFrom = t.catenaryYearFrom or 0 })
+	end
+	table.sort(tracks, function(a, b) return a.speed < b.speed end)
+	if opts.list then
+		print(("%s: extent %.0f %.0f %.0f %.0f, year %d, %d towns, %d objects, %d edges"):format(opts.map,
+			map.extent.x0, map.extent.y0, map.extent.x1, map.extent.y1, year, #towns, #map.objects, #map.edges))
+		for _, town in ipairs(towns) do
+			print(("  town %d %s (%.0f, %.0f)"):format(town.id, town.name, town.pos.x, town.pos.y))
+		end
+		for _, t in ipairs(tracks) do
+			print(("  track %s (%s), %.1f m/s, cost %s, years %d-%d%s"):format(t.label, t.name, t.speed,
+				tostring(t.cost), t.yearFrom, t.yearTo, modes.isAvailable(t, year) and "" or ", not available"))
+		end
+		return
+	end
+	if not (opts.from and opts.to) then
+		usage()
+	end
+	local from, to = findTown(towns, opts.from), findTown(towns, opts.to)
+	local mode = opts.mode or "cheapest"
+	assert(mode == "cheapest" or mode == "fastest", "--mode is cheapest or fastest")
+	local track
+	if opts.track then
+		for _, t in ipairs(tracks) do
+			if t.label:lower() == opts.track:lower() or t.name == opts.track or baseName(t.name) == opts.track then
+				track = t
 			end
 		end
-	elseif kind == "platform" then
-		platform = tonumber(rest)
-	elseif kind == "stop" then
-		local id, x, y, name = rest:match("^(%S+) (%S+) (%S+) (.*)$")
-		table.insert(stops, { id = math.floor(tonumber(id)), name = name, pos = { x = tonumber(x), y = tonumber(y) } })
-	elseif kind == "row" then
-		local iy, hs, fs = rest:match("^(%d+) (%S+) (%S+)$")
-		iy = tonumber(iy)
-		local ix = 0
-		for h in hs:gmatch("[^,]+") do
-			ix = ix + 1
-			g.height[(iy - 1) * g.nx + ix] = tonumber(h)
-		end
-		for ixf = 1, #fs do
-			local f = tonumber(fs:sub(ixf, ixf), 16)
-			local i = (iy - 1) * g.nx + ixf
-			g.blocked[i] = f % 2 == 1
-			g.water[i] = math.floor(f / 2) % 2 == 1
-			g.road[i] = math.floor(f / 4) % 2 == 1
-			g.track[i] = math.floor(f / 8) % 2 == 1
-		end
-	end
-end
--- Captures from before weights.minSearchRadius: the Cheapest radius, as modes.weights sets it.
-if weights.minSearchRadius == nil and weights.minBuildRadius ~= nil then
-	weights.minSearchRadius = 4 * weights.minBuildRadius
-end
-local reselect = overrides.reselect == "true"
-overrides.reselect = nil
-if reselect and #stops > 2 then
-	local a, b = stops[1], stops[#stops]
-	local candidates = corridor.candidates(a, b, stops, DETOUR_BUDGET)
-	stops = corridor.order(a, b, corridor.select(a, b, candidates, DETOUR_BUDGET))
-	local list = {}
-	for __, town in ipairs(stops) do
-		table.insert(list, town.name)
-	end
-	print(("reselected %d of %d candidates: %s"):format(#stops - 2, #candidates, table.concat(list, ", ")))
-end
-for k, v in pairs(overrides) do
-	if v == "true" or v == "false" then
-		weights[k] = v == "true"
+		assert(track, "no track type " .. opts.track .. " on this map (--list shows them)")
 	else
-		weights[k] = tonumber(v)
+		track = modes.defaultTrack(tracks, year, mode)
+		assert(track, "no track type available in " .. year)
 	end
+	weights = modes.weights(mode, track)
+	applyOverrides(weights)
+	platform = tonumber(opts.platform) or 160
+	local candidates = corridor.candidates(from, to, towns, DETOUR_BUDGET)
+	stops = corridor.order(from, to, corridor.select(from, to, candidates, DETOUR_BUDGET))
+	local names = {}
+	for _, town in ipairs(stops) do
+		table.insert(names, town.name)
+	end
+	print(("%s %s → %s, %s on %s (year %d): stops %s (%d candidates)"):format(opts.map, from.name, to.name, mode,
+		track.label, year, table.concat(names, ", "), #candidates))
+	local margin = SURVEY_MARGIN
+	for retry = 0, MAX_RETRIES do
+		local box = assert(area.box(stops, CELL, margin), "no area")
+		local cells, stats = maplib.rasterise(map, box.minX, box.minY, box.cell, box.nx, box.ny)
+		g = grid.new(box.minX, box.minY, box.cell, box.nx, box.ny)
+		for i = 1, box.nx * box.ny do
+			g.height[i], g.water[i], g.blocked[i] = cells.height[i], cells.water[i], cells.blocked[i]
+			g.road[i], g.track[i] = cells.road[i], cells.track[i]
+		end
+		print(("  area %.0f %.0f, %d × %d cells of %.0f m (margin %.2f): %d off the map, %d objects, %d edges (%d tunnels skipped)"):format(
+			box.minX, box.minY, box.nx, box.ny, box.cell, margin, stats.invalid, stats.objects, stats.edges, stats.tunnels))
+		plan, paths, slowest, ms = runPlan(g, stops, weights, platform)
+		if plan.ok or plan.failure ~= "no_path" or retry == MAX_RETRIES then
+			break
+		end
+		print("  no path: widening the area")
+		margin = 2 * margin
+	end
+	label = opts.map
+else
+	local capPath = plain[1] or usage()
+	outPath = plain[2]
+	local c = capture.load(capPath)
+	g = grid.new(c.x0, c.y0, c.cell, c.nx, c.ny)
+	for i = 1, c.nx * c.ny do
+		g.height[i] = c.height[i] or 0
+		g.blocked[i], g.water[i], g.road[i], g.track[i] = c.blocked[i] or false, c.water[i] or false,
+			c.road[i] or false, c.track[i] or false
+	end
+	weights, platform, stops = c.weights, c.platform, c.stops
+	local reselect = overrides.reselect == "true"
+	overrides.reselect = nil
+	if reselect and #stops > 2 then
+		local a, b = stops[1], stops[#stops]
+		local candidates = corridor.candidates(a, b, stops, DETOUR_BUDGET)
+		stops = corridor.order(a, b, corridor.select(a, b, candidates, DETOUR_BUDGET))
+		local list = {}
+		for __, town in ipairs(stops) do
+			table.insert(list, town.name)
+		end
+		print(("reselected %d of %d candidates: %s"):format(#stops - 2, #candidates, table.concat(list, ", ")))
+	end
+	applyOverrides(weights)
+	plan, paths, slowest, ms = runPlan(g, stops, weights, platform)
+	label = capPath
 end
 
-local clock = os.clock()
-local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform })
-local paths = {}
--- The slowest single step per phase (ms), as the window logs it in-game (where Lua runs about 4 times slower).
-local slowest = {}
-while true do
-	local phase = job.phase
-	local before = os.clock()
-	local done = route.step(job, 1000000)
-	slowest[phase] = math.max(slowest[phase] or 0, (os.clock() - before) * 1000)
-	if done then
-		break
-	end
-	if job.path ~= nil and paths[job.legIndex] == nil then
-		paths[job.legIndex] = job.path
-	end
-end
-local plan = route.plan(job)
-print(("replay %s: %.0f ms, %s"):format(capPath, (os.clock() - clock) * 1000, plan.ok and "ok" or plan.failure))
+print(("replay %s: %.0f ms, %s"):format(label, ms, plan.ok and "ok" or plan.failure))
 print(("  slowest step: sites %.2f ms, turn %.2f ms"):format(slowest.sites or 0, slowest.turn or 0))
 if not plan.ok then
 	print("  towns: " .. table.concat(plan.failureTowns, ", "))
