@@ -76,3 +76,44 @@ t.test("stationlayout: platforms longer than the station script's 21 slots along
 	t.near(l.ends[1].y, -420, 1e-9, "start 420 m behind")
 	t.near(l.ends[3].y, 420, 1e-9, "end 420 m ahead")
 end)
+
+t.test("stationlayout: the era by year, as the station script's getEra", function()
+	t.eq(sl.eraLetter(1850), "a", "1850")
+	t.eq(sl.eraLetter(1949), "a", "1949")
+	t.eq(sl.eraLetter(1950), "b", "1950")
+	t.eq(sl.eraLetter(1989), "b", "1989")
+	t.eq(sl.eraLetter(1990), "c", "1990")
+	t.eq(sl.eraLetter(0), "a", "an unknown year")
+end)
+
+local ADDONS = { building = "B", stairs = "S", roof = "R" }
+
+local function slots(modules, name)
+	local list = {}
+	for slot, m in pairs(modules) do
+		if m.name == name then table.insert(list, slot) end
+	end
+	table.sort(list)
+	return table.concat(list, " ")
+end
+
+t.test("stationlayout: a 160 m station's main building, stairs and roofs, as the research's base template", function()
+	local m = sl.addons(160, ADDONS)
+	t.eq(slots(m, "B"), "3400020", "main building 1 at 3400020")
+	t.eq(slots(m, "S"), "10800000 10803000", "stairs at the middle module of each platform")
+	t.eq(slots(m, "R"), "10399990 10400000 10400010 10400020 10402990 10403000 10403010 10403020",
+		"roofs over every module (j = -1..2)")
+end)
+
+t.test("stationlayout: addons for 120 m and 320 m stations, and none without roofs", function()
+	local m = sl.addons(120, { building = "B", stairs = "S" })
+	t.eq(slots(m, "B"), "3400000", "an odd count along: main building at k = 0")
+	t.eq(slots(m, "S"), "10800000 10803000", "stairs at the middle (j = 0)")
+	t.eq(slots(m, "R"), "", "no roofs")
+	-- 8 modules: j = -3..4, centre 0, dist 7: stairs also at s + 1 = -2 and e - 1 = 3; roofs off the two end modules.
+	m = sl.addons(320, ADDONS)
+	t.eq(slots(m, "B"), "3400020", "an even count along: k = 2")
+	t.eq(slots(m, "S"), "10799980 10800000 10800030 10802980 10803000 10803030", "stairs at -2, 0, 3")
+	t.eq(slots(m, "R"), "10399980 10399990 10400000 10400010 10400020 10400030 10402980 10402990 10403000 10403010 10403020 10403030",
+		"roofs from j = -2 to 3")
+end)
