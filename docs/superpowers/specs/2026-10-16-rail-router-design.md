@@ -101,22 +101,60 @@ step costs its length × the sum of:
 - town buildings: impassable;
 - existing roads: crossing allowed (priced per mode, above);
 - existing track: crossed only by a bridge, never through a junction (the height profile makes the bridge);
-- a turn penalty per change of direction.
+- a turn penalty per change of direction;
+- where every move may turn (below), the straight a corner's curve lacks.
 
 The search state is (cell, arriving direction), so turn costs are exact and the result is optimal for the cost
 model (checked against an exact reference on random grids). It arrives at each station's approach in the platform's
-direction.
+direction. Legs keep off the stations' platforms and approaches (all stations', but for their own end cells), so a
+line that goes round never crosses a station's track.
 
 **Turns spaced for the radius.** A 22.5° turn rounded at radius R takes R·tan(11.25°) of straight on each side of its
-corner, so consecutive turns need L = 2·R·tan(11.25°) (≈ 0.4 R) between them. Where L is no more than a cell (Cheapest,
-R = 4 × the build minimum), any move may turn by up to 90°, as before. Otherwise the moves are long edges: from a state
-(cell, direction) the search may go one step straight on, or turn by one 22.5° step and carry on straight for
-ceil(L / step length) steps (every cell on the way checked and costed as single steps are), after which it may turn
-again. The state space stays (cell, direction), so the search is still optimal for this model and the heuristic still
-admissible. The start may turn at once (the station's extension gives room behind it); passing through the goal cell
-part-way along a turn's straight finishes there only heading the platform's way, and a state at the goal may make one
-last single-step turn onto it. The path's first and last segments run from and to the asked points, off their cells'
-centres, so they are checked for blocked cells on their own (a diagonal past a blocked cell's corner would cut it).
+corner, so consecutive turns need L = 2·R·tan(11.25°) (≈ 0.4 R) between them. Where L is more than a cell (Fastest's
+wide radii) the moves are long edges: from a state (cell, direction) the search may go one step straight on, or turn
+by one 22.5° step and carry on straight for ceil(L / step length) steps (every cell on the way checked and costed as
+single steps are), after which it may turn again. The state space stays (cell, direction), so the search is still
+optimal for this model and the heuristic still admissible. The start may turn at once (the station's extension gives
+room behind it); passing through the goal cell part-way along a turn's straight finishes there only heading the
+platform's way, and a state at the goal may make one last single-step turn onto it. The path's first and last segments
+run from and to the asked points, off their cells' centres, so they are checked for blocked cells on their own (a
+diagonal past a blocked cell's corner would cut it).
+
+**Corners priced by their curves' room.** Where L is no more than a cell (Cheapest, R = 4 × the build minimum, and the
+fallback radius of Fastest legs and of the scouts) any move may turn by up to 90°. That used to be free of any spacing,
+so a path could turn 90° every 100 m (a hook into a station sweeping 270° in a few cells), which the track can't follow
+even at the build minimum, and smoothing then cut corners over buildings or curved below it. Now a curve turning θ at
+radius R takes R·tan(θ/2) of straight either side of its corner, and a corner between two cell moves has half of each
+to itself (the other half is the next corner's):
+
+- a turn whose curve at the build minimum doesn't fit there is not made (90° between two straight moves needs 55 m a
+  side, more than half a cell: it takes a diagonal or knight move on one side, or two 45° turns);
+- the straight its curve at the search's radius lacks costs a metre of plain track per metre (`SHORTFALL_FACTOR`):
+  about the track a path with room for the curve would take, so a hook pays roughly what a curve of that radius round
+  it would cost.
+
+The cost of a corner depends only on the two moves either side of it, so the state space stays (cell, direction),
+with one table lookup per move. Next to the leg's ends, off their cells' centres, corners are priced as the path really
+runs, from the end point itself: the start point's corner together with the next one, sharing the straight between
+them, the station's room to turn behind it (or the approach where there's none), or, with room to turn, at the
+approach point instead with the approach behind it (smoothing then gives the extension up: below); the goal's alike.
+The state a start's first move reaches is a state of its own, so the start's corner is priced on its next move
+exactly; at the goal the corner before is priced again as it turns onto the goal point, for any more it costs (so
+there the model looks one corner back, from the state's own direction only: optimal away from the leg's last corner).
+
+Options measured on the regression set (31 routes, re-siting on unless said; base: 386.1 M estimate in all, 16
+samples on blocked cells, a 54 m curve, 4 routes with a leg sweeping over 200°, 1.54 M expansions, 10.6 s):
+
+- spacing turns strictly for the search's radius (220 m: one 22.5° step a move): 13 of 31 routes found no path. Towns
+  need sharper turns than that at stations;
+- at most 3 steps a move (spacing for the build minimum, no pricing): 9 failed, mostly legs whose stations face
+  buildings (the old search turned 90° at the station's end);
+- the turn of the previous corner in the state (5 × the states; each corner checked against the one before for the
+  build minimum, the shortfall for the search's radius charged): 0 failed, 2 samples on blocked cells, estimate +3%,
+  but 3.3 M expansions and 2.7 × the time;
+- corners priced by halves (chosen): 1.23 M expansions, 9.4 s, estimate 396.0 M (+2.6%: paths that cut corners or
+  curved below the build minimum no longer count), no curve below the build minimum, 1 sample on a blocked cell, 3
+  routes over 200°. The shortfall factor: 0 (only the build minimum) gave 396.3 M, 2 gave 401.8 M and 4 408.8 M.
 
 **Ends along the stations' axes.** Where turns are spaced, a leg's search may start anywhere on the ray beyond station
 A's extension point along its direction, and finish anywhere on the ray before B's (one point per cell, up to 1 km and
@@ -132,7 +170,7 @@ path costs at most 10% more than the fallback's; if none does, the fallback's pa
 (station ends misaligned or close together, a passage too narrow) otherwise finds a loop or a wide detour, or nothing
 after a long search; the cost limit ends those searches early. The radius used is recorded per leg (`searchRadius`, in
 the log and the replay tool); smoothing still aims for the full radius, so a leg searched with a smaller one may have
-tight curves. Cost on the captured Fastest map (4 legs, R = 3000 m): about twice the expansions of the free-turning
+tight curves. Cost on the captured Fastest map (4 legs, R = 3000 m): about twice the expansions of the one-step
 search (7,400 against 3,900; about 45 ms against 28 ms offline), Cheapest unchanged. Known cost (plain Lua, desktop): a 500 × 500 grid with 15% clutter took about 1.6 s and 35 MB in Cheapest
 mode and about 6 s and 90 MB in Fastest mode, spread over frames. If that's too slow in-game, weight the heuristic
 (f = g + 1.2·h) in Fastest mode, giving up exact optimality that smoothing hides anyway.
@@ -149,7 +187,17 @@ from the ground at that path point and at the mirror image of the track point, s
 straight that fails keeps an extra path point, a point whose removal would leave a failing straight is kept, and an
 arc that fails has its radius halved until it passes; the floor for both is the track type's build minimum radius (a
 point whose curves wouldn't fit at the floor is dropped anyway: a cut corner beats an unbuildable curve). `guarded` in
-the plan's summary counts these, and the log shows it.
+the plan's summary counts these, and the log shows it. Away from a leg's first and last three path points the track
+also keeps off the stations' platforms and approaches.
+
+A point is not dropped where that would leave a corner whose curves don't fit even at the floor: on a tight loop over
+open ground, dropping points for room at the full radius folded the loop into one corner (a 13 m curve over a wall).
+The path is simplified to within 0.6 of a cell (0.75 folded such a loop into one sharp corner before filleting).
+
+**Station ends.** Where the curve at an extension point can't be built (below the build minimum), or the track near
+an end crosses blocked cells (a corner cut there), the extension is given up: it is put on the approach point, so the
+curve starts there, with the approach behind it, as the search allowed for. A refit that crosses fewer blocked cells
+is taken.
 
 ### Height profile (`profile.tl`)
 
@@ -225,18 +273,22 @@ room to turn (below) shorter than the first site's on a side a leg leaves from, 
 One round; a second moved stations again without settling. Scouts are searches like the legs', stepped through
 `route.step`, and count towards the progress.
 
-**Re-siting by the legs.** The scouts turn freely between site centres, so a station can still face a way its leg
-can only enter by hooking round (Owings Mills on New Game: the line came down past the station and turned back up
-into it, with an 8 m curve). After each leg is fitted, if its heading swings more than 200° (the widest spread of
-its arcs' signed turns; ordinary legs on the regression maps reach 192°) or it has a curve below the build minimum,
-the station nearer the trouble (else the one it arrives at) is weighed again, once: its site against sites facing
-8 axes, within 300 m more of the town, by the costs of the fallback-radius searches for its two legs. A site 2%
-cheaper replaces it, and the legs either side are built again. The search's costs don't see a hook (free turning is
-cheap), so this only helps where a better-facing site is also cheaper: on the regression maps it fixed three of the
-four hooking routes.
+**Re-siting by the legs.** The scouts run between site centres free of the stations' directions, so a station can
+still face a way its leg can only enter by hooking round (Owings Mills on New Game: the line came down past the station
+and turned back up into it, with an 8 m curve). After each leg is fitted, if its heading swings more than 200° (the
+widest spread of its arcs' signed turns; ordinary legs on the regression maps reach 192°) or it has a curve below the
+build minimum, the station nearer the trouble (else the one it arrives at) is weighed again, once: its site against
+sites facing 8 axes, within 300 m more of the town, by the costs of the fallback-radius searches for its two legs. A
+site 2% cheaper replaces it, and the legs either side are built again. The searches price a hook's tight curves
+(Grid search), so the comparison is fair, but a hook still happens where every site within reach faces badly.
+Re-siting is still worth it: without it the regression set's estimates were 4% higher (Dover → Camarillo, Fastest
+29%) and as many routes hooked. It runs less often than before (8 stations on the set against 11), and cheaper: the
+current site's two legs are the legs' own searches, kept (the last 4 finished searches without a cost limit, by
+their inputs), and a candidate's leg in is cut off once it costs more than the best less the straight distance of its
+leg out.
 
 **Room to turn beyond the approach** (the leg's search starts and ends there): enough for the search's first turn at
-full radius. Where the search turns freely (Cheapest) that may be anything up to 90°, so room for 45°
+full radius. Where every move may turn (Cheapest) that may be anything up to 90°, so room for 45°
 (R·tan 22.5°, 91 m at 220 m); where it spaces its turns, one 22.5° step (R·tan 11.25°, 597 m at 3 km). The longer
 room (1.24 km at 3 km) cost Fastest dear once the stations faced the line: it pushed the legs' ends past their turns,
 into a ridge (a 300 m tunnel) and loops (estimate 23.2–23.5 M against 19.6 M on the captured map).
@@ -368,8 +420,17 @@ Each ends with one in-game test by the user.
   The smoothing guard still tightens curves where a path searched at a smaller radius turns close to an obstacle.
 - **A curve at a cut-short station end can cross buildings.** Where buildings cut a station's room to turn short and
   the line turns sharply at its approach, the curve there may only be tightened to the build minimum and still clip
-  the buildings (the guard gives up at the floor). None on the captures with the chosen settings, but neighbouring
-  ones (D = 300, 900 or 1200 m, or two scouting rounds) gave 1 to 5 samples on blocked cells, all at such an end.
+  the buildings (the guard gives up at the floor). Since corners are priced by their curves' room, one sample on the
+  regression set (Bossier City → Ashland, Cheapest, at Ashland's arriving end; 17 before, on 5 routes).
+- **Hooks where no site faces well.** Corners priced by their curves' room give a hook its true cost, but a hook is
+  still the cheapest buildable line where every site within reach of a town faces badly: Alliance → Aloha, Cheapest,
+  loops into Owings Mills (sweep 438°; the west-facing site the old search took can only be left towards Aloha by a
+  curve below the build minimum), and Dover → Camarillo swings 230° (both modes). Better sites need the scouts to see
+  the stations' directions (a scout through each stop, straight along its platforms), not a cheaper turn model.
+- **Small changes move stations.** The scouts and the station turning are sensitive: Alliance → Aloha, Fastest, came
+  out 29% dearer with the turn pricing (long bridges over the lake before Owings Mills): Turlock's turned site moved,
+  and no leg hooked or curved below the build minimum any more to set off the re-siting that had turned Owings Mills
+  west.
 
 ## Out of scope for version 1
 
