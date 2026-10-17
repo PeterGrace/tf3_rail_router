@@ -439,10 +439,14 @@ local function stepResite(job : Job, maxExpansions : integer)
 			to = select(3, stationEnds(input, next, false, rs.others, candidate))
 			fromDir, toDir = rs.site.dir, next.site.dir
 		end
-		-- No dearer than the best so far.
+		-- Only as dear as could still win: a candidate must beat the best so far by RESITE_GAIN, and its two legs
+		-- together (the current site's are searched first, with no limit).
 		local maxCost : number = nil
 		if rs.bestCost < math.huge then
-			maxCost = rs.bestCost - (rs.stage == "out" and rs.inCost or 0)
+			maxCost = rs.bestCost * (1 - RESITE_GAIN)
+			if rs.stage == "out" then
+				maxCost = maxCost - rs.inCost
+			end
 		end
 		rs.search = grid.startSearch(input.grid, from, to, fromDir, toDir, w, w.minSearchRadius or w.minRadius, maxCost)
 		return
