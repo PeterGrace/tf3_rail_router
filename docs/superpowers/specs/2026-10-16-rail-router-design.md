@@ -12,7 +12,7 @@ click.
 | Modes            | **Cheapest** (follows the terrain) and **Fastest** (wide curves, flat grades).             |
 | Entry point      | A window opened from the mod button area (like Trim the Fat and Jam Session).              |
 | Track layout     | Double track. Every station is a 2-track through station. No signals.                     |
-| Stops on the way | Candidate towns within a 15% detour budget are listed, pre-ticked; unticking re-plans.     |
+| Stops on the way | Towns within a 15% detour are listed; those fitting a 15% budget together come pre-ticked. |
 | Station placement| Always best effort **without demolishing anything**: nearest clear spot to the town centre. |
 | Settings         | Track type, electrified, platform length, defaulting to the best available.               |
 | Route search     | Grid search over a cost grid, then curve smoothing, then a height profile.                 |
@@ -188,12 +188,25 @@ into a ridge (a 300 m tunnel) and loops (estimate 23.2–23.5 M against 19.6 M o
 A town between the two ends is a candidate if routing through its centre adds at most 15% to the direct length. The
 window lists each candidate with its added detour.
 
+The 15% budget is for the **whole line**, not each town: judged one by one, a wide corridor of towns all pass (10 of
+them between Ames and Bridgeport, 9.6 km apart, on a big save), and the line through all of them zigzags across the
+corridor (stations there came out facing apart, "too close"). So the towns ticked by default (`corridor.select`) are
+chosen by **cheapest insertion**: start with the straight line from A to B, and repeatedly put in the candidate whose
+best place in the line adds the least length, at that place, while the whole line stays within 115% of the direct
+distance. The player can tick or untick any candidate.
+
+The ticked towns are put in order the same way (`corridor.order`), with no limit: each inserted where it adds least,
+the cheapest first. Ordering by where the towns project onto the line from A to B made a zigzag of towns on both
+sides of it. For the default towns this gives the order `select` built.
+
 ## Window (`window.script.tl`)
 
 States:
 
 1. **Set up:** From/To dropdowns (towns sorted by name), Mode, Track, Electrified, Platform, the candidate stops as a
-   ticked list with the added detour for each ("+3.1 km"), and **Find route**.
+   list of check boxes with each town's own detour ("+3.1 km"), and **Find route**. The towns `corridor.select` picks
+   are ticked by default; the player's ticks and unticks are kept as overrides of that default (until From or To
+   changes) and remembered between openings like the other settings.
 2. **Surveying… N%**, then **Planning… N%**. Changing any setting cancels the work.
 3. **Result:**
    - length, the game's cost, bridges and tunnels (count and length), maximum grade, minimum radius, and each
@@ -242,7 +255,8 @@ don't keep engine components across a `sendCommand`.
 - `profile`: grades stay under the limit; a valley becomes a bridge, a ridge a tunnel; a crossing a bridge with 7 m
   of clearance.
 - `stations`: the chosen spot is clear (of buildings, water, roads and track) and as near the centre as possible.
-- `corridor`: the detour budget includes and excludes the right towns.
+- `corridor`: the detour budget includes and excludes the right towns; the default stops fit the budget together and
+  no town left out would; ticked towns are ordered by cheapest insertion, not projection.
 
 **In-game:** on a flat test map (Map Editor → Create New Map) with a hill, a lake and a few towns, never the active
 save until the end.
