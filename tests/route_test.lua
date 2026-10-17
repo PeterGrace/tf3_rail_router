@@ -263,7 +263,7 @@ t.test("route: existing track is crossed by a bridge", function()
 	for i, sample in ipairs(leg.samples) do
 		local ix, iy = grid.cellOf(crossedGrid("track"), sample.p)
 		if ix == 26 then
-			t.ok(leg.z[i] >= 7 - 1e-9, "clearance at " .. sample.s .. ": " .. leg.z[i])
+			t.ok(leg.z[i] >= 9 - 1e-9, "clearance at " .. sample.s .. ": " .. leg.z[i])
 		end
 	end
 end)

@@ -55,7 +55,7 @@ global record PgraceRailRouterProfile
 	-- crossings, and track more than bridgeAbove over the ground, are bridges; track more than tunnelBelow under it is
 	-- a tunnel. Runs shorter than 75 m are merged into their neighbours (between two of the same kind it takes theirs,
 	-- else it joins the longer one), so noise doesn't split a bridge; a run over water or a crossing is always kept.
-	-- Crossings are bridges with the track at least 7 m above the ground; the pinned ends win over that clearance when
+	-- Crossings are bridges with the track at least 9 m above the ground; the pinned ends win over that clearance when
 	-- a crossing is too near them to climb to it.
 	fit : function(s : {number}, ground : {number}, water : {boolean}, options : Options) : Result
 	-- The same fit, spread over steps: start sets it up (linear in the samples), each step weighs heights until it has

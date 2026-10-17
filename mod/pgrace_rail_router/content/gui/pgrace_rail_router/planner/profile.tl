@@ -7,8 +7,10 @@ local type FitJob = PgraceRailRouterProfile.FitJob
 
 -- Bridges, tunnels and stretches of ground shorter than this are merged into their neighbours (metres).
 local MIN_SPAN = 75.0
--- Over a crossed road or track, the track runs at least this far above the ground (metres).
-local CLEARANCE = 7.0
+-- Over a crossed road or track, the track runs at least this far above the ground (metres). Probe P8: a double-track
+-- bridge square across existing track collided with it at 7 m (rail to rail) and was clean from 8 m; over a street,
+-- 6 m was clean. 9 leaves a metre for crossings at an angle and uneven ground.
+local CLEARANCE = 9.0
 -- The height search runs on evenly spaced nodes at most this far apart (metres; route.tl samples every 25 m at most).
 local NODE_STEP = 25.0
 -- The coarsest height step it tries (metres). The step is the grade limit's rise between nodes split evenly, so the
