@@ -27,11 +27,13 @@ global record PgraceRailRouterStationLayout
 	-- Slot ids, as the station script mangles them.
 	trackSlot : function(i : integer, j : integer) : integer
 	platformSlot : function(i : integer, j : integer) : integer
-	-- The station track module for a track template resource name, e.g.
-	-- "::/infrastructure/track/standard/standard.street_template" →
-	-- "::/trainstation___/infrastructure/track/standard/standard.street_template".
+	-- The station track module the base game generates for a track template resource name: "::/trainstation_" and
+	-- the name with "::" replaced by "__", e.g. "::/infrastructure/track/standard/standard.street_template" →
+	-- "::/trainstation___/infrastructure/track/standard/standard.street_template", and a mod's
+	-- "foo::/a/b.street_template" → "::/trainstation_foo__/a/b.street_template".
 	trackModule : function(template : string) : string
-	-- The layout for a site (centre, unit direction of travel) and platform length (a multiple of 40 m).
+	-- The layout for a site (centre, unit direction of travel) and platform length (a multiple of 40 m; at most 840 m,
+	-- 21 modules, the most the station script has slots for).
 	layout : function(centre : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt, platformLength : number,
 		era : Era) : Layout
 end

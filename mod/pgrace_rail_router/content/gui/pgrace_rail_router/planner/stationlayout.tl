@@ -14,6 +14,9 @@ local AXIS_X = 7.5
 local LEFT_X = 5.0
 local RIGHT_X = 10.0
 local MODULE_LENGTH = 40.0
+-- The station script only makes slots for j from -10 to 10 (trainstationutil.lua stationYMin, stationYMax): at most
+-- 21 modules, 840 m.
+local MAX_MODULES = 21
 local TRACK_SLOT = 8400000
 local PASSENGER_PLATFORM_SLOT = 7400000
 
@@ -25,13 +28,12 @@ function sl.platformSlot(i : integer, j : integer) : integer
 	return PASSENGER_PLATFORM_SLOT + 1000 * i + 10 * j
 end
 
--- The station script names its track modules "/trainstation___" followed by the track template's path.
+-- The station track module the base game generates for a track template (mod.script.tl TrackNameToModuleName,
+-- modular_station.script.lua ResNameToModuleName): "::" becomes "__", after "::/trainstation_". Exactly so: a wrong
+-- resource name in a proposal can crash the game.
 function sl.trackModule(template : string) : string
-	local path = template
-	if path:sub(1, 2) == "::" then
-		path = path:sub(3)
-	end
-	return "::/trainstation___" .. path
+	local name = template:gsub("::", "__")
+	return "::/trainstation_" .. name
 end
 
 -- atan2 from the one-argument math.atan: the game's Lua (5.2) ignores atan's second argument, and Lua 5.4 (the test
@@ -50,8 +52,8 @@ local function atan2(y : number, x : number) : number
 end
 
 function sl.layout(centre : Pt, dir : Pt, platformLength : number, era : Era) : Layout
-	-- As the station menu's lengths: count modules along, k = count − 1, j from s to e.
-	local count = math.max(1, math.floor(platformLength / MODULE_LENGTH + 0.5))
+	-- As the station menu's lengths: count modules along (at most MAX_MODULES), k = count − 1, j from s to e.
+	local count = math.min(MAX_MODULES, math.max(1, math.floor(platformLength / MODULE_LENGTH + 0.5)))
 	local k = count - 1
 	local s, e = -math.floor(k / 2), math.ceil(k / 2)
 	local modules : {integer : Module} = {}

@@ -62,6 +62,17 @@ end)
 t.test("stationlayout: the station track module for a track template", function()
 	t.eq(sl.trackModule("::/infrastructure/track/standard/standard.street_template"),
 		"::/trainstation___/infrastructure/track/standard/standard.street_template", "with ::")
-	t.eq(sl.trackModule("/infrastructure/track/simple/simple_catenary.street_template"),
-		"::/trainstation___/infrastructure/track/simple/simple_catenary.street_template", "without ::")
+	t.eq(sl.trackModule("foo::/a/b.street_template"), "::/trainstation_foo__/a/b.street_template", "a mod's template")
+end)
+
+t.test("stationlayout: platforms longer than the station script's 21 slots along are cut to 840 m", function()
+	local l = sl.layout({ x = 0, y = 0 }, { x = 0, y = 1 }, 2000, ERA)
+	local tracks = 0
+	for __, m in pairs(l.modules) do
+		if m.name == "T" then tracks = tracks + 1 end
+	end
+	t.eq(tracks, 42, "2 tracks × 21")
+	t.ok(l.modules[sl.trackSlot(1, -10)] ~= nil and l.modules[sl.trackSlot(1, 10)] ~= nil, "j from -10 to 10")
+	t.near(l.ends[1].y, -420, 1e-9, "start 420 m behind")
+	t.near(l.ends[3].y, 420, 1e-9, "end 420 m ahead")
 end)

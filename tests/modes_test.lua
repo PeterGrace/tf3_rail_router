@@ -116,3 +116,11 @@ t.test("modes: equal speeds go to the first in the menu's order", function()
 	t.eq(modes.structureFor(tunnels, 120 / 3.6, 1950).name, "tunnel_a", "before 1970")
 	t.eq(modes.structureFor({ tunnels[1] }, 120 / 3.6, 1950), nil, "none available")
 end)
+
+t.test("modes: unavailable types and types that don't carry rail are never picked", function()
+	-- Each would win for 95 km/h track (closest limit above, first in the menu) if it weren't filtered out.
+	local types = { structure("placeholder", 5, 50, 100, -1, -1), structure("road_only", 5, 50, 100, 0, 0, { rail = false }),
+		structure("stone", 30, 200, 90, 0, 0), structure("steel", 40, 200, 140, 0, 0) }
+	t.eq(modes.structureFor(types, 95 / 3.6, 2000).name, "steel", "both filtered")
+	t.eq(modes.structureFor({ types[1], types[2] }, 95 / 3.6, 2000), nil, "nothing left")
+end)
