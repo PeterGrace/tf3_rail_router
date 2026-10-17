@@ -273,7 +273,16 @@ Each ends with one in-game test by the user.
 1. **Survey, plan and preview:** the window, the route on the map, our own cost estimate.
 2. **Probes:** track and station proposals, dry-run only; the game's real price in the window.
 3. **Build:** stations, then track chunks, with Retry.
-4. **Tuning and polish:** thresholds and weights from real maps, translations, release.
+4. **Station styles and signals:** a "Station style" setting: Simple 2-track (the default) or **Halt 2+2**, the layout
+   of the Express & Local Rail Stations mod (`express_local_stations_1`): platform, local, express, express, local,
+   platform on the base modular station, with track fans at both ends that split the 2-track line onto the four
+   station tracks, so expresses run through on the middle pair while stopping trains use the outer pair. We build the
+   station and the fans ourselves (no dependency on that mod; its `el_fans.lua` and `el_signals.script.lua` are the
+   reference for fan geometry and signal placement), plus one-way path signals so each track runs one way. Needs:
+   turnouts and joining track (new after M3), longer and wider station sites (about 30 m wide, a few hundred metres
+   of straight for the fans at each end), and signals, which version 1 leaves out. To probe then: whether that mod's
+   game script also signals our fans when it's installed.
+5. **Tuning and polish:** thresholds and weights from real maps, translations, release.
 
 ## Known issues after milestone 1 (to settle with in-game data)
 
@@ -301,4 +310,5 @@ Each ends with one in-game test by the user.
 
 ## Out of scope for version 1
 
-Signals; creating lines or buying trains; routes that join existing track; terminus stations; single track.
+Signals and Halt 2+2 stations (milestone 4); creating lines or buying trains; routes that join existing track; terminus
+stations; single track.
