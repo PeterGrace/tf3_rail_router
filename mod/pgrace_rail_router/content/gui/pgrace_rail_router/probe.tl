@@ -16,7 +16,6 @@ local type Leg = PgraceRailRouterRoute.Leg
 local type Piece = PgraceRailRouterSmooth.Piece
 local type Options = PgraceRailRouterNetwork.Options
 
-local STATION_FILE = "::/stations/rail/modular_station/modular_station.con"
 local MODULE_DIR = "::/stations/rail/modular_station/"
 
 local function log(name : string, text : string)
@@ -409,34 +408,17 @@ function probe.dryRunStation(settings : Settings, tracks : {PgraceRailRouterMode
 			if data ~= nil then
 				pcall(function() : boolean
 					local bb = data.toAddData[1].boundingVolume.bbox
-					log("P6", v[1] .. ": bbox " .. fmtV(bb.min) .. " " .. fmtV(bb.max))
+					-- The station faces east: its length along the axis is the box's extent in x.
+					log("P6", ("%s: bbox %s %s, length along the axis %.1f m (platforms asked for %.0f m)"):format(v[1],
+						fmtV(bb.min), fmtV(bb.max), bb.max.x - bb.min.x, plan.platformLength))
 					return true
 				end)
 			end
 		end))
 	end
-	-- Last: it runs the station script outside a proposal.
-	table.insert(tasks, guarded("P6", function()
-		local modules : {integer : table} = {}
-		for slot, m in pairs(sl.layout(c, east, 160, settings.era).modules) do
-			local name = builder.resolveModule(m.name)
-			if name == nil then
-				log("P6", "getConstructionResult skipped: module not found " .. tostring(m.name))
-				return
-			end
-			modules[slot] = { name = name, variant = m.variant }
-		end
-		local ok, result = pcall(function() : ConstructionResult
-			return api.engine.util.construction.getConstructionResult(STATION_FILE, 4,
-				{ modules = modules, year = settings.year, seed = 1 })
-		end)
-		if ok and result ~= nil then
-			log("P6", "getConstructionResult cost " .. tostring((result as ConstructionResult).cost))
-		else
-			log("P6", "getConstructionResult failed: " .. tostring(result))
-		end
+	table.insert(tasks, function()
 		log("P6", "done")
-	end))
+	end)
 	return tasks
 end
 
@@ -491,12 +473,23 @@ function probe.buildStraight(settings : Settings) : {function()}
 			log("P5", "NOT MADE " .. tostring(why))
 			return
 		end
-		local ok, cost, messages, us = builder.dryRun(proposal)
+		local ok, cost, messages, us, data = builder.dryRun(proposal)
 		log("P5", ("camera (%.1f %.1f) ground %.2f; dry run %s cost %d %d us edges %d %s"):format(c.x, c.y, ground,
 			ok and "clean" or "ERRORS", cost, us, #net.edges, table.concat(messages, "; ")))
 		-- Never send a proposal that didn't dry-run clean: a malformed one is an uncatchable crash (AGENTS.md).
 		if not ok then
 			log("P5", "not built: the dry run wasn't clean")
+			return
+		end
+		-- Nor one that collides with anything (unreadable counts as colliding).
+		local collisions = -1
+		pcall(function() : boolean
+			collisions = #(data.collisionInfo.collisionEntities or {})
+			return true
+		end)
+		if collisions ~= 0 then
+			logCollisions("P5", data)
+			log("P5", "not built: collisions " .. (collisions < 0 and "unreadable" or tostring(collisions)))
 			return
 		end
 		for i, e in ipairs(net.edges) do

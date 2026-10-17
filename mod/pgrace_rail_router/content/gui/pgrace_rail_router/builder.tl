@@ -210,7 +210,8 @@ function builder.dryRun(proposal : SimpleProposal) : boolean, integer, {string},
 	return #messages == 0, cost, messages, us, pd
 end
 
-function builder.start(plan : Plan, settings : Settings) : Check
+function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) : Check
+	local clock = api.type.Clock.new()
 	local net = network.build(plan, settings.network)
 	local items : {Item} = {}
 	for i = 1, #plan.stations do
@@ -219,10 +220,10 @@ function builder.start(plan : Plan, settings : Settings) : Check
 	for i = 1, #net.chunks do
 		table.insert(items, { kind = "chunk", index = i })
 	end
-	debugPrint(LOG_PREFIX .. ("check: %d stations, %d chunks, %d edges; track %s, bridge %s, tunnel %s, year %d")
+	debugPrint(LOG_PREFIX .. ("check: %d stations, %d chunks, %d edges; track %s, bridge %s, tunnel %s, year %d; settings %d us, network %d us")
 		:format(#plan.stations, #net.chunks, #net.edges, tostring(settings.track),
 		settings.bridge ~= nil and settings.bridge.name or "none", settings.tunnel ~= nil and settings.tunnel.name or "none",
-		settings.year or 0))
+		settings.year or 0, settingsUs or 0, math.floor(clock:getTime())))
 	return { plan = plan, settings = settings, net = net, items = items, next = 1, outcomes = {}, total = 0,
 		failures = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
 end

@@ -56,8 +56,9 @@ global record PgraceRailRouterBuilder
 		done : boolean
 	end
 
-	-- The network (network.build) and the list of proposals to dry-run: the stations, then the chunks.
-	start : function(plan : PgraceRailRouterRoute.Plan, settings : Settings) : Check
+	-- The network (network.build) and the list of proposals to dry-run: the stations, then the chunks. Logs a summary
+	-- with the time network.build took and settingsUs (the caller's time making the settings: structureTypes).
+	start : function(plan : PgraceRailRouterRoute.Plan, settings : Settings, settingsUs ?: integer) : Check
 	-- Dry-runs the next item (one dry run, never more). Returns true when all are done.
 	step : function(check : Check) : boolean
 	progress : function(check : Check) : number

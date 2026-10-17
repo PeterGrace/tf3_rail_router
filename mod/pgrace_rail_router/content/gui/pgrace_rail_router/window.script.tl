@@ -220,10 +220,12 @@ end
 local function outcomePlace(check : PgraceRailRouterBuilder.Check, outcome : PgraceRailRouterBuilder.Outcome) : string
 	if outcome.item.kind == "station" then
 		local station = check.plan.stations[outcome.item.index]
-		return fill(_("Station {town}"), { town = station ~= nil and station.town.name or "?" })
+		return fill(_("Station {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
 	end
 	local chunk = check.net.chunks[outcome.item.index]
-	local s = check.net.edges[chunk.first].s0
+	-- The legs run between platform ends: the platforms of the stations passed (one per leg before this one, and
+	-- the leg's own first station) count too.
+	local s = check.net.edges[chunk.first].s0 + chunk.leg * (check.plan.platformLength or 0)
 	for i = 1, chunk.leg - 1 do
 		s = s + (check.plan.legs[i].length or 0)
 	end
@@ -680,7 +682,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- the settings and the network.
 	local function advanceCheck(work : CheckWork)
 		if work.check == nil then
-			work.check = builder.start(work.plan, settingsFor(work.track, work.electrified, currentYear(data.year)))
+			local clock = api.type.Clock.new()
+			local settings = settingsFor(work.track, work.electrified, currentYear(data.year))
+			work.check = builder.start(work.plan, settings, math.floor(clock:getTime()))
 			checkDoneState:set(0)
 		else
 			builder.step(work.check)
@@ -1039,10 +1043,12 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			local checked = checkState:old()
 			local checking = checkRef:get()
 			if checking ~= nil then
-				local done = checkDoneState:old() or 0
-				local total = checking.check ~= nil and #checking.check.items or 0
-				table.insert(body, textRow(fill(_("Checking with the game… {done} of {total}"),
-					{ done = tostring(done), total = tostring(total) }), "font-scale-annotation"))
+				local line = _("Checking with the game…")
+				if checking.check ~= nil then
+					line = fill(_("Checking with the game… {done} of {total}"),
+						{ done = tostring(checkDoneState:old() or 0), total = tostring(#checking.check.items) })
+				end
+				table.insert(body, textRow(line, "font-scale-annotation"))
 			elseif checked ~= nil then
 				table.insert(body, textRow(fill(_("The game's price: {price}"), { price = formatMoney(checked.total) }),
 					"font-scale-body"))

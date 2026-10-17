@@ -49,7 +49,11 @@ function sl.eraLetter(year : integer) : string
 	return "a"
 end
 
--- The modules along (j from s to e) for a platform length, as the station menu's lengths: at most MAX_MODULES.
+-- The modules along (j from s to e) for a platform length: platformLength / 40 of them (at most MAX_MODULES),
+-- k = count − 1, s = −floor(k / 2), e = ceil(k / 2). This is NOT what the base menu does: its createTemplateFn maps
+-- the Length choice's index (80, 120, 160, 240, 320 m) through lmap = { 0, 1, 2, 3, 5, 7, 9 } to k, so its "160 m"
+-- has k = 2, 3 modules (120 m of modules). Which count gives the platform length on the ground is for probe P6's
+-- bounding box to settle.
 local function range(platformLength : number) : integer, integer
 	local count = math.min(MAX_MODULES, math.max(1, math.floor(platformLength / MODULE_LENGTH + 0.5)))
 	local k = count - 1
@@ -93,7 +97,7 @@ local function atan2(y : number, x : number) : number
 end
 
 function sl.layout(centre : Pt, dir : Pt, platformLength : number, era : Era) : Layout
-	-- As the station menu's lengths: count modules along (at most MAX_MODULES), k = count − 1, j from s to e.
+	-- platformLength / 40 modules along (see range), k = count − 1, j from s to e.
 	local s, e = range(platformLength)
 	local k = e - s
 	local modules : {integer : Module} = {}

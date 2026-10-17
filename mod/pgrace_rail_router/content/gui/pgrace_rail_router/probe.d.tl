@@ -10,10 +10,11 @@ global record PgraceRailRouterProbe
 	dryRunTrack : function(settings : PgraceRailRouterBuilder.Settings, tracks : {PgraceRailRouterModes.TrackType}) : {function()}
 	-- P4: a 300 m double track across a street at the camera, on the ground and as a bridge.
 	dryRunCrossing : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
-	-- P6: a 160 m station at the camera facing east, without and with the main building and stairs (and roofs); the
-	-- module names; getConstructionResult.
+	-- P6: a 160 m station at the camera facing east, without and with the main building and stairs (and roofs), with
+	-- its bounding box's length along the axis; the module names.
 	dryRunStation : function(settings : PgraceRailRouterBuilder.Settings, tracks : {PgraceRailRouterModes.TrackType}) : {function()}
-	-- P5: builds a 200 m double-track straight at the camera (only if its dry run is clean) and logs the price,
+	-- P5: builds a 200 m double-track straight at the camera (only if its dry run is clean and collides with nothing)
+	-- and logs the price,
 	-- the balance before and after, and the built edges.
 	buildStraight : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 end
