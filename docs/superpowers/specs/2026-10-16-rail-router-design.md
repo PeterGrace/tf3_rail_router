@@ -272,9 +272,8 @@ Each ends with one in-game test by the user.
     direction suits both legs, and both fall back to the Cheapest search radius (263 m and 572 m at its ends);
   - two stations too close for their offset (Mercer Island and Antelope both face north, 1.7 km apart sideways and
     1.9 km along): an S-bend at 687 m;
-  - a station whose room to turn is cut short by its own town's buildings (Aloha's leaving side): the turn starts at
-    the approach, 429 m;
-  - a leg that fits only at a smaller search radius (Antelope → Aloha at 1500 m, round the lake): 1187 m and 2529 m.
+  - (gone with the room rule: Aloha's turned site, hemmed in on its leaving side, 429 m; and Antelope → Aloha round
+    the lake at a 1500 m search radius, 1187 m and 2529 m. That leg now crosses the lake straight at 3000 m.)
   The smoothing guard still tightens curves where a path searched at a smaller radius turns close to an obstacle.
 - **A curve at a cut-short station end can cross buildings.** Where buildings cut a station's room to turn short and
   the line turns sharply at its approach, the curve there may only be tightened to the build minimum and still clip
