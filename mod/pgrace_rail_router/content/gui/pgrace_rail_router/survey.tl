@@ -139,6 +139,7 @@ function survey.trackTypes() : {TrackType}
 			end
 			local catenary : string = nil
 			local catenaryYearFrom = 0
+			local catenaryCost : number = nil
 			if nonEmpty(tpl.catenaryAdd) then
 				catenary = tpl.catenaryAdd
 				local found = rep.find(catenary)
@@ -152,16 +153,19 @@ function survey.trackTypes() : {TrackType}
 				if variant ~= nil and variant.availability ~= nil then
 					catenaryYearFrom = variant.availability.yearFrom
 				end
+				if variant ~= nil then
+					catenaryCost = variant.cost
+				end
 			end
 			table.insert(result, { name = name, label = label, cost = tpl.cost, speed = speed,
 				maxSlopeBuild = tpl.maxSlopeBuild, minCurveRadiusBuild = tpl.minCurveRadiusBuild,
 				trackDistance = tpl.trackDistance, yearFrom = yearFrom, yearTo = yearTo, catenary = catenary,
-				catenaryYearFrom = catenaryYearFrom })
+				catenaryYearFrom = catenaryYearFrom, catenaryCost = catenaryCost })
 			debugPrint(LOG_PREFIX .. "track type " .. name .. ": label " .. tostring(label) .. ", speed "
 				.. tostring(speed) .. ", cost " .. tostring(tpl.cost) .. ", maxSlopeBuild " .. tostring(tpl.maxSlopeBuild)
 				.. ", minCurveRadiusBuild " .. tostring(tpl.minCurveRadiusBuild) .. ", years " .. tostring(yearFrom)
 				.. "–" .. tostring(yearTo) .. ", catenary " .. tostring(catenary) .. " from "
-				.. tostring(catenaryYearFrom))
+				.. tostring(catenaryYearFrom) .. ", cost " .. tostring(catenaryCost))
 			return true
 		end)
 		if not ok then

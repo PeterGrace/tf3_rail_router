@@ -9,7 +9,7 @@ local type Leg = PgraceRailRouterRoute.Leg
 local type Piece = PgraceRailRouterSmooth.Piece
 
 function network.defaults() : Options
-	return { offset = 2.5, maxEdge = 250.0, chunkLength = 2000.0, tangent = "circle" }
+	return { offset = 2.5, maxEdge = 250.0, chunkLength = 1000.0, tangent = "circle" }
 end
 
 -- The grade at a node where the profile's grade changes from a to b. Each edge's cubic leaves the node at this grade

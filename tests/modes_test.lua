@@ -124,3 +124,11 @@ t.test("modes: unavailable types and types that don't carry rail are never picke
 	t.eq(modes.structureFor(types, 95 / 3.6, 2000).name, "steel", "both filtered")
 	t.eq(modes.structureFor({ types[1], types[2] }, 95 / 3.6, 2000), nil, "nothing left")
 end)
+
+t.test("modes: a station mod's bridge (years 1800-1800) is never picked", function()
+	-- As the elevated curve station mod's concrete bridge: same menu order and speed as the base concrete, but
+	-- available only in 1800.
+	local types = { structure("mod_concrete", 50, 200, 77.78, 1800, 1800), structure("concrete", 50, 200, 77.78, 1970, 0) }
+	t.eq(modes.structureFor(types, 160 / 3.6, 2020).name, "concrete", "in 2020")
+	t.eq(modes.structureFor({ types[1] }, 160 / 3.6, 2020), nil, "alone: none")
+end)

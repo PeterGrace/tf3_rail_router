@@ -53,7 +53,7 @@ global record PgraceRailRouterNetwork
 		tangent : string
 	end
 
-	-- The defaults: offset 2.5, maxEdge 250, chunkLength 2000, tangent "circle".
+	-- The defaults: offset 2.5, maxEdge 250, chunkLength 1000, tangent "circle".
 	defaults : function() : Options
 	-- One track's edges along a leg, `side` +1 for the left track, -1 for the right, without node indices.
 	trackEdges : function(leg : PgraceRailRouterRoute.Leg, legIndex : integer, side : number, options : Options) : {Edge}

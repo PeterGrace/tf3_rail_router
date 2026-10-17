@@ -26,6 +26,8 @@ global record PgraceRailRouterModes
 		catenary : string
 		-- The year the electrified variant becomes available; 0 if always (or there is none).
 		catenaryYearFrom : integer
+		-- The electrified variant's cost per metre of one track; nil if there is none.
+		catenaryCost : number
 	end
 
 	-- What the planner works with. Extra costs are in metres of plain track.
