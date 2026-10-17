@@ -141,6 +141,7 @@ print(("  slowest step (%d expansions a step): %.2f ms (%s, %.0f KB); %s"):forma
 	r.alloc.worstKind, r.alloc.worst, table.concat(kinds, ", ")))
 print(("  allocated %.1f MB, at most %.0f KB in one step (%s)"):format(r.alloc.total / 1024, r.alloc.max,
 	r.alloc.maxKind))
+print(("  progress bar: at most %d steps in a row without moving"):format(r.alloc.longestStall))
 if not plan.ok then
 	print("  towns: " .. table.concat(plan.failureTowns, ", "))
 	os.exit(1)

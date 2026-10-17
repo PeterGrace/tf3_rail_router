@@ -80,6 +80,10 @@ return function(root)
 		local paths = {}
 		local slowest, worst = {}, 0
 		local alloc = { total = 0, max = 0, maxKind = nil, worst = 0, worstKind = nil }
+		-- The most steps in a row the progress bar stood still: its whole percent (route.progress, as the window shows it
+		-- after each step) unchanged.
+		local shown, stall = -1, 0
+		alloc.longestStall = 0
 		while true do
 			local kind = route.stepKind(job)
 			-- The collector is held off while a step is timed, and catches up between steps: a collection costs in
@@ -101,6 +105,13 @@ return function(root)
 			end
 			if ms > worst then
 				worst, alloc.worst, alloc.worstKind = ms, kb, kind
+			end
+			local p = math.floor(100 * route.progress(job))
+			if p > shown then
+				shown, stall = p, 0
+			else
+				stall = stall + 1
+				alloc.longestStall = math.max(alloc.longestStall, stall)
 			end
 			if done then
 				break

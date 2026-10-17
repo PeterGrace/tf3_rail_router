@@ -57,6 +57,11 @@ local STEP_BUDGET_MS = 10.0
 -- leg's curves 856 KB (a point per guard check); the most now is about 600 KB (a re-siting step building a
 -- candidate's leg).
 local STEP_ALLOC_KB = 768
+-- The most steps in a row the progress bar's whole percent may stand still (replaylib's alloc.longestStall). In-game
+-- the window runs about 1,250 steps a second (New Game's Alliance → Aloha, Fastest: 6,781 steps in 5.4 s), so this is
+-- about a second. Before the bar crept on through work of unknown length (re-siting, radius tries finding no path),
+-- that route held at 61% for 2,900 steps and Dover → Camarillo (Fastest) at 75% for 4,000.
+local MAX_STALL_STEPS = 1200
 -- How much worse than the baseline a figure may get: lengths and estimates as a share; tight curves, and bridges
 -- plus tunnels, as a count; their length as a share, at least STRUCTURE_SLACK metres.
 local TOLERANCE = { length = 0.02, estimate = 0.03, tight = 1, structures = 1, structureLength = 0.10, timeLost = 0.10 }
@@ -296,6 +301,8 @@ local function check(rt, planFn, name)
 		tostring(r.alloc.worstKind), STEP_BUDGET_MS))
 	t.ok(r.alloc.max <= STEP_ALLOC_KB, ("most allocated in a step %.0f KB (%s), at most %.0f"):format(r.alloc.max,
 		tostring(r.alloc.maxKind), STEP_ALLOC_KB))
+	t.ok(r.alloc.longestStall <= MAX_STALL_STEPS, ("progress bar stood still for %d steps, at most %d"):format(
+		r.alloc.longestStall, MAX_STALL_STEPS))
 	local plan = r.plan
 	if rt.expectFailure then
 		t.eq(plan.ok, false, "fails as recorded (now it plans: record a baseline)")
