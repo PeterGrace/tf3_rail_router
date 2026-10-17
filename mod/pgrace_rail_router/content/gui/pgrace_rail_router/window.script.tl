@@ -10,6 +10,10 @@ local survey = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/survey.tl
 local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/area.tl" as PgraceRailRouterArea
 local preview = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/preview.tl" as PgraceRailRouterPreview
 local mapcapture = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/mapcapture.tl" as PgraceRailRouterMapCapture
+local builder = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/builder.tl" as PgraceRailRouterBuilder -- PROBE: only its types here until Check with the game
+local network = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/network.tl" as PgraceRailRouterNetwork
+local sl = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/stationlayout.tl" as PgraceRailRouterStationLayout
+local probe = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/probe.tl" as PgraceRailRouterProbe -- PROBE (remove before release)
 
 local type Town = PgraceRailRouterCorridor.Town
 local type Candidate = PgraceRailRouterCorridor.Candidate
@@ -99,6 +103,16 @@ local record CaptureWork
 	job : PgraceRailRouterMapCapture.Job
 end
 
+-- PROBE (remove before release): a probe in progress: its name ("P1" ... "P6"), the choices its settings are made
+-- from, and its tasks (nil until the first join asks the probe for them), run one per join.
+local record ProbeWork
+	name : string
+	track : TrackType
+	electrified : boolean
+	tasks : {function()}
+	next : integer
+end
+
 local record Progress
 	-- "survey" or "plan"
 	stage : string
@@ -149,6 +163,46 @@ local function planDetail(job : PgraceRailRouterRoute.Job) : string
 		return fill(_("leg {leg} of {legs}, trying other station sites"), legs)
 	end
 	return fill(_("leg {leg} of {legs}"), legs)
+end
+
+-- The builder's settings for the window's choices: the track template (its electrified variant when ticked and
+-- available), its speed, the year, the bridge and tunnel types the game would pick (nil where none is available),
+-- and the station's modules for the year's era (the station script's getEra). Main thread: reads the game's types.
+local function settingsFor(track : TrackType, electrified : boolean, year : integer) : PgraceRailRouterBuilder.Settings
+	local name = track.name
+	if electrified and track.catenary ~= nil and (track.catenaryYearFrom == 0 or year >= track.catenaryYearFrom) then
+		name = track.catenary
+	end
+	local function structure(which : string) : PgraceRailRouterModes.StructureType
+		local ok, result = pcall(function() : PgraceRailRouterModes.StructureType
+			return modes.structureFor(survey.structureTypes(which), track.speed, year)
+		end)
+		if not ok then
+			debugPrint(LOG_PREFIX .. which .. " types: " .. tostring(result))
+			return nil
+		end
+		return result as PgraceRailRouterModes.StructureType
+	end
+	local era = sl.eraLetter(year)
+	local dir = "::/stations/rail/modular_station/"
+	return {
+		track = name, speed = track.speed, year = year,
+		bridge = structure("bridge"), tunnel = structure("tunnel"),
+		normalTypeIndex = -1,
+		era = { platform = dir .. "platform_passenger_era_" .. era .. ".module", track = sl.trackModule(name) },
+		addons = { building = dir .. "main_building_1_era_" .. era .. ".module",
+			stairs = dir .. "addon_platform_passenger_stairs_era_" .. era .. ".module" },
+		network = network.defaults(),
+	}
+end
+
+-- The year for the builder's settings: read again (on the main thread), else the one read when the window opened.
+local function currentYear(fallback : integer) : integer
+	local year = survey.year()
+	if year == nil or year <= 0 then
+		return fallback
+	end
+	return year
 end
 
 local function textRow(text : string, class : string) : TreeNodeId
@@ -317,6 +371,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- PROBE (remove before release): the capture's percentage while it runs, and its outcome once it's over.
 	local capturePercentState : ReactStateT<integer> = react.useState(nil)
 	local captureResultState : ReactStateT<string> = react.useState(nil)
+	-- PROBE (remove before release): the probe running (nil when none), and the last one's outcome for the window.
+	local probeRef : ReactRefT<ProbeWork> = react.useRef(nil)
+	local probeStatusState : ReactStateT<string> = react.useState(nil)
 	-- A join is queued and hasn't run yet; at most one at a time.
 	local joinQueuedRef : ReactRefT<boolean> = react.useRef(false)
 
@@ -365,8 +422,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 
 	local function findRoute()
-		-- Not while the map capture runs (PROBE): one piece of long work at a time.
-		if captureRef:get() ~= nil then
+		-- Not while the map capture or a probe runs (PROBE): one piece of long work at a time.
+		if captureRef:get() ~= nil or probeRef:get() ~= nil then
 			return
 		end
 		if fromTown == nil or toTown == nil or fromTown.id == toTown.id or track == nil then
@@ -545,7 +602,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 
 	-- PROBE (remove before release): writes the whole map to the log (mapcapture), BUDGET_US per frame.
 	local function startCapture()
-		if workRef:get() ~= nil or captureRef:get() ~= nil then
+		if workRef:get() ~= nil or captureRef:get() ~= nil or probeRef:get() ~= nil then
 			return
 		end
 		captureRef:set({})
@@ -577,8 +634,59 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 	end
 
+	-- PROBE (remove before release): the first join asks the probe for its tasks (they read the camera), then one
+	-- task per join.
+	local function advanceProbe(work : ProbeWork)
+		if work.tasks == nil then
+			local settings = settingsFor(work.track, work.electrified, currentYear(data.year))
+			if work.name == "P1" then
+				work.tasks = probe.logTrack()
+			elseif work.name == "P2" then
+				work.tasks = probe.dryRunTrack(settings, data.tracks)
+			elseif work.name == "P4" then
+				work.tasks = probe.dryRunCrossing(settings)
+			elseif work.name == "P5" then
+				work.tasks = probe.buildStraight(settings)
+			else
+				work.tasks = probe.dryRunStation(settings, data.tracks)
+			end
+			work.next = 1
+			return
+		end
+		local task = work.tasks[work.next]
+		work.next = work.next + 1
+		if task ~= nil then
+			task()
+		end
+		if work.next > #work.tasks then
+			probeRef:set(nil)
+			probeStatusState:set("Probe " .. work.name .. " done (see log)")
+		end
+	end
+
 	react.onStep(function()
 		if joinQueuedRef:get() then
+			return
+		end
+		-- PROBE (remove before release)
+		if workRef:get() == nil and probeRef:get() ~= nil then
+			joinQueuedRef:set(true)
+			safeJoin(function()
+				joinQueuedRef:set(false)
+				local work = probeRef:get()
+				if work == nil then
+					return
+				end
+				local ok, err = pcall(function() : boolean
+					advanceProbe(work)
+					return true
+				end)
+				if not ok then
+					debugPrint(LOG_PREFIX .. "probe error: " .. tostring(err))
+					probeRef:set(nil)
+					probeStatusState:set("Probe " .. work.name .. " failed (see log)")
+				end
+			end, "PgraceRailRouterProbe")
 			return
 		end
 		if workRef:get() == nil and captureRef:get() ~= nil then
@@ -791,6 +899,31 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		content = builtin.TextView{ text = "Capture whole map (probe)" },
 		onClick = startCapture,
 	})
+	-- PROBE (remove before release): the milestone 2 probes, at the camera's look-at point; not translated.
+	local function startProbe(name : string)
+		if track == nil or workRef:get() ~= nil or captureRef:get() ~= nil or probeRef:get() ~= nil then
+			return
+		end
+		probeRef:set({ name = name, track = track, electrified = electrified })
+		probeStatusState:set("Probe " .. name .. " running…")
+	end
+	for __, p in ipairs({
+		{ "P1", "Probe P1: log track near camera" },
+		{ "P2", "Probe P2: dry-run test track" },
+		{ "P4", "Probe P4: dry-run across a street" },
+		{ "P6", "Probe P6: dry-run a station" },
+		{ "P5", "Probe P5: build test straight (test map only)" },
+	}) do
+		table.insert(body, builtin.Button{
+			content = builtin.TextView{ text = p[2] },
+			onClick = function()
+				startProbe(p[1])
+			end,
+		})
+	end
+	if probeStatusState:old() ~= nil then
+		table.insert(body, textRow(probeStatusState:old(), "font-scale-annotation"))
+	end
 	local capturePercent = capturePercentState:old()
 	if capturePercent ~= nil then
 		table.insert(body, textRow("Capturing map… " .. tostring(capturePercent) .. "%", "font-scale-annotation"))
@@ -819,6 +952,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				table.insert(body, preview.RouteAction{ meta = { localKey = "route" }, plan = plan,
 					generation = generationState:old(), baseCtx = params.gameCtx })
 			end
+
 		end
 	end
 
