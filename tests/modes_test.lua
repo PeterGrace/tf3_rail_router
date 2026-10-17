@@ -75,3 +75,60 @@ t.test("modes: cheapest falls back to the cheapest type when only fast ones are 
 	local future = { fast("a.lua", 540, 97.2, 2100), fast("b.lua", 400, 80, 2100) }
 	t.eq(modes.defaultTrack(future, 1990, "cheapest"), nil, "none available")
 end)
+
+-- Bridge and tunnel types as in base/content (bridge/*.bridge.lua, tunnel/*.tunnel.lua): menu order, cost, km/h, years.
+local function structure(name, order, cost, kmh, yearFrom, yearTo, opts)
+	opts = opts or {}
+	return { name = name, index = order, order = order, cost = cost, speedLimit = kmh / 3.6, yearFrom = yearFrom,
+		yearTo = yearTo, rail = opts.rail ~= false, autoSelectable = opts.auto ~= false }
+end
+local BRIDGES = {
+	structure("trestle", 10, 100, 60, 0, 1970),
+	structure("trestle_s", 20, 100, 60, 0, 1970, { rail = false }),
+	structure("stone", 30, 200, 90, 0, 0),
+	structure("steel", 40, 200, 140, 1940, 0),
+	structure("concrete", 50, 200, 280, 1970, 0),
+	structure("suspension", 60, 600, 180, 1940, 0, { auto = false }),
+	structure("cable", 70, 750, 220, 2000, 0, { auto = false }),
+	structure("tarch", 80, 650, 350, 2010, 0, { auto = false }),
+	structure("placeholder", 1000, 200, 90, -1, -1),
+}
+
+t.test("modes: the bridge picked is the slowest fast enough, else the fastest", function()
+	t.eq(modes.structureFor(BRIDGES, 80 / 3.6, 2000).name, "stone", "80 km/h")
+	t.eq(modes.structureFor(BRIDGES, 120 / 3.6, 2000).name, "steel", "120 km/h")
+	t.eq(modes.structureFor(BRIDGES, 350 / 3.6, 2050).name, "concrete", "350 km/h: none fast enough, the fastest")
+	t.eq(modes.structureFor(BRIDGES, 120 / 3.6, 1900).name, "stone", "steel not yet available")
+	t.eq(modes.structureFor(BRIDGES, 50 / 3.6, 1900).name, "trestle", "50 km/h before 1970: trestle")
+	t.eq(modes.structureFor(BRIDGES, 50 / 3.6, 1970).name, "stone", "trestle gone from 1970")
+	t.eq(modes.structureFor(BRIDGES, 90 / 3.6, 2000).name, "stone", "exactly the limit is fast enough")
+end)
+
+t.test("modes: the closest speed above wins, not the cheapest", function()
+	local types = { structure("fast_cheap", 10, 50, 200, 0, 0), structure("slow_dear", 20, 500, 100, 0, 0) }
+	t.eq(modes.structureFor(types, 80 / 3.6, 2000).name, "slow_dear", "the game's rule")
+end)
+
+t.test("modes: equal speeds go to the first in the menu's order", function()
+	-- The base tunnels have no speedLimit (0): every track is faster, and tunnel_a comes first in the menu.
+	local tunnels = { structure("tunnel_b", 30, 600, 0, 1970, 0), structure("tunnel_a", 20, 600, 0, 0, 0) }
+	t.eq(modes.structureFor(tunnels, 120 / 3.6, 2000).name, "tunnel_a", "after 1970")
+	t.eq(modes.structureFor(tunnels, 120 / 3.6, 1950).name, "tunnel_a", "before 1970")
+	t.eq(modes.structureFor({ tunnels[1] }, 120 / 3.6, 1950), nil, "none available")
+end)
+
+t.test("modes: unavailable types and types that don't carry rail are never picked", function()
+	-- Each would win for 95 km/h track (closest limit above, first in the menu) if it weren't filtered out.
+	local types = { structure("placeholder", 5, 50, 100, -1, -1), structure("road_only", 5, 50, 100, 0, 0, { rail = false }),
+		structure("stone", 30, 200, 90, 0, 0), structure("steel", 40, 200, 140, 0, 0) }
+	t.eq(modes.structureFor(types, 95 / 3.6, 2000).name, "steel", "both filtered")
+	t.eq(modes.structureFor({ types[1], types[2] }, 95 / 3.6, 2000), nil, "nothing left")
+end)
+
+t.test("modes: a station mod's bridge (years 1800-1800) is never picked", function()
+	-- As the elevated curve station mod's concrete bridge: same menu order and speed as the base concrete, but
+	-- available only in 1800.
+	local types = { structure("mod_concrete", 50, 200, 77.78, 1800, 1800), structure("concrete", 50, 200, 77.78, 1970, 0) }
+	t.eq(modes.structureFor(types, 160 / 3.6, 2020).name, "concrete", "in 2020")
+	t.eq(modes.structureFor({ types[1] }, 160 / 3.6, 2020), nil, "alone: none")
+end)

@@ -3,6 +3,7 @@ local modes : PgraceRailRouterModes = {}
 local type TrackType = PgraceRailRouterModes.TrackType
 local type Weights = PgraceRailRouterModes.Weights
 local type Mode = PgraceRailRouterModes.Mode
+local type StructureType = PgraceRailRouterModes.StructureType
 
 -- Cheapest mode's default skips types faster than this (m/s): high-speed track costs 3× standard.
 local CHEAPEST_MAX_SPEED = 60.0
@@ -46,6 +47,53 @@ function modes.defaultTrack(types : {TrackType}, year : integer, mode : Mode) : 
 		end
 	end
 	return best
+end
+
+-- The construction menu's order (menu_category_util.tl filterObjectLess): menu order, then yearFrom, then yearTo
+-- (0, no end, last), then index.
+local function menuBefore(a : StructureType, b : StructureType) : boolean
+	if a.order ~= b.order then
+		return a.order < b.order
+	end
+	if a.yearFrom ~= b.yearFrom then
+		return a.yearFrom < b.yearFrom
+	end
+	if a.yearTo ~= b.yearTo then
+		if a.yearTo == 0 then
+			return false
+		end
+		if b.yearTo == 0 then
+			return true
+		end
+		return a.yearTo < b.yearTo
+	end
+	return a.index < b.index
+end
+
+-- As the track tool's default bridge and tunnel (construction_react_util.tl makeFilterObjectsFn): over the menu's
+-- available types that carry rail and may be picked automatically, the one whose speed limit is closest above the
+-- track's speed, else closest below it. Not the cheapest: the base types' costs don't follow their speeds.
+function modes.structureFor(types : {StructureType}, speed : number, year : integer) : StructureType
+	local available : {StructureType} = {}
+	for __, ty in ipairs(types) do
+		-- The menu's availability test (menu_category_util.tl getAvailableObjectsSorted).
+		if ty.rail and ty.autoSelectable and (ty.yearFrom == 0 or ty.yearFrom <= year)
+			and (ty.yearTo == 0 or year < ty.yearTo) then
+			table.insert(available, ty)
+		end
+	end
+	table.sort(available, menuBefore)
+	local above, below : StructureType, StructureType = nil, nil
+	for __, ty in ipairs(available) do
+		if ty.speedLimit >= speed then
+			if above == nil or ty.speedLimit < above.speedLimit then
+				above = ty
+			end
+		elseif below == nil or ty.speedLimit > below.speedLimit then
+			below = ty
+		end
+	end
+	return above or below
 end
 
 function modes.weights(mode : Mode, t : TrackType) : Weights

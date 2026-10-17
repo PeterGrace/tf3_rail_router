@@ -34,7 +34,7 @@ global record PgraceRailRouterRoute
 		-- Track height at each sample; the first and last are the two stations' heights.
 		z : {number}
 		-- Ground, bridges and tunnels. Existing track (and roads, when weights.bridgeRoads) is crossed by a bridge
-		-- with at least 7 m of clearance.
+		-- with at least 9 m of clearance.
 		spans : {PgraceRailRouterProfile.Span}
 		length : number
 		minRadius : number

@@ -67,6 +67,28 @@ global record PgraceRailRouterModes
 		timeCost : number
 	end
 
+	-- A bridge or tunnel type, as plain data (survey.structureTypes).
+	record StructureType
+		-- The resource name (bridgeTypeRep / tunnelTypeRep), and its index there (BaseEdge.typeIndex).
+		name : string
+		index : integer
+		-- Its place in the construction menu (menuCategory.categories[1].order), the first tie-break.
+		order : integer
+		cost : number
+		-- Metres per second; 0 if the type sets none (the base tunnels).
+		speedLimit : number
+		-- 0 means no limit.
+		yearFrom : integer
+		yearTo : integer
+		rail : boolean
+		autoSelectable : boolean
+	end
+
+	-- The type the game's track tool would pick for track of `speed` in `year`, among the available, rail-carrying,
+	-- auto-selectable types: the slowest at least that fast, else the fastest; equal speeds go to the first in the
+	-- menu's order. nil if none.
+	structureFor : function(types : {StructureType}, speed : number, year : integer) : StructureType
+
 	isAvailable : function(t : TrackType, year : integer) : boolean
 	isEverBuildable : function(t : TrackType) : boolean
 	-- Fastest: the fastest available type. Cheapest: the fastest available type up to 60 m/s (so not high-speed),

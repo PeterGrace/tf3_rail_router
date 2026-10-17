@@ -50,6 +50,9 @@ global record PgraceRailRouterSurvey
 	towns : function() : {PgraceRailRouterCorridor.Town}
 	-- The base track types (catenary variants left out), slowest first.
 	trackTypes : function() : {PgraceRailRouterModes.TrackType}
+	-- The bridge ("bridge") or tunnel ("tunnel") types the construction menu lists, as plain data, whatever the year
+	-- (modes.structureFor picks one).
+	structureTypes : function(which : string) : {PgraceRailRouterModes.StructureType}
 	year : function() : integer
 	-- The map's extent: the terrain's bounding box, else TERRAIN.size × 256 m round the origin; nil if neither can be
 	-- read (logged once).

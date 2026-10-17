@@ -10,6 +10,10 @@ local survey = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/survey.tl
 local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/area.tl" as PgraceRailRouterArea
 local preview = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/preview.tl" as PgraceRailRouterPreview
 local mapcapture = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/mapcapture.tl" as PgraceRailRouterMapCapture
+local builder = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/builder.tl" as PgraceRailRouterBuilder
+local network = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/network.tl" as PgraceRailRouterNetwork
+local sl = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/stationlayout.tl" as PgraceRailRouterStationLayout
+local probe = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/probe.tl" as PgraceRailRouterProbe -- PROBE (remove before release)
 
 local type Town = PgraceRailRouterCorridor.Town
 local type Candidate = PgraceRailRouterCorridor.Candidate
@@ -37,6 +41,8 @@ local MAX_RETRIES = 2
 -- add at most this share together (corridor.select).
 local DETOUR_BUDGET = 0.15
 local PLATFORMS : {integer} = { 80, 120, 160, 240, 320 }
+-- Check with the game: problems listed at most, then "and N more".
+local MAX_PROBLEMS = 8
 
 local record Settings
 	-- Town entities; -1 for none.
@@ -71,6 +77,8 @@ end
 
 local record Work
 	stops : {Town}
+	-- The track type planned for (the plan's estimate is priced with the game's price for it when the plan is done).
+	track : TrackType
 	weights : PgraceRailRouterModes.Weights
 	platform : integer
 	-- The survey margin in use, and how many times the work was started over with a wider one.
@@ -97,6 +105,27 @@ end
 -- engine reads belong on the main thread, not in the click handler).
 local record CaptureWork
 	job : PgraceRailRouterMapCapture.Job
+end
+
+-- Check with the game: the plan and the choices it was asked for; check is nil until the first join starts it (the
+-- settings read the game's bridge and tunnel types, on the main thread).
+local record CheckWork
+	plan : Plan
+	track : TrackType
+	electrified : boolean
+	-- The plan crosses roads on the level (its mode doesn't bridge them).
+	levelCrossings : boolean
+	check : PgraceRailRouterBuilder.Check
+end
+
+-- PROBE (remove before release): a probe in progress: its name ("P1" ... "P6"), the choices its settings are made
+-- from, and its tasks (nil until the first join asks the probe for them), run one per join.
+local record ProbeWork
+	name : string
+	track : TrackType
+	electrified : boolean
+	tasks : {function()}
+	next : integer
 end
 
 local record Progress
@@ -151,10 +180,141 @@ local function planDetail(job : PgraceRailRouterRoute.Job) : string
 	return fill(_("leg {leg} of {legs}"), legs)
 end
 
+-- The track template built: the electrified variant when ticked and available in `year`, else the track type's own.
+local function templateFor(track : TrackType, electrified : boolean, year : integer) : string
+	if electrified and track.catenary ~= nil and (track.catenaryYearFrom == 0 or year >= track.catenaryYearFrom) then
+		return track.catenary
+	end
+	return track.name
+end
+
+-- The builder's settings for the window's choices: the track template (its electrified variant when ticked and
+-- available), its speed, the year, the bridge and tunnel types the game would pick (nil where none is available),
+-- the station's modules for the year's era (the station script's getEra), and whether streets the track collides with
+-- are level crossings. Main thread: reads the game's types.
+local function settingsFor(track : TrackType, electrified : boolean, year : integer, levelCrossings : boolean)
+		: PgraceRailRouterBuilder.Settings
+	local name = templateFor(track, electrified, year)
+	local function structure(which : string) : PgraceRailRouterModes.StructureType
+		local ok, result = pcall(function() : PgraceRailRouterModes.StructureType
+			return modes.structureFor(survey.structureTypes(which), track.speed, year)
+		end)
+		if not ok then
+			debugPrint(LOG_PREFIX .. which .. " types: " .. tostring(result))
+			return nil
+		end
+		return result as PgraceRailRouterModes.StructureType
+	end
+	local era = sl.eraLetter(year)
+	local dir = "::/stations/rail/modular_station/"
+	return {
+		track = name, speed = track.speed, year = year,
+		bridge = structure("bridge"), tunnel = structure("tunnel"),
+		normalTypeIndex = -1,
+		era = { platform = dir .. "platform_passenger_era_" .. era .. ".module", track = sl.trackModule(name) },
+		addons = { building = dir .. "main_building_1_era_" .. era .. ".module",
+			stairs = dir .. "addon_platform_passenger_stairs_era_" .. era .. ".module" },
+		network = network.defaults(),
+		levelCrossings = levelCrossings,
+	}
+end
+
+-- The year for the builder's settings: read again (on the main thread), else the one read when the window opened.
+local function currentYear(fallback : integer) : integer
+	local year = survey.year()
+	if year == nil or year <= 0 then
+		return fallback
+	end
+	return year
+end
+
+-- Where a check's outcome is, for the window: the station's town, or how far along the line its chunk starts.
+local function outcomePlace(check : PgraceRailRouterBuilder.Check, outcome : PgraceRailRouterBuilder.Outcome) : string
+	if outcome.item.kind == "station" then
+		local station = check.plan.stations[outcome.item.index]
+		return fill(_("Station {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
+	end
+	local chunk = check.net.chunks[outcome.item.index]
+	-- The legs run between platform ends: the platforms of the stations passed (one per leg before this one, and
+	-- the leg's own first station) count too.
+	local s = check.net.edges[chunk.first].s0 + chunk.leg * (check.plan.platformLength or 0)
+	for i = 1, chunk.leg - 1 do
+		s = s + (check.plan.legs[i].length or 0)
+	end
+	return fill(_("Track near km {km}"), { km = string.format("%.1f", s / 1000) })
+end
+
 local function textRow(text : string, class : string) : TreeNodeId
 	return builtin.BoxLayout{
 		children = {
 			builtin.TextView{ meta = { class = class or "font-scale-body" }, text = text },
+		},
+	}
+end
+
+-- What a collision was with, for the window.
+local function collidedWith(what : string) : string
+	if what == "street" then
+		return _("a street")
+	elseif what == "track" then
+		return _("track")
+	elseif what == "building" then
+		return _("a building")
+	elseif what == "construction" then
+		return _("a station or other construction")
+	end
+	return _("something")
+end
+
+-- One problem from the check: where, the game's messages and what the track or station ran into (streets left out
+-- where others are there too), and a button that moves the camera to it (the first thing hit that isn't a street,
+-- else the first thing hit, else the outcome's own place).
+local function problemRow(check : PgraceRailRouterBuilder.Check, outcome : PgraceRailRouterBuilder.Outcome) : TreeNodeId
+	local whats : {string} = {}
+	local named : {string : boolean} = {}
+	local target : PgraceRailRouterBuilder.Collision = nil
+	for __, c in ipairs(outcome.collisions or {}) do
+		-- Streets are level crossings there, counted on their own line.
+		if outcome.crossings > 0 and c.what == "street" then
+			-- skip
+		elseif not named[c.what] then
+			named[c.what] = true
+			table.insert(whats, collidedWith(c.what))
+		end
+		if c.x ~= nil and (target == nil or (target.what == "street" and c.what ~= "street")) then
+			target = c
+		end
+	end
+	local text = fill(_("{what}: {messages}"), { what = outcomePlace(check, outcome),
+		messages = table.concat(outcome.messages, "; ") })
+	if #whats > 0 then
+		text = fill(_("{problem} with {things}"), { problem = text, things = table.concat(whats, ", ") })
+	end
+	local x, y = outcome.x, outcome.y
+	if target ~= nil then
+		x, y = target.x, target.y
+	end
+	return builtin.BoxLayout{
+		orientation = builtin.type.Orientation.Horizontal,
+		children = {
+			builtin.TextView{ meta = { class = "font-scale-annotation" }, text = text },
+			builtin.Button{
+				content = builtin.TextView{ meta = { class = "font-scale-annotation" }, text = _("Show") },
+				onClick = function()
+					local ok, err = pcall(function() : boolean
+						local z = 0.0
+						pcall(function() : boolean
+							z = api.engine.terrain.getHeightAt(api.type.Vec2f.new(x, y))
+							return true
+						end)
+						api.gui.camera.focusPosition(api.type.Vec3f.new(x, y, z), 300)
+						return true
+					end)
+					if not ok then
+						debugPrint(LOG_PREFIX .. "show problem: " .. tostring(err))
+					end
+				end,
+			},
 		},
 	}
 end
@@ -254,11 +414,13 @@ local function failureText(plan : Plan) : string
 	return _("Choose two different towns.")
 end
 
-local function resultRows(plan : Plan) : {TreeNodeId}
+-- priceFactor scales the plan's estimate, made with the track type's listed price, to what the game charges for
+-- the track to be built (pricesFor).
+local function resultRows(plan : Plan, priceFactor : number) : {TreeNodeId}
 	local rows : {TreeNodeId} = {}
 	local sum = plan.summary
 	table.insert(rows, textRow(fill(_("{length} of line · about {cost} for the track (our estimate)"),
-		{ length = formatLength(sum.length), cost = formatMoney(sum.estimate) }), "font-scale-body"))
+		{ length = formatLength(sum.length), cost = formatMoney(sum.estimate * priceFactor) }), "font-scale-body"))
 	table.insert(rows, textRow(fill(_("Bridges: {bridges} ({bridgeLength}) · Tunnels: {tunnels} ({tunnelLength})"), {
 		bridges = tostring(sum.bridges), bridgeLength = formatLength(sum.bridgeLength),
 		tunnels = tostring(sum.tunnels), tunnelLength = formatLength(sum.tunnelLength),
@@ -307,6 +469,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local settingsState = react.useState(remembered) as ReactStateT<Settings>
 	local settings = settingsState:old()
 	local planState : ReactStateT<Plan> = react.useState(nil)
+	-- The game's price for a metre of double track, by track template (plain and electrified), dry-run at the plan's
+	-- first station when it's done; the estimate is scaled by it.
+	local priceState : ReactStateT<{string : number}> = react.useState({})
 	local generationState = react.useState(0) as ReactStateT<integer>
 	local showAllState = react.useState(rememberedShowAll) as ReactStateT<boolean>
 	local showState = react.useState(false) as ReactStateT<boolean>
@@ -317,6 +482,15 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- PROBE (remove before release): the capture's percentage while it runs, and its outcome once it's over.
 	local capturePercentState : ReactStateT<integer> = react.useState(nil)
 	local captureResultState : ReactStateT<string> = react.useState(nil)
+	-- Check with the game: in progress (nil when none runs), how far it is (items done), and the finished check, or
+	-- that it failed.
+	local checkRef : ReactRefT<CheckWork> = react.useRef(nil)
+	local checkDoneState : ReactStateT<integer> = react.useState(nil)
+	local checkState : ReactStateT<PgraceRailRouterBuilder.Check> = react.useState(nil)
+	local checkErrorState = react.useState(false) as ReactStateT<boolean>
+	-- PROBE (remove before release): the probe running (nil when none), and the last one's outcome for the window.
+	local probeRef : ReactRefT<ProbeWork> = react.useRef(nil)
+	local probeStatusState : ReactStateT<string> = react.useState(nil)
 	-- A join is queued and hasn't run yet; at most one at a time.
 	local joinQueuedRef : ReactRefT<boolean> = react.useRef(false)
 
@@ -332,9 +506,49 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end)
 	end
 
+	-- Drops a check with the game, running or done: it was for another plan or other settings.
+	local function resetCheck()
+		checkRef:set(nil)
+		checkDoneState:set(nil)
+		checkState:set(nil)
+		checkErrorState:set(false)
+	end
+
+	-- The game's price per metre of the plan's track, plain and electrified (main thread: two dry runs, about a
+	-- millisecond each), at its first station along its direction; prices already known are kept.
+	local function pricesFor(track : TrackType, plan : Plan)
+		if track == nil or plan == nil or not plan.ok or #plan.stations == 0 then
+			return
+		end
+		local station = plan.stations[1]
+		local prices : {string : number} = {}
+		for name, price in pairs(priceState:old()) do
+			prices[name] = price
+		end
+		local year = currentYear(data.year)
+		for __, electrified in ipairs({ false, true }) do
+			local name = templateFor(track, electrified, year)
+			if prices[name] == nil then
+				local ok, price = pcall(function() : number
+					return builder.pricePerMetre(settingsFor(track, electrified, year, false),
+						{ x = station.site.centre.x, y = station.site.centre.y, z = station.z }, station.site.dir)
+				end)
+				if ok and price ~= nil then
+					prices[name] = price as number
+					debugPrint(LOG_PREFIX .. ("price of %s: %.1f a metre of double track (listed %.1f)"):format(name,
+						price as number, 2 * track.cost))
+				else
+					debugPrint(LOG_PREFIX .. "price of " .. name .. ": " .. tostring(price))
+				end
+			end
+		end
+		priceState:set(prices)
+	end
+
 	-- Every settings change drops the shown plan and any work in progress: a plan for other settings would mislead.
 	local function update(change : function(Settings))
 		setSettings(change)
+		resetCheck()
 		planState:set(nil)
 		showState:set(false)
 		workRef:set(nil)
@@ -365,8 +579,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 
 	local function findRoute()
-		-- Not while the map capture runs (PROBE): one piece of long work at a time.
-		if captureRef:get() ~= nil then
+		-- Not while the map capture or a probe runs (PROBE): one piece of long work at a time.
+		if captureRef:get() ~= nil or probeRef:get() ~= nil then
 			return
 		end
 		if fromTown == nil or toTown == nil or fromTown.id == toTown.id or track == nil then
@@ -378,9 +592,11 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				table.insert(picked, candidate.town)
 			end
 		end
-		workRef:set({ stops = corridor.order(fromTown, toTown, picked), weights = modes.weights(settings.mode, track),
+		workRef:set({ stops = corridor.order(fromTown, toTown, picked), track = track,
+			weights = modes.weights(settings.mode, track),
 			platform = settings.platform, margin = SURVEY_MARGIN, retries = 0, slowestStepUs = {},
 			planUs = 0, planFrames = 0 })
+		resetCheck()
 		planState:set(nil)
 		showState:set(false)
 		errorState:set(false)
@@ -535,7 +751,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			end
 			nextGeneration = nextGeneration + 1
 			generationState:set(nextGeneration)
+			resetCheck()
 			planState:set(plan)
+			pricesFor(work.track, plan)
 			workRef:set(nil)
 			progressState:set(nil)
 		else
@@ -545,7 +763,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 
 	-- PROBE (remove before release): writes the whole map to the log (mapcapture), BUDGET_US per frame.
 	local function startCapture()
-		if workRef:get() ~= nil or captureRef:get() ~= nil then
+		if workRef:get() ~= nil or captureRef:get() ~= nil or checkRef:get() ~= nil or probeRef:get() ~= nil then
 			return
 		end
 		captureRef:set({})
@@ -577,8 +795,99 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 	end
 
+	-- One dry run per join (each can take a few hundred milliseconds), never two in a frame. The first join makes
+	-- the settings and the network.
+	local function advanceCheck(work : CheckWork)
+		if work.check == nil then
+			local clock = api.type.Clock.new()
+			local settings = settingsFor(work.track, work.electrified, currentYear(data.year), work.levelCrossings)
+			work.check = builder.start(work.plan, settings, math.floor(clock:getTime()))
+			checkDoneState:set(0)
+		else
+			builder.step(work.check)
+			checkDoneState:set(work.check.next - 1)
+		end
+		if work.check.done then
+			checkRef:set(nil)
+			checkDoneState:set(nil)
+			checkState:set(work.check)
+		end
+	end
+
+	-- PROBE (remove before release): the first join asks the probe for its tasks (they read the camera), then one
+	-- task per join.
+	local function advanceProbe(work : ProbeWork)
+		if work.tasks == nil then
+			local settings = settingsFor(work.track, work.electrified, currentYear(data.year), false)
+			if work.name == "P1" then
+				work.tasks = probe.logTrack()
+			elseif work.name == "P2" then
+				work.tasks = probe.dryRunTrack(settings, data.tracks)
+			elseif work.name == "P4" then
+				work.tasks = probe.dryRunCrossing(settings)
+			elseif work.name == "P8" then
+				work.tasks = probe.bridgeClearance(settings)
+			else
+				work.tasks = probe.dryRunStation(settings, data.tracks)
+			end
+			work.next = 1
+			return
+		end
+		local task = work.tasks[work.next]
+		work.next = work.next + 1
+		if task ~= nil then
+			task()
+		end
+		if work.next > #work.tasks then
+			probeRef:set(nil)
+			probeStatusState:set("Probe " .. work.name .. " done (see log)")
+		end
+	end
+
 	react.onStep(function()
 		if joinQueuedRef:get() then
+			return
+		end
+		if workRef:get() == nil and checkRef:get() ~= nil then
+			joinQueuedRef:set(true)
+			safeJoin(function()
+				joinQueuedRef:set(false)
+				local work = checkRef:get()
+				if work == nil then
+					return
+				end
+				local ok, err = pcall(function() : boolean
+					advanceCheck(work)
+					return true
+				end)
+				if not ok then
+					debugPrint(LOG_PREFIX .. "check error: " .. tostring(err))
+					checkRef:set(nil)
+					checkDoneState:set(nil)
+					checkErrorState:set(true)
+				end
+			end, "PgraceRailRouterCheck")
+			return
+		end
+		-- PROBE (remove before release)
+		if workRef:get() == nil and checkRef:get() == nil and probeRef:get() ~= nil then
+			joinQueuedRef:set(true)
+			safeJoin(function()
+				joinQueuedRef:set(false)
+				local work = probeRef:get()
+				if work == nil then
+					return
+				end
+				local ok, err = pcall(function() : boolean
+					advanceProbe(work)
+					return true
+				end)
+				if not ok then
+					debugPrint(LOG_PREFIX .. "probe error: " .. tostring(err))
+					probeRef:set(nil)
+					probeStatusState:set("Probe " .. work.name .. " failed (see log)")
+				end
+			end, "PgraceRailRouterProbe")
 			return
 		end
 		if workRef:get() == nil and captureRef:get() ~= nil then
@@ -685,6 +994,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		value = electrified and 1 or 0,
 		onValueChange = function(v : integer)
 			setSettings(function(s : Settings) s.electrified = v == 1 end)
+			-- A check with the game was for the other track.
+			resetCheck()
 		end,
 	})
 	local platformItems : {TreeNodeId} = {}
@@ -791,6 +1102,32 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		content = builtin.TextView{ text = "Capture whole map (probe)" },
 		onClick = startCapture,
 	})
+	-- PROBE (remove before release): the milestone 2 probes, at the camera's look-at point; not translated.
+	local function startProbe(name : string)
+		if track == nil or workRef:get() ~= nil or captureRef:get() ~= nil or checkRef:get() ~= nil
+				or probeRef:get() ~= nil then
+			return
+		end
+		probeRef:set({ name = name, track = track, electrified = electrified })
+		probeStatusState:set("Probe " .. name .. " running…")
+	end
+	for __, p in ipairs({
+		{ "P1", "Probe P1: log track near camera" },
+		{ "P2", "Probe P2: dry-run test track" },
+		{ "P4", "Probe P4: dry-run across a street" },
+		{ "P8", "Probe P8: bridge clearance over track and street" },
+		{ "P6", "Probe P6: dry-run a station" },
+	}) do
+		table.insert(body, builtin.Button{
+			content = builtin.TextView{ text = p[2] },
+			onClick = function()
+				startProbe(p[1])
+			end,
+		})
+	end
+	if probeStatusState:old() ~= nil then
+		table.insert(body, textRow(probeStatusState:old(), "font-scale-annotation"))
+	end
 	local capturePercent = capturePercentState:old()
 	if capturePercent ~= nil then
 		table.insert(body, textRow("Capturing map… " .. tostring(capturePercent) .. "%", "font-scale-annotation"))
@@ -804,7 +1141,12 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		if not plan.ok then
 			table.insert(body, textRow(failureText(plan), "font-scale-body"))
 		else
-			for __, row in ipairs(resultRows(plan)) do
+			local priceFactor = 1.0
+			local perMetre = priceState:old()[templateFor(track, electrified, data.year)]
+			if perMetre ~= nil and track.cost > 0 then
+				priceFactor = perMetre / (2 * track.cost)
+			end
+			for __, row in ipairs(resultRows(plan, priceFactor)) do
 				table.insert(body, row)
 			end
 			table.insert(body, builtin.ToggleButton{
@@ -818,6 +1160,65 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				-- A fixed key, so the progress line coming and going above it doesn't remount it.
 				table.insert(body, preview.RouteAction{ meta = { localKey = "route" }, plan = plan,
 					generation = generationState:old(), baseCtx = params.gameCtx })
+			end
+			-- Check with the game: dry-run the stations and the track, the game's price and errors.
+			local checked = checkState:old()
+			local checking = checkRef:get()
+			if checking ~= nil then
+				local line = _("Checking with the game…")
+				if checking.check ~= nil then
+					line = fill(_("Checking with the game… {done} of {total}"),
+						{ done = tostring(checkDoneState:old() or 0), total = tostring(#checking.check.items) })
+				end
+				table.insert(body, textRow(line, "font-scale-annotation"))
+			elseif checked ~= nil then
+				local stationsPrice = 0
+				for __, outcome in ipairs(checked.outcomes) do
+					if outcome.item.kind == "station" then
+						stationsPrice = stationsPrice + outcome.cost
+					end
+				end
+				table.insert(body, textRow(fill(_("The game's price: {price} (track {track}, stations {stations})"),
+					{ price = formatMoney(checked.total), track = formatMoney(checked.total - stationsPrice),
+					stations = formatMoney(stationsPrice) }), "font-scale-body"))
+				if checked.crossings > 0 then
+					table.insert(body, textRow(fill(_("Level crossings: {count} (built in a later version)"),
+						{ count = tostring(checked.crossings) }), "font-scale-annotation"))
+				end
+				if checked.failures > 0 then
+					table.insert(body, textRow(fill(_("{count} of {total} parts can't be built as planned:"),
+						{ count = tostring(checked.failures), total = tostring(#checked.items) }), "font-scale-body"))
+				end
+				local shown = 0
+				for __, outcome in ipairs(checked.outcomes) do
+					if not outcome.ok then
+						shown = shown + 1
+						if shown <= MAX_PROBLEMS then
+							table.insert(body, problemRow(checked, outcome))
+						end
+					end
+				end
+				if shown > MAX_PROBLEMS then
+					table.insert(body, textRow(fill(_("and {count} more"), { count = tostring(shown - MAX_PROBLEMS) }),
+						"font-scale-annotation"))
+				end
+			else
+				table.insert(body, builtin.Button{
+					meta = { class = "primary" },
+					content = builtin.TextView{ text = _("Check with the game") },
+					onClick = function()
+						if track == nil or workRef:get() ~= nil or captureRef:get() ~= nil or probeRef:get() ~= nil then
+							return
+						end
+						checkRef:set({ plan = plan, track = track, electrified = electrified,
+							levelCrossings = not modes.weights(settings.mode, track).bridgeRoads })
+						checkDoneState:set(0)
+						checkErrorState:set(false)
+					end,
+				})
+				if checkErrorState:old() then
+					table.insert(body, textRow(_("The check failed (see log)"), "font-scale-body"))
+				end
 			end
 		end
 	end

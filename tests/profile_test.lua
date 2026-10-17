@@ -150,7 +150,7 @@ t.test("profile: a crossing on flat ground is bridged with clearance", function(
 	local r = profile.fit(s, ground, water, opts({ maxGrade = 0.025, crossing = crossing }))
 	for i = 1, #s do
 		if crossing[i] then
-			t.ok(r.z[i] - ground[i] >= 7 - 1e-9, "clearance at " .. s[i] .. ": " .. (r.z[i] - ground[i]))
+			t.ok(r.z[i] - ground[i] >= 9 - 1e-9, "clearance at " .. s[i] .. ": " .. (r.z[i] - ground[i]))
 			t.eq(spanAt(r, s[i]), "bridge", "bridge at " .. s[i])
 		end
 	end
@@ -167,7 +167,7 @@ t.test("profile: a one-sample crossing keeps its bridge", function()
 	end
 	local r = profile.fit(s, ground, water, opts({ maxGrade = 0.025, zStart = 0, zEnd = 0, crossing = crossing }))
 	t.eq(spanAt(r, 500), "bridge", "over the line")
-	t.ok(r.z[21] >= 7 - 1e-9, "clearance " .. r.z[21])
+	t.ok(r.z[21] >= 9 - 1e-9, "clearance " .. r.z[21])
 	t.ok(gradesWithin(r, s, 0.025), "grades")
 end)
 
@@ -181,7 +181,7 @@ t.test("profile: crossings on ground steeper than the limit keep their clearance
 	local r = profile.fit(s, ground, water, opts({ maxGrade = 0.025, crossing = crossing }))
 	for i = 1, #s do
 		if crossing[i] then
-			t.ok(r.z[i] - ground[i] >= 7 - 1e-9, "clearance at " .. s[i] .. ": " .. (r.z[i] - ground[i]))
+			t.ok(r.z[i] - ground[i] >= 9 - 1e-9, "clearance at " .. s[i] .. ": " .. (r.z[i] - ground[i]))
 		end
 	end
 	t.ok(gradesWithin(r, s, 0.025), "grades")
@@ -258,7 +258,8 @@ t.test("profile: flat ground before a ridge it tunnels through isn't bridged (Co
 	t.eq(bridges, 1, "one bridge, over the road")
 	for __, span in ipairs(r.spans) do
 		if span.kind == "bridge" then
-			t.ok(span.s1 - span.s0 <= 100, ("bridge %.0f..%.0f only over the road"):format(span.s0, span.s1))
+			-- 9 m of clearance: the track is more than bridgeAbove (8 m) up for 125 m round the 25 m crossing.
+			t.ok(span.s1 - span.s0 <= 150, ("bridge %.0f..%.0f only over the road"):format(span.s0, span.s1))
 		end
 	end
 	local tunnels, mid = countKind(r, "tunnel")
@@ -267,7 +268,7 @@ t.test("profile: flat ground before a ridge it tunnels through isn't bridged (Co
 	t.ok(gradesWithin(r, s, 0.025), "grades")
 	for i = 1, #s do
 		if crossing[i] then
-			t.ok(r.z[i] - ground[i] >= 7 - 1e-9, "clearance")
+			t.ok(r.z[i] - ground[i] >= 9 - 1e-9, "clearance")
 		end
 	end
 end)
@@ -361,8 +362,8 @@ t.test("profile: on rough ground the grade, the pins and the clearances hold", f
 			if seed % 3 ~= 0 then
 				reach = math.min(ground[1] + maxGrade * s[i], ground[#s] + maxGrade * (s[#s] - s[i]))
 			end
-			if crossing[i] and ground[i] + 7 <= reach then
-				t.ok(r.z[i] - ground[i] >= 7 - 1e-9, ("clearance at %d, seed %d: %.2f"):format(s[i], seed, r.z[i] - ground[i]))
+			if crossing[i] and ground[i] + 9 <= reach then
+				t.ok(r.z[i] - ground[i] >= 9 - 1e-9, ("clearance at %d, seed %d: %.2f"):format(s[i], seed, r.z[i] - ground[i]))
 			end
 			if crossing[i] or water[i] then
 				t.eq(spanAt(r, s[i]), "bridge", "bridge at " .. s[i] .. ", seed " .. seed)
