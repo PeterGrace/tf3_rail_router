@@ -7,7 +7,7 @@ local t = ...
 --   * no sample lies on a blocked cell (unless a known number is recorded, with why);
 --   * no leg's heading swings (replaylib.sweep) more than SWEEP_SLACK past the baseline's widest: a leg that starts
 --     to loop or hook round into a station shows here first;
---   * no single route.step takes longer than STEP_BUDGET_MS;
+--   * no single route.step takes longer than STEP_BUDGET_MS, nor allocates more than STEP_ALLOC_KB;
 --   * length, estimate, tight curves, bridges and tunnels, and the seconds a train stopping at every station loses to
 --     curves below the mode's radius (route.Summary.timeLost, planner/speed.tl) are no worse than the baseline by more
 --     than TOLERANCE.
@@ -50,6 +50,13 @@ local recording = os.getenv("RAIL_ROUTER_RECORD") == "1"
 -- curves up to 6 ms run alone); in-game Lua runs about 4 times slower, so 10 ms here is about 40 ms in-game: a step
 -- that would show as a hitch, well clear of timing noise on a busy desktop.
 local STEP_BUDGET_MS = 10.0
+-- The most a single route.step may allocate (KB; replaylib's alloc.max). Unlike time, allocation is the same on every
+-- run, and in-game it costs about as much again in garbage collection: the game's Lua 5.2 pays a step's collection
+-- debt, work in proportion to what it allocated, at its next allocation, and over the game's whole heap. A search
+-- once allocated up to 1.7 MB in one step (its tables doubling as it grew; now in the grid's store), and fitting a
+-- leg's curves 856 KB (a point per guard check); the most now is about 600 KB (a re-siting step building a
+-- candidate's leg).
+local STEP_ALLOC_KB = 768
 -- How much worse than the baseline a figure may get: lengths and estimates as a share; tight curves, and bridges
 -- plus tunnels, as a count; their length as a share, at least STRUCTURE_SLACK metres.
 local TOLERANCE = { length = 0.02, estimate = 0.03, tight = 1, structures = 1, structureLength = 0.10, timeLost = 0.10 }
@@ -79,7 +86,11 @@ local SWEEP_SLACK = 30
 -- Bossier City → Ashland, Cheapest 62% up (its leg no longer crosses its own station). And again for Fastest's search
 -- radii (feat/fastest-speed: each try's rooms to turn sized for its own radius, tries weighed by cost and the time
 -- their curves lose, slow legs' stations re-sited): Cheapest unchanged; Fastest 58% less time lost to tight curves
--- (1017 s to 423 s over its 15 routes), estimates 14% down, tight curves 253 to 230.
+-- (1017 s to 423 s over its 15 routes), estimates 14% down, tight curves 253 to 230. And again for re-siting weighed
+-- by cost and time (fix/fastest-ingame: in Fastest, each candidate's legs weighed as they would be built, every radius
+-- tried, by cost plus the time they lose, the current site's built legs as built, and no candidate taken that loses
+-- more time): Cheapest byte-identical; Fastest 6% less time lost (423 s to 398 s), estimates 1.3% up, tight curves
+-- 230 to 235; Alliance → Aloha 41 s to 21 s, Elkhart → Fernley 55 s to 43 s, Englewood → Weston 7 s to 13 s.
 local ROUTES = {
 	{ map = TEST_MAP, from = "Bangor", to = "Imperial Beach", mode = "cheapest", track = "Standard Tracks", quick = true,
 		stopsSeen = "Bangor, Mercer Island, Antelope, Aloha, Imperial Beach",
@@ -92,7 +103,7 @@ local ROUTES = {
 		base = { length = 14219, estimate = 19183814, tight = 6, bridges = 3, bridgeLength = 886, tunnels = 0, tunnelLength = 0, sweep = 96, timeLost = 16.3 } },
 	{ map = TEST_MAP, from = "Bangor", to = "Imperial Beach", mode = "fastest", track = "High-Speed Tracks", quick = true,
 		stops = { "Antelope", "Aloha" }, stopsSeen = "Bangor, Antelope, Aloha, Imperial Beach",
-		base = { length = 12350, estimate = 16014898, tight = 8, bridges = 3, bridgeLength = 620, tunnels = 0, tunnelLength = 0, sweep = 72, timeLost = 0.0 } },
+		base = { length = 12402, estimate = 16074028, tight = 8, bridges = 3, bridgeLength = 620, tunnels = 0, tunnelLength = 0, sweep = 72, timeLost = 3.8 } },
 
 	{ map = BIG_MAP, from = "Ames", to = "Bridgeport", mode = "cheapest", track = "Standard Tracks",
 		stopsSeen = "Ames, Foster City, Temple City, Miami, Bridgeport",
@@ -112,9 +123,11 @@ local ROUTES = {
 	{ map = BIG_MAP, from = "Englewood", to = "Weston", mode = "cheapest",
 		stopsSeen = "Englewood, Sulphur, Weston",
 		base = { length = 4699, estimate = 1906869, tight = 1, bridges = 1, bridgeLength = 149, tunnels = 0, tunnelLength = 0, sweep = 128, timeLost = 3.0 } },
+	-- Was 7.3 s lost and 7.6 M, with Sulphur re-sited by cost alone for a leg out that lost 28 s, until Weston's
+	-- re-siting mended that leg. Re-siting by cost and time, with no more time lost, keeps Sulphur where it was.
 	{ map = BIG_MAP, from = "Englewood", to = "Weston", mode = "fastest",
 		stopsSeen = "Englewood, Sulphur, Weston",
-		base = { length = 4610, estimate = 7647686, tight = 6, bridges = 5, bridgeLength = 618, tunnels = 0, tunnelLength = 0, sweep = 86, timeLost = 7.3 } },
+		base = { length = 4324, estimate = 10312187, tight = 10, bridges = 4, bridgeLength = 1306, tunnels = 0, tunnelLength = 0, sweep = 142, timeLost = 12.8 } },
 	{ map = BIG_MAP, from = "Gardner", to = "Herndon", mode = "cheapest",
 		stopsSeen = "Gardner, Eldersburg, Pottstown, Herndon",
 		base = { length = 7906, estimate = 2846207, tight = 1, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 87, timeLost = 2.0 } },
@@ -136,17 +149,17 @@ local ROUTES = {
 	{ map = POTTSTOWN_MAP, from = "Dover", to = "Camarillo", mode = "cheapest",
 		stopsSeen = "Dover, Bronx, New Bedford, Gillette, Pottstown, South Valley, Pullman, Silverdale, Hartford, Camarillo",
 		base = { length = 25046, estimate = 9800705, tight = 11, bridges = 4, bridgeLength = 544, tunnels = 0, tunnelLength = 0, sweep = 230, timeLost = 25.3 } },
-	-- Known, Fastest: 1 sample on a blocked cell 130 m before Silverdale's platforms, where the curve onto them, held
-	-- at the build minimum by the guard, clips a building's buffer.
-	{ map = POTTSTOWN_MAP, from = "Dover", to = "Camarillo", mode = "fastest", knownBlocked = 1,
+	-- Fastest used to have 1 sample on a blocked cell 130 m before Silverdale's platforms (the curve onto them, held
+	-- at the build minimum by the guard, clipped a building's buffer), until re-siting weighed time.
+	{ map = POTTSTOWN_MAP, from = "Dover", to = "Camarillo", mode = "fastest",
 		stopsSeen = "Dover, Bronx, New Bedford, Gillette, Pottstown, South Valley, Pullman, Silverdale, Hartford, Camarillo",
-		base = { length = 25063, estimate = 46060477, tight = 51, bridges = 25, bridgeLength = 4224, tunnels = 1, tunnelLength = 98, sweep = 230, timeLost = 130.4 } },
+		base = { length = 25171, estimate = 46251313, tight = 51, bridges = 25, bridgeLength = 4241, tunnels = 1, tunnelLength = 98, sweep = 230, timeLost = 128.1 } },
 	{ map = POTTSTOWN_MAP, from = "Gillette", to = "Pottstown", mode = "cheapest", stops = {},
 		stopsSeen = "Gillette, Pottstown", base = { length = 1375, estimate = 667773, tight = 1, bridges = 1, bridgeLength = 120, tunnels = 0, tunnelLength = 0, sweep = 68, timeLost = 0.0 } },
 	{ map = POTTSTOWN_MAP, from = "Elkhart", to = "Fernley", mode = "cheapest",
 		stopsSeen = "Elkhart, West Haven, Brooklyn, Fernley", base = { length = 8815, estimate = 3173221, tight = 1, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 138, timeLost = 3.5 } },
 	{ map = POTTSTOWN_MAP, from = "Elkhart", to = "Fernley", mode = "fastest",
-		stopsSeen = "Elkhart, West Haven, Brooklyn, Fernley", base = { length = 9511, estimate = 13092222, tight = 16, bridges = 5, bridgeLength = 653, tunnels = 0, tunnelLength = 0, sweep = 210, timeLost = 55.2 } },
+		stopsSeen = "Elkhart, West Haven, Brooklyn, Fernley", base = { length = 8890, estimate = 13751426, tight = 17, bridges = 4, bridgeLength = 532, tunnels = 1, tunnelLength = 245, sweep = 155, timeLost = 42.5 } },
 	{ map = POTTSTOWN_MAP, from = "Chicopee", to = "Colleyville", mode = "cheapest",
 		stopsSeen = "Chicopee, Roswell, Des Moines, Colleyville", base = { length = 6494, estimate = 2337671, tight = 4, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 147, timeLost = 4.8 } },
 	{ map = POTTSTOWN_MAP, from = "Chicopee", to = "Colleyville", mode = "fastest",
@@ -162,10 +175,11 @@ local ROUTES = {
 		stopsSeen = "Alliance, Hemet, Turlock, Owings Mills, Aloha", base = { length = 14306, estimate = 6467178, tight = 13, bridges = 3, bridgeLength = 915, tunnels = 0, tunnelLength = 0, sweep = 438, timeLost = 33.6 } },
 	-- Fastest: every leg used to fall back to the Cheapest radius (the tries' rooms to turn were sized for 3 km), and
 	-- leg 3 crossed the bay in sharp turns between bridges and hooked into Owings Mills, whose arriving end buildings
-	-- wall in: the line lost 75 s to its curves (26 tight). Now its slow leg has Owings Mills re-sited on the bay's
-	-- east shore, facing west: leg 3 runs north over land at a 375 m search radius (4 s lost), and the line loses 41 s.
-	{ map = NEWGAME_MAP, from = "Alliance", to = "Aloha", mode = "fastest", maxTimeLost = 45,
-		stopsSeen = "Alliance, Hemet, Turlock, Owings Mills, Aloha", base = { length = 11388, estimate = 25236717, tight = 24, bridges = 7, bridgeLength = 2995, tunnels = 0, tunnelLength = 0, sweep = 106, timeLost = 40.6 } },
+	-- wall in: the line lost 75 s to its curves (26 tight). Then its slow leg had Owings Mills re-sited on the bay's
+	-- east shore, facing west: leg 3 runs north over land at a 375 m search radius (4 s lost), and the line lost 41 s.
+	-- Now re-siting weighs time too, and Hemet faces west: leg 2 loses nothing (it lost 23 s), the line 21 s.
+	{ map = NEWGAME_MAP, from = "Alliance", to = "Aloha", mode = "fastest", maxTimeLost = 25,
+		stopsSeen = "Alliance, Hemet, Turlock, Owings Mills, Aloha", base = { length = 11366, estimate = 25629715, tight = 24, bridges = 7, bridgeLength = 3091, tunnels = 0, tunnelLength = 0, sweep = 106, timeLost = 21.2 } },
 	-- Leg 1 used to hook round into Los Altos (sweep 267°) over Bossier City's own station and through a building's
 	-- buffer (6 samples). Now it keeps off the stations and goes round the lake (62% dearer, the line's honest price).
 	-- Known: 1 sample on a blocked cell at Ashland's arriving end, where the curve onto the platforms, held at the build
@@ -188,6 +202,19 @@ local ROUTES = {
 		stopsSeen = "Cornelius, Salinas, Oshkosh, Bonney Lake, Perth Amboy", base = { length = 10444, estimate = 3759909, tight = 6, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 114, timeLost = 16.8 } },
 	{ map = NEWGAME2_MAP, from = "Cornelius", to = "Perth Amboy", mode = "fastest",
 		stopsSeen = "Cornelius, Salinas, Oshkosh, Bonney Lake, Perth Amboy", base = { length = 10505, estimate = 17604161, tight = 11, bridges = 6, bridgeLength = 783, tunnels = 1, tunnelLength = 380, sweep = 80, timeLost = 11.7 } },
+}
+
+-- In-game route captures planned as captured (not on the maps: their saves have changed since the maps were
+-- captured, so they aren't in CAPTURES), with the same checks and a baseline of their own.
+local CAPTURE_ROUTES = {
+	-- New Game in 2154 (a year after the map), Fastest, High-Speed. In-game the slowest legs step took 48.7 ms here.
+	-- Known slow: leg 3 (Turlock → Owings Mills) loses 56 s, threading a bay studded with buildings and hooking
+	-- round into Owings Mills. Re-siting weighs every Owings Mills site within reach: the one west-facing site whose
+	-- leg in is fast (6 s) can't be left towards Aloha (its leaving end is walled in), and the others lose more time;
+	-- Turlock's sites all lose 48 s or more on that leg.
+	{ capture = "newgame-16x16km.alliance-aloha-fastest-2154.capture", maxTimeLost = 95, maxTight = 28,
+		stopsSeen = "Alliance, Hemet, Turlock, Owings Mills, Aloha",
+		base = { length = 11459, estimate = 28948170, tight = 27, bridges = 11, bridgeLength = 3312, tunnels = 1, tunnelLength = 300, sweep = 180, timeLost = 90.7 } },
 }
 
 -- The in-game route captures beside the maps, and how far the maps are from them (tools/compare_capture.lua's
@@ -244,70 +271,105 @@ end
 
 local better = {}
 local started = os.clock()
+
+-- The checks every route gets (see the top), on its plan (replaylib's result from planFn()). A step over the time
+-- budget is timed again on up to two more runs, and the fastest counts: on a busy desktop a step is sometimes
+-- descheduled part-way (28 ms once for a step that takes 1.3 ms).
+local function check(rt, planFn, name)
+	local r = planFn()
+	local worst = r.worstStep
+	for __ = 1, 2 do
+		if worst <= STEP_BUDGET_MS then
+			break
+		end
+		worst = math.min(worst, planFn().worstStep)
+	end
+	local names = {}
+	for __, town in ipairs(r.stops) do
+		table.insert(names, town.name)
+	end
+	if recording then
+		print(("RECORD %s stops %s"):format(name, table.concat(names, ", ")))
+	end
+	t.eq(table.concat(names, ", "), rt.stopsSeen, "stops")
+	t.ok(worst <= STEP_BUDGET_MS, ("slowest step %.2f ms (%s), budget %.0f"):format(worst,
+		tostring(r.alloc.worstKind), STEP_BUDGET_MS))
+	t.ok(r.alloc.max <= STEP_ALLOC_KB, ("most allocated in a step %.0f KB (%s), at most %.0f"):format(r.alloc.max,
+		tostring(r.alloc.maxKind), STEP_ALLOC_KB))
+	local plan = r.plan
+	if rt.expectFailure then
+		t.eq(plan.ok, false, "fails as recorded (now it plans: record a baseline)")
+		t.eq(plan.failure, rt.expectFailure, "failure")
+		return
+	end
+	t.ok(plan.ok, "plans: " .. tostring(plan.failure) .. " " .. table.concat(plan.failureTowns or {}, ", "))
+	local s = plan.summary
+	local sweep = 0
+	for __, v in ipairs(lib.sweep(plan)) do
+		sweep = math.max(sweep, v)
+	end
+	if recording then
+		print(("RECORD %s\n\t\tbase = { length = %.0f, estimate = %.0f, tight = %d, bridges = %d, bridgeLength = %.0f, tunnels = %d, tunnelLength = %.0f, sweep = %.0f, timeLost = %.1f } },"):format(
+			name, s.length, s.estimate, s.tightCurves, s.bridges, s.bridgeLength, s.tunnels, s.tunnelLength,
+			sweep, s.timeLost))
+	end
+	local below = lib.arcsBelow(plan, r.weights.minBuildRadius)
+	local list = {}
+	for __, arc in ipairs(below) do
+		table.insert(list, ("leg %d: %.0f m at (%.0f, %.0f)"):format(arc.leg, arc.radius, arc.a.x, arc.a.y))
+	end
+	t.eq(#below, rt.knownBelow or 0, "arcs below " .. r.weights.minBuildRadius .. " m: " .. table.concat(list, "; "))
+	local blocked = lib.blockedSamples(r)
+	t.eq(#blocked, rt.knownBlocked or 0, "samples on blocked cells")
+	-- The preview's arrows (100 m chords, at least 25 m: shorter ones crash the game).
+	for li, leg in ipairs(plan.legs) do
+		for __, a in ipairs(arrows.split(leg, 100, 25)) do
+			local d = math.sqrt((leg.samples[a.j].p.x - leg.samples[a.i].p.x) ^ 2
+				+ (leg.samples[a.j].p.y - leg.samples[a.i].p.y) ^ 2)
+			t.ok(d >= 25 - 1e-9, ("leg %d: a %.1f m preview arrow"):format(li, d))
+		end
+	end
+	local b = rt.base
+	noWorse("widest sweep of a leg (a loop or a hook?)", sweep, b.sweep, 0, SWEEP_SLACK)
+	noWorse("length", s.length, b.length, TOLERANCE.length)
+	noWorse("estimate", s.estimate, b.estimate, TOLERANCE.estimate)
+	noWorse("tight curves", s.tightCurves, b.tight, 0, TOLERANCE.tight)
+	noWorse("bridges and tunnels", s.bridges + s.tunnels, b.bridges + b.tunnels, 0, TOLERANCE.structures)
+	local structure = b.bridgeLength + b.tunnelLength
+	noWorse("bridge and tunnel length", s.bridgeLength + s.tunnelLength, structure, TOLERANCE.structureLength,
+		STRUCTURE_SLACK)
+	noWorse("seconds lost to tight curves", s.timeLost, b.timeLost, TOLERANCE.timeLost, TIME_SLACK)
+	if rt.maxTimeLost ~= nil then
+		t.ok(s.timeLost <= rt.maxTimeLost, ("seconds lost to tight curves %.1f, at most %.0f"):format(s.timeLost,
+			rt.maxTimeLost))
+	end
+	if rt.maxTight ~= nil then
+		t.ok(s.tightCurves <= rt.maxTight, ("tight curves %d, at most %d"):format(s.tightCurves, rt.maxTight))
+	end
+	if s.estimate < b.estimate * (1 - TOLERANCE.estimate) or s.length < b.length * (1 - TOLERANCE.length) then
+		table.insert(better, name)
+	end
+end
+
 for _, rt in ipairs(ROUTES) do
 	if rt.quick or full then
 		t.test("regression: " .. routeName(rt), function()
-			local r = lib.planOnMap(loadMap(rt.map), { from = rt.from, to = rt.to, mode = rt.mode, track = rt.track,
-				stops = rt.stops })
-			local names = {}
-			for __, town in ipairs(r.stops) do
-				table.insert(names, town.name)
-			end
-			if recording then
-				print(("RECORD %s stops %s"):format(routeName(rt), table.concat(names, ", ")))
-			end
-			t.eq(table.concat(names, ", "), rt.stopsSeen, "stops")
-			t.ok(r.worstStep <= STEP_BUDGET_MS, ("slowest step %.2f ms, budget %.0f"):format(r.worstStep, STEP_BUDGET_MS))
-			local plan = r.plan
-			if rt.expectFailure then
-				t.eq(plan.ok, false, "fails as recorded (now it plans: record a baseline)")
-				t.eq(plan.failure, rt.expectFailure, "failure")
-				return
-			end
-			t.ok(plan.ok, "plans: " .. tostring(plan.failure) .. " " .. table.concat(plan.failureTowns or {}, ", "))
-			local s = plan.summary
-			local sweep = 0
-			for __, v in ipairs(lib.sweep(plan)) do
-				sweep = math.max(sweep, v)
-			end
-			if recording then
-				print(("RECORD %s\n\t\tbase = { length = %.0f, estimate = %.0f, tight = %d, bridges = %d, bridgeLength = %.0f, tunnels = %d, tunnelLength = %.0f, sweep = %.0f, timeLost = %.1f } },"):format(
-					routeName(rt), s.length, s.estimate, s.tightCurves, s.bridges, s.bridgeLength, s.tunnels, s.tunnelLength,
-					sweep, s.timeLost))
-			end
-			local below = lib.arcsBelow(plan, r.weights.minBuildRadius)
-			local list = {}
-			for __, arc in ipairs(below) do
-				table.insert(list, ("leg %d: %.0f m at (%.0f, %.0f)"):format(arc.leg, arc.radius, arc.a.x, arc.a.y))
-			end
-			t.eq(#below, rt.knownBelow or 0, "arcs below " .. r.weights.minBuildRadius .. " m: " .. table.concat(list, "; "))
-			local blocked = lib.blockedSamples(r)
-			t.eq(#blocked, rt.knownBlocked or 0, "samples on blocked cells")
-			-- The preview's arrows (100 m chords, at least 25 m: shorter ones crash the game).
-			for li, leg in ipairs(plan.legs) do
-				for __, a in ipairs(arrows.split(leg, 100, 25)) do
-					local d = math.sqrt((leg.samples[a.j].p.x - leg.samples[a.i].p.x) ^ 2
-						+ (leg.samples[a.j].p.y - leg.samples[a.i].p.y) ^ 2)
-					t.ok(d >= 25 - 1e-9, ("leg %d: a %.1f m preview arrow"):format(li, d))
-				end
-			end
-			local b = rt.base
-			noWorse("widest sweep of a leg (a loop or a hook?)", sweep, b.sweep, 0, SWEEP_SLACK)
-			noWorse("length", s.length, b.length, TOLERANCE.length)
-			noWorse("estimate", s.estimate, b.estimate, TOLERANCE.estimate)
-			noWorse("tight curves", s.tightCurves, b.tight, 0, TOLERANCE.tight)
-			noWorse("bridges and tunnels", s.bridges + s.tunnels, b.bridges + b.tunnels, 0, TOLERANCE.structures)
-			local structure = b.bridgeLength + b.tunnelLength
-			noWorse("bridge and tunnel length", s.bridgeLength + s.tunnelLength, structure, TOLERANCE.structureLength,
-				STRUCTURE_SLACK)
-			noWorse("seconds lost to tight curves", s.timeLost, b.timeLost, TOLERANCE.timeLost, TIME_SLACK)
-			if rt.maxTimeLost ~= nil then
-				t.ok(s.timeLost <= rt.maxTimeLost, ("seconds lost to tight curves %.1f, at most %.0f"):format(s.timeLost,
-					rt.maxTimeLost))
-			end
-			if s.estimate < b.estimate * (1 - TOLERANCE.estimate) or s.length < b.length * (1 - TOLERANCE.length) then
-				table.insert(better, routeName(rt))
-			end
+			check(rt, function()
+				return lib.planOnMap(loadMap(rt.map), { from = rt.from, to = rt.to, mode = rt.mode, track = rt.track,
+					stops = rt.stops })
+			end, routeName(rt))
+		end)
+	end
+end
+
+-- The route captures planned as they are (lib.planCapture), on the save as it was then.
+if full then
+	for _, rt in ipairs(CAPTURE_ROUTES) do
+		t.test("regression: " .. rt.capture, function()
+			local c = lib.capture.load(mapsDir .. "/" .. rt.capture)
+			check(rt, function()
+				return lib.planCapture(c)
+			end, rt.capture)
 		end)
 	end
 end

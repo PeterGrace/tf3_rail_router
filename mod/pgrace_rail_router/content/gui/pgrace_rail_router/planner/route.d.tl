@@ -53,6 +53,8 @@ global record PgraceRailRouterRoute
 		-- tries. For the log.
 		searchRadius : number
 		searchExpansions : integer
+		-- The search cost of the path taken (grid.Search cost[0]).
+		searchCost : number
 		-- Path points kept, and arcs tightened, so that the smoothed track keeps to the ground the grid path chose:
 		-- inside the grid, off blocked cells, over water only where the path is, and with ground within 4 m of a
 		-- uniform slope across the path (no hills or hollows it went round). Never below weights.minBuildRadius
@@ -140,6 +142,17 @@ global record PgraceRailRouterRoute
 		cost : number
 	end
 
+	-- A re-siting candidate's leg being built to weigh the time it loses (with time priced): its path and search
+	-- cost, the platforms it keeps off (the candidate's in place), and its curves as simplified and being fitted.
+	-- Internal.
+	record ResiteLeg
+		path : {PgraceRailRouterGeo.Pt}
+		cost : number
+		taken : {integer : boolean}
+		simplified : Simplified
+		fitting : Fitting
+	end
+
 	-- Re-siting a station whose arriving leg loops, hooks round into it, or has a curve below the build minimum: the
 	-- station (index), the directions to try, the candidate (0: the current site, then index into dirs), what is being
 	-- done for it ("site": its site search; "in", "out": the searches for the legs arriving and leaving), the best so
@@ -152,10 +165,22 @@ global record PgraceRailRouterRoute
 		stage : string
 		finder : PgraceRailRouterStations.Finder
 		search : PgraceRailRouterGrid.Search
+		-- The leg found for the candidate being built (nil: none), and the candidate's leg in as weighed: its search's
+		-- cost, plus with time priced timeCost × the time it loses.
+		leg : ResiteLeg
+		-- With time priced, the radius try (index into route's searchRadii) of the leg being weighed, and its best
+		-- try so far (cost plus timeCost × the time it loses; nil before one is found).
+		try : integer
+		legBest : number
+		legBestTime : number
 		inCost : number
+		-- The seconds the candidate's leg in loses (with time priced), and the current site's two legs.
+		inTime : number
+		baseTime : number
 		others : {integer : boolean}
 		-- The stations' footprints with the candidate site in place (route.tl's footprints), for its legs' searches.
 		avoid : {integer : boolean}
+		-- The best candidate so far, and its legs' cost (weighed as inCost).
 		best : PgraceRailRouterStations.Site
 		bestCost : number
 		keep : LegTry
