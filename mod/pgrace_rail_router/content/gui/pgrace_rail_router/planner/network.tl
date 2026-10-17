@@ -12,9 +12,30 @@ function network.defaults() : Options
 	return { offset = 2.5, maxEdge = 250.0, chunkLength = 2000.0, tangent = "circle" }
 end
 
--- The track's height at s metres along the leg (linear between samples), and its grade there (the slope of the
--- sample interval it falls in; at a sample, the mean of the two either side, so edges meeting there agree).
-local function heightAt(leg : Leg, s : number) : number, number
+-- The grade at a node where the profile's grade changes from a to b. Each edge's cubic leaves the node at this grade
+-- and bends to its own chord's grade (a or b), overshooting that chord, on the far side from the node's grade, by a
+-- third of their difference. The mean of a and b is the smoothest, but where the steepest grade starts after a
+-- gentler one (common: the profile holds the grade limit for long stretches) the overshoot breaks the limit. So take
+-- the grade nearest the mean whose overshoots on both sides stay within `limit`, or the one that goes over it least
+-- where none does (a crest or hollow too sharp for any).
+local function nodeGrade(a : number, b : number, limit : number) : number
+	local mean = (a + b) / 2
+	local best, bestOver, bestOff = mean, math.huge, math.huge
+	for k = 0, 20 do
+		local m = a + (b - a) * k / 20
+		local over = math.max(0, math.abs(m) - limit, math.abs(a + (a - m) / 3) - limit,
+			math.abs(b + (b - m) / 3) - limit)
+		local off = math.abs(m - mean)
+		if over < bestOver - 1e-12 or (over < bestOver + 1e-12 and off < bestOff) then
+			best, bestOver, bestOff = m, over, off
+		end
+	end
+	return best
+end
+
+-- The track's height at s metres along the leg (linear between samples), and its grade there: the slope of the
+-- sample interval it falls in, or at a sample, nodeGrade of the two either side, so edges meeting there agree.
+local function heightAt(leg : Leg, s : number, limit : number) : number, number
 	local samples, z = leg.samples, leg.z
 	local n = #samples
 	if s <= samples[1].s then
@@ -28,16 +49,27 @@ local function heightAt(leg : Leg, s : number) : number, number
 			local h = z[i] + g * (s - a)
 			if math.abs(s - b) < 1e-6 and i + 1 < n then
 				local g2 = (z[i + 2] - z[i + 1]) / math.max(1e-9, samples[i + 2].s - b)
-				return z[i + 1], (g + g2) / 2
+				return z[i + 1], nodeGrade(g, g2, limit)
 			elseif math.abs(s - a) < 1e-6 and i > 1 then
 				local g0 = (z[i] - z[i - 1]) / math.max(1e-9, a - samples[i - 1].s)
-				return z[i], (g0 + g) / 2
+				return z[i], nodeGrade(g0, g, limit)
 			end
 			return h, g
 		end
 	end
 	local g = (z[n] - z[n - 1]) / math.max(1e-9, samples[n].s - samples[n - 1].s)
 	return z[n], g
+end
+
+-- The profile's steepest grade between samples (the leg's maxGrade, worked out here so a leg made by hand, as in the
+-- tests, needs no summary).
+local function steepestGrade(leg : Leg) : number
+	local steepest = 0.0
+	for i = 1, #leg.samples - 1 do
+		local g = (leg.z[i + 1] - leg.z[i]) / math.max(1e-9, leg.samples[i + 1].s - leg.samples[i].s)
+		steepest = math.max(steepest, math.abs(g))
+	end
+	return steepest
 end
 
 -- A point and unit direction on a piece, `d` metres from its start, offset `off` metres to the left.
@@ -74,20 +106,100 @@ end
 -- two longer ones (0.46 m on the regression maps), and span ends can fall as close to a piece's end; an edge that
 -- short is no use to the game.
 local MIN_EDGE = 0.5
+-- How far an edge's cubic may stray from the profile's height at a sample inside it (metres), and over the profile's
+-- steepest grade.
+local HEIGHT_TOLERANCE = 0.25
+local GRADE_TOLERANCE = 0.001
 
-function network.trackEdges(leg : Leg, legIndex : integer, side : number, options : Options) : {Edge}
-	local off = side * options.offset
-	local pieces = leg.pieces
-	-- Where each piece starts along the leg, and where the leg ends.
-	local starts : {number} = {}
-	local total = 0.0
-	for i, piece in ipairs(pieces) do
-		starts[i] = total
-		total = total + piece.length
+-- The piece s metres along the leg lies on: with `atEnd`, the one that reaches it (the earlier where two meet), else
+-- the one that begins at or before it (the later).
+local function pieceAt(starts : {number}, s : number, atEnd : boolean) : integer
+	local lo, hi = 1, #starts
+	while lo < hi do
+		local mid = math.floor((lo + hi + 1) / 2)
+		if (atEnd and starts[mid] < s - 1e-6) or (not atEnd and starts[mid] <= s + 1e-6) then
+			lo = mid
+		else
+			hi = mid - 1
+		end
 	end
+	return lo
+end
+
+-- The index of the first sample more than 1e-6 m past s (#samples + 1 if none).
+local function sampleAfter(samples : {PgraceRailRouterSmooth.Sample}, s : number) : integer
+	local lo, hi = 1, #samples + 1
+	while lo < hi do
+		local mid = math.floor((lo + hi) / 2)
+		if samples[mid].s > s + 1e-6 then
+			hi = mid
+		else
+			lo = mid + 1
+		end
+	end
+	return lo
+end
+
+-- One track's edge over s0..s1 of the centre line, at offset `off` (without its kind, track, leg or nodes).
+local function edgeOver(leg : Leg, starts : {number}, s0 : number, s1 : number, off : number, options : Options,
+		limit : number) : Edge
+	local pieces = leg.pieces
+	local i0, i1 = pieceAt(starts, s0, false), pieceAt(starts, s1, true)
+	local q0, d0 = along(pieces[i0], s0 - starts[i0], off)
+	local q1, d1 = along(pieces[i1], s1 - starts[i1], off)
+	-- Each piece's share of the edge, at its own rule. Where an edge runs over a piece end, its part on one side is
+	-- under MIN_EDGE; it may also cover several short pieces.
+	local tl = 0.0
+	for i = i0, i1 do
+		local share = math.min(s1, starts[i] + pieces[i].length) - math.max(s0, starts[i])
+		if share > 0 then
+			tl = tl + tangentLength(pieces[i], share, off, options.tangent)
+		end
+	end
+	local z0, g0 = heightAt(leg, s0, limit)
+	local z1, g1 = heightAt(leg, s1, limit)
+	return {
+		p0 = { x = q0.x, y = q0.y, z = z0 }, p1 = { x = q1.x, y = q1.y, z = z1 },
+		t0 = { x = d0.x * tl, y = d0.y * tl, z = g0 * tl }, t1 = { x = d1.x * tl, y = d1.y * tl, z = g1 * tl },
+		s0 = s0, s1 = s1,
+	}
+end
+
+-- Whether an edge's cubic follows the profile: its height within HEIGHT_TOLERANCE of every sample strictly inside it
+-- (the curve's parameter taken as proportional to s, as it nearly is with these tangents), and its grade, at 11
+-- points along it, no steeper than `limit` (plus GRADE_TOLERANCE).
+local function follows(leg : Leg, e : Edge, limit : number) : boolean
+	local samples = leg.samples
+	local k = sampleAfter(samples, e.s0)
+	while k <= #samples and samples[k].s < e.s1 - 1e-6 do
+		local u = (samples[k].s - e.s0) / (e.s1 - e.s0)
+		local u2, u3 = u * u, u * u * u
+		local z = (2 * u3 - 3 * u2 + 1) * e.p0.z + (u3 - 2 * u2 + u) * e.t0.z + (-2 * u3 + 3 * u2) * e.p1.z
+			+ (u3 - u2) * e.t1.z
+		if math.abs(z - leg.z[k]) > HEIGHT_TOLERANCE then
+			return false
+		end
+		k = k + 1
+	end
+	for m = 0, 10 do
+		local u = m / 10
+		local dh00, dh10, dh01, dh11 = 6 * u * u - 6 * u, 3 * u * u - 4 * u + 1, -6 * u * u + 6 * u, 3 * u * u - 2 * u
+		local dx = dh00 * e.p0.x + dh10 * e.t0.x + dh01 * e.p1.x + dh11 * e.t1.x
+		local dy = dh00 * e.p0.y + dh10 * e.t0.y + dh01 * e.p1.y + dh11 * e.t1.y
+		local dz = dh00 * e.p0.z + dh10 * e.t0.z + dh01 * e.p1.z + dh11 * e.t1.z
+		if math.abs(dz) > (limit + GRADE_TOLERANCE) * math.sqrt(dx * dx + dy * dy) then
+			return false
+		end
+	end
+	return true
+end
+
+-- Where the edges along a leg start and end (metres of centre line, as {s0, s1} pairs in order). They don't depend on
+-- the track, so the two tracks' edges pair up index by index.
+local function stretches(leg : Leg, starts : {number}, total : number, options : Options, limit : number) : {{number}}
 	-- Where edges must break: where one piece meets the next, and the spans' ends.
 	local cuts : {number} = {}
-	for i = 2, #pieces do
+	for i = 2, #starts do
 		table.insert(cuts, starts[i])
 	end
 	for __, span in ipairs(leg.spans) do
@@ -105,6 +217,55 @@ function network.trackEdges(leg : Leg, legIndex : integer, side : number, option
 		end
 	end
 	table.insert(breaks, total)
+	local list : {{number}} = {}
+	local samples = leg.samples
+	-- A stretch whose cubic strays from the profile (on either track: the tangents' lengths differ on curves) is split
+	-- at the sample inside it nearest its middle, and each half checked again. One with no sample inside can't follow
+	-- the profile better (the profile is straight there), and a cubic through a sharp change of grade at its end
+	-- overshoots it however short it is, so it is kept as it is.
+	local function refine(s0 : number, s1 : number)
+		local fits = follows(leg, edgeOver(leg, starts, s0, s1, options.offset, options, limit), limit)
+			and follows(leg, edgeOver(leg, starts, s0, s1, -options.offset, options, limit), limit)
+		local split : number = nil
+		if not fits then
+			local mid = (s0 + s1) / 2
+			local k = sampleAfter(samples, s0)
+			while k <= #samples and samples[k].s < s1 - 1e-6 do
+				local s = samples[k].s
+				if s >= s0 + MIN_EDGE and s <= s1 - MIN_EDGE
+						and (split == nil or math.abs(s - mid) < math.abs(split - mid)) then
+					split = s
+				end
+				k = k + 1
+			end
+		end
+		if split == nil then
+			table.insert(list, { s0, s1 })
+		else
+			refine(s0, split)
+			refine(split, s1)
+		end
+	end
+	for k = 1, #breaks - 1 do
+		local a, b = breaks[k], breaks[k + 1]
+		-- As many parts as keep edges within maxEdge.
+		local parts = math.max(1, math.ceil((b - a) / options.maxEdge - 1e-9))
+		for m = 0, parts - 1 do
+			refine(a + (b - a) * m / parts, a + (b - a) * (m + 1) / parts)
+		end
+	end
+	return list
+end
+
+function network.trackEdges(leg : Leg, legIndex : integer, side : number, options : Options) : {Edge}
+	-- Where each piece starts along the leg, and where the leg ends.
+	local starts : {number} = {}
+	local total = 0.0
+	for i, piece in ipairs(leg.pieces) do
+		starts[i] = total
+		total = total + piece.length
+	end
+	local limit = steepestGrade(leg)
 	local function kindAt(s : number) : string
 		for __, span in ipairs(leg.spans) do
 			if s >= span.s0 - 1e-6 and s < span.s1 - 1e-6 then
@@ -114,43 +275,10 @@ function network.trackEdges(leg : Leg, legIndex : integer, side : number, option
 		return "ground"
 	end
 	local edges : {Edge} = {}
-	-- The pieces an edge's start and end lie on; both only move forward, as the edges do.
-	local i0, i1 = 1, 1
-	for k = 1, #breaks - 1 do
-		local a, b = breaks[k], breaks[k + 1]
-		-- As many parts as keep edges within maxEdge.
-		local parts = math.max(1, math.ceil((b - a) / options.maxEdge - 1e-9))
-		for m = 0, parts - 1 do
-			local s0, s1 = a + (b - a) * m / parts, a + (b - a) * (m + 1) / parts
-			-- The start is on the piece that begins at or before it (the next one where two meet), the end on the
-			-- piece that reaches it (the earlier one where two meet).
-			while i0 < #pieces and starts[i0 + 1] <= s0 + 1e-6 do
-				i0 = i0 + 1
-			end
-			if i1 < i0 then
-				i1 = i0
-			end
-			while i1 < #pieces and starts[i1] + pieces[i1].length < s1 - 1e-6 do
-				i1 = i1 + 1
-			end
-			local q0, d0 = along(pieces[i0], s0 - starts[i0], off)
-			local q1, d1 = along(pieces[i1], s1 - starts[i1], off)
-			-- Each piece's share of the edge, at its own rule (an edge only spans two pieces by under MIN_EDGE).
-			local tl = 0.0
-			for i = i0, i1 do
-				local share = math.min(s1, starts[i] + pieces[i].length) - math.max(s0, starts[i])
-				if share > 0 then
-					tl = tl + tangentLength(pieces[i], share, off, options.tangent)
-				end
-			end
-			local z0, g0 = heightAt(leg, s0)
-			local z1, g1 = heightAt(leg, s1)
-			table.insert(edges, {
-				p0 = { x = q0.x, y = q0.y, z = z0 }, p1 = { x = q1.x, y = q1.y, z = z1 },
-				t0 = { x = d0.x * tl, y = d0.y * tl, z = g0 * tl }, t1 = { x = d1.x * tl, y = d1.y * tl, z = g1 * tl },
-				kind = kindAt((s0 + s1) / 2), track = side > 0 and 1 or 2, leg = legIndex, s0 = s0, s1 = s1,
-			})
-		end
+	for __, st in ipairs(stretches(leg, starts, total, options, limit)) do
+		local e = edgeOver(leg, starts, st[1], st[2], side * options.offset, options, limit)
+		e.kind, e.track, e.leg = kindAt((st[1] + st[2]) / 2), side > 0 and 1 or 2, legIndex
+		table.insert(edges, e)
 	end
 	return edges
 end
@@ -164,11 +292,12 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 		for __, list in ipairs(tracks) do
 			local previous : integer = nil
 			for __, e in ipairs(list) do
+				-- Nodes are copies, so a later change to an edge's end point (or to a node) doesn't move the other.
 				if previous == nil then
-					table.insert(net.nodes, e.p0)
+					table.insert(net.nodes, { x = e.p0.x, y = e.p0.y, z = e.p0.z })
 					previous = #net.nodes
 				end
-				table.insert(net.nodes, e.p1)
+				table.insert(net.nodes, { x = e.p1.x, y = e.p1.y, z = e.p1.z })
 				e.node0, e.node1 = previous, #net.nodes
 				previous = e.node1
 			end

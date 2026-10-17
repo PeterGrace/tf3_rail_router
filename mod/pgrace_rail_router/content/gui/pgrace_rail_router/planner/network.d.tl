@@ -32,7 +32,7 @@ global record PgraceRailRouterNetwork
 		first : integer
 		last : integer
 		leg : integer
-		-- Track metres in it (both tracks).
+		-- Centre-line metres × 2 (both tracks).
 		length : number
 	end
 

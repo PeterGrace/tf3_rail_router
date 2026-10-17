@@ -337,13 +337,66 @@ local function check(rt, planFn, name)
 			t.ok(d >= 25 - 1e-9, ("leg %d: a %.1f m preview arrow"):format(li, d))
 		end
 	end
-	-- The network the dry runs would send: no edge longer than allowed, none of (next to) no length.
+	-- The network the dry runs would send: no edge longer than allowed, none of (next to) no length; each edge's cubic
+	-- within 0.25 m of the profile at the samples inside it, and no steeper than the leg's steepest grade. Where the
+	-- profile's grade changes sharply at a sample, a smooth curve through it has to overshoot one side's grade, so an
+	-- edge with no sample inside (one the network can't split further) may go over by up to GRADE_OVERSHOOT (2.4
+	-- points at worst on these maps).
+	local GRADE_OVERSHOOT = 0.03
 	local net = network.build(plan, network.defaults())
 	local maxEdge = network.defaults().maxEdge
+	local tooHigh, tooSteep, worstOver, worstAt = 0, 0, 0, ""
 	for __, e in ipairs(net.edges) do
 		local len = math.sqrt((e.p1.x - e.p0.x) ^ 2 + (e.p1.y - e.p0.y) ^ 2)
 		t.ok(len > 0.5, ("leg %d: a %.2f m edge at s %.0f"):format(e.leg, len, e.s0))
 		t.ok(e.s1 - e.s0 <= maxEdge + 1e-6, "edge within maxEdge")
+		local leg = plan.legs[e.leg]
+		local inside = false
+		for k, sample in ipairs(leg.samples) do
+			if sample.s > e.s0 + 1e-6 and sample.s < e.s1 - 1e-6 then
+				inside = true
+				local u = (sample.s - e.s0) / (e.s1 - e.s0)
+				local u2, u3 = u * u, u * u * u
+				local z = (2 * u3 - 3 * u2 + 1) * e.p0.z + (u3 - 2 * u2 + u) * e.t0.z + (-2 * u3 + 3 * u2) * e.p1.z
+					+ (u3 - u2) * e.t1.z
+				if math.abs(z - leg.z[k]) > 0.25 + 1e-6 then
+					tooHigh = tooHigh + 1
+				end
+			end
+		end
+		for m = 0, 20 do
+			local u = m / 20
+			local dh00, dh10 = 6 * u * u - 6 * u, 3 * u * u - 4 * u + 1
+			local dh01, dh11 = -6 * u * u + 6 * u, 3 * u * u - 2 * u
+			local dx = dh00 * e.p0.x + dh10 * e.t0.x + dh01 * e.p1.x + dh11 * e.t1.x
+			local dy = dh00 * e.p0.y + dh10 * e.t0.y + dh01 * e.p1.y + dh11 * e.t1.y
+			local dz = dh00 * e.p0.z + dh10 * e.t0.z + dh01 * e.p1.z + dh11 * e.t1.z
+			local over = math.abs(dz) / math.sqrt(dx * dx + dy * dy) - leg.maxGrade
+			if over > (inside and 0.002 or GRADE_OVERSHOOT) then
+				tooSteep = tooSteep + 1
+				if over > worstOver then
+					worstOver, worstAt = over, ("leg %d, s %.0f-%.0f"):format(e.leg, e.s0, e.s1)
+				end
+			end
+		end
+	end
+	t.eq(tooHigh, 0, "samples where an edge strays over 0.25 m from the profile")
+	t.eq(tooSteep, 0, ("points where an edge is too steep (worst %.1f points over, %s)"):format(100 * worstOver,
+		worstAt))
+	-- A chunk never ends inside a bridge or tunnel: between two edges (of the left track) that aren't ground.
+	for k = 2, #net.chunks do
+		local c, previous = net.chunks[k], net.chunks[k - 1]
+		if c.leg == previous.leg then
+			local before
+			for i = previous.first, previous.last do
+				if net.edges[i].track == 1 then
+					before = net.edges[i]
+				end
+			end
+			local after = net.edges[c.first]
+			t.ok(before.kind == "ground" or after.kind == "ground",
+				("leg %d: a chunk cut at s %.0f, inside a %s"):format(c.leg, after.s0, after.kind))
+		end
 	end
 	t.ok(#net.chunks > 0, "some chunks")
 	local b = rt.base

@@ -56,6 +56,33 @@ local function hermite(e, u)
 	}
 end
 
+-- A right-turning arc of radius r from (ax, ay) heading +x, turning by `turn` radians.
+local function rightArc(ax, ay, r, turn)
+	local c = { x = ax, y = ay - r }
+	local b = { x = c.x + r * math.sin(turn), y = c.y + r * math.cos(turn) }
+	return { kind = "arc", a = { x = ax, y = ay }, b = b, length = r * turn, radius = r, centre = c, turn = -turn }
+end
+
+-- The edge's grade at parameter u: its height's rate of change over its rate in plan.
+local function grade(e, u)
+	local dh00, dh10, dh01, dh11 = 6 * u * u - 6 * u, 3 * u * u - 4 * u + 1, -6 * u * u + 6 * u, 3 * u * u - 2 * u
+	local function d(c)
+		return dh00 * e.p0[c] + dh10 * e.t0[c] + dh01 * e.p1[c] + dh11 * e.t1[c]
+	end
+	return d("z") / math.sqrt(d("x") ^ 2 + d("y") ^ 2)
+end
+
+-- Every edge's Hermite points (at u = 0, 0.05 .. 1) lie `radius` from `centre`, within `within` metres.
+local function onCircle(edges, centre, radius, within)
+	for __, e in ipairs(edges) do
+		for k = 0, 20 do
+			local p = hermite(e, k / 20)
+			local r = math.sqrt((p.x - centre.x) ^ 2 + (p.y - centre.y) ^ 2)
+			t.near(r, radius, within, ("on the circle at s %.1f-%.1f, u %.2f"):format(e.s0, e.s1, k / 20))
+		end
+	end
+end
+
 t.test("network: a straight is cut into edges no longer than maxEdge, offset to the left", function()
 	local o = network.defaults()
 	local edges = network.trackEdges(leg({ straight(0, 0, 600, 0) }), 1, 1, o)
@@ -131,6 +158,52 @@ t.test("network: a piece under half a metre long is no edge of its own", functio
 	t.near(last.p1.y, tiny.b.y + 200.3 * heading.y + 2.5 * heading.x, 1e-6, "at the last piece's end, offset")
 end)
 
+t.test("network: the left track of a right turn runs on the outside", function()
+	local a = rightArc(0, 0, 400, math.pi / 3)
+	local edges = network.trackEdges(leg({ a }), 1, 1, network.defaults())
+	t.ok(#edges >= 2, "a 419 m arc in edges of at most 250 m")
+	onCircle(edges, a.centre, 402.5, 0.05)
+end)
+
+t.test("network: an edge that runs 0.4 m of straight into an arc stays on the offset circle", function()
+	local a = arc(300, 0, 200, math.pi / 2)
+	-- The bridge starts 0.4 m before the arc: the arc's start is too close to be a node, so the first edge on the
+	-- bridge covers the 0.4 m of straight and the arc's first part.
+	local l = leg({ straight(0, 0, 300, 0), a },
+		{ { "ground", 0, 299.6 }, { "bridge", 299.6, 300 + a.length } })
+	local edges = network.trackEdges(l, 1, 1, network.defaults())
+	local onArc = {}
+	for __, e in ipairs(edges) do
+		if e.s1 > 300 then
+			table.insert(onArc, e)
+		end
+	end
+	t.near(onArc[1].s0, 299.6, 1e-9, "the first edge on the bridge starts before the arc")
+	-- The left track of a left turn: radius 197.5 (the straight's 0.4 m is within 0.001 m of that circle).
+	onCircle(onArc, a.centre, 197.5, 0.1)
+end)
+
+t.test("network: an edge follows a grade change inside it, and keeps within the grade", function()
+	local l = leg({ straight(0, 0, 250, 0) }, nil, { { 0, 10 }, { 100, 10 }, { 250, 16 } })
+	local edges = network.trackEdges(l, 1, 1, network.defaults())
+	t.ok(#edges > 1, "split where the grade changes")
+	for k, sample in ipairs(l.samples) do
+		for __, e in ipairs(edges) do
+			if sample.s >= e.s0 - 1e-9 and sample.s <= e.s1 + 1e-9 then
+				local z = hermite(e, (sample.s - e.s0) / (e.s1 - e.s0)).z
+				t.near(z, l.z[k], 0.25, ("height at s %.0f"):format(sample.s))
+			end
+		end
+	end
+	for __, e in ipairs(edges) do
+		for k = 0, 20 do
+			local g = grade(e, k / 20)
+			t.ok(math.abs(g) <= 0.04 + 1e-3, ("grade %.2f%% at s %.0f-%.0f, u %.2f, at most 4%%"):format(100 * g,
+				e.s0, e.s1, k / 20))
+		end
+	end
+end)
+
 local function plan(legs)
 	return { ok = true, legs = legs, stations = {}, platformLength = 160 }
 end
@@ -149,27 +222,34 @@ t.test("network: both tracks, edges joined through shared nodes", function()
 		local n0 = net.nodes[e.node0]
 		t.near(n0.x, e.p0.x, 1e-9, "node at the edge's start")
 		t.near(n0.y, e.p0.y, 1e-9, "node at the edge's start")
+		t.ok(not rawequal(n0, e.p0), "a node is a copy, not the edge's own end point")
 	end
 end)
 
 t.test("network: chunks of about chunkLength, never splitting a bridge", function()
 	local o = network.defaults()
 	o.chunkLength = 300
+	-- A 600 m bridge in three edges: a chunk cut after 300 m would fall inside it.
 	local l = leg({ straight(0, 0, 1000, 0) },
-		{ { "ground", 0, 250 }, { "bridge", 250, 450 }, { "ground", 450, 1000 } })
+		{ { "ground", 0, 100 }, { "bridge", 100, 700 }, { "ground", 700, 1000 } })
 	local net = network.build(plan({ l }), o)
 	t.ok(#net.chunks >= 2, "split into chunks")
 	local covered = 0
 	for k, c in ipairs(net.chunks) do
 		if k > 1 then
 			t.eq(c.first, net.chunks[k - 1].last + 1, "chunks follow each other")
+			-- The left track's last edge in the chunk before, and its first in this one (each chunk lists the left
+			-- track's edges first).
+			local before
+			for i = net.chunks[k - 1].first, net.chunks[k - 1].last do
+				if net.edges[i].track == 1 then
+					before = net.edges[i]
+				end
+			end
+			local after = net.edges[c.first]
+			t.ok(before.kind == "ground" or after.kind == "ground",
+				("a chunk cut at s %.0f, inside a %s"):format(after.s0, after.kind))
 		end
-		-- A chunk's edges: both tracks over the same stretch of the leg.
-		local lo, hi = math.huge, -math.huge
-		for i = c.first, c.last do
-			lo, hi = math.min(lo, net.edges[i].s0), math.max(hi, net.edges[i].s1)
-		end
-		t.ok(not (lo > 250 + 1e-6 and lo < 450 - 1e-6), "no chunk starts inside the bridge")
 		covered = covered + (c.last - c.first + 1)
 	end
 	t.eq(covered, #net.edges, "every edge in one chunk")
