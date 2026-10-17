@@ -256,7 +256,10 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 		return nil
 	end
 	local overWater = g.water[a] or g.water[b]
-	-- A knight move passes between two cells: both must be passable.
+	local length = g.cell * math.sqrt(d[1] * d[1] + d[2] * d[2])
+	local grade = math.abs(g.height[b] - g.height[a]) / length
+	-- A knight move passes between two cells: both must be passable, and the ground there (their mean height, at the
+	-- move's midpoint) counts towards its grade, or the move hops over a ridge one cell wide.
 	if math.abs(d[1]) + math.abs(d[2]) == 3 then
 		local m1 = grid.index(g, ax + math.floor(d[1] / 2), ay + math.floor(d[2] / 2))
 		local m2 = grid.index(g, ax + math.ceil(d[1] / 2), ay + math.ceil(d[2] / 2))
@@ -264,13 +267,13 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 			return nil
 		end
 		overWater = overWater or g.water[m1] or g.water[m2]
+		local hm = (g.height[m1] + g.height[m2]) / 2
+		grade = math.max(grade, math.abs(hm - g.height[a]) / (length / 2), math.abs(g.height[b] - hm) / (length / 2))
 	end
-	local length = g.cell * math.sqrt(d[1] * d[1] + d[2] * d[2])
 	local factor = 1.0
 	if overWater then
 		factor = w.bridgeFactor
 	else
-		local grade = math.abs(g.height[b] - g.height[a]) / length
 		if grade > w.maxGrade then
 			factor = 1 + w.slopePenalty * (grade - w.maxGrade) / w.maxGrade
 		end

@@ -414,8 +414,10 @@ local function clutteredGrid()
 end
 
 t.test("grid: a radius whose minimum straight fits in a cell turns as before the curve-aware search", function()
-	-- The path, cost and work from the search before turns were spaced for the radius.
-	local before = "0,9 1,8 2,7 3,7 4,8 6,7 8,6 10,7 11,8 12,9 14,8 16,9 17,8 18,7 20,8 21,9 23,10 24,9 26,8 28,9 29,9"
+	-- The path, cost and work from the one-step search (recorded again when knight moves started counting the ground
+	-- they pass over); a radius whose minimum straight is one cell or less must give exactly this.
+	local before = "0,9 1,8 2,7 3,7 4,8 5,7 7,6 8,5 10,6 11,7 12,6 13,5 14,5 15,5 17,4 18,4 19,5 20,6 21,7 22,7 23,8 "
+		.. "24,9 25,10 26,11 27,11 28,10 29,9"
 	for __, radius in ipairs({ 220, 250 }) do
 		local path, s = run(clutteredGrid(), { x = 0, y = 900 }, { x = 2900, y = 900 }, with({ minRadius = radius }))
 		local cells = {}
@@ -423,8 +425,8 @@ t.test("grid: a radius whose minimum straight fits in a cell turns as before the
 			table.insert(cells, ("%d,%d"):format(p.x / 100, p.y / 100))
 		end
 		t.eq(table.concat(cells, " "), before, radius .. ": path")
-		t.near(s.cost[0], 7653.7136120633877, 1e-9, radius .. ": cost")
-		t.eq(s.expansions, 1854, radius .. ": expansions")
+		t.near(s.cost[0], 10192.0728255635149, 1e-9, radius .. ": cost")
+		t.eq(s.expansions, 2931, radius .. ": expansions")
 	end
 end)
 
@@ -434,7 +436,7 @@ t.test("grid: the radius can be given apart from the weights", function()
 	local s = grid.startSearch(clutteredGrid(), { x = 0, y = 900 }, { x = 2900, y = 900 }, EAST, EAST, wide, 220)
 	while not grid.stepSearch(s, 1000) do end
 	t.eq(s.radius, 220, "radius")
-	t.near(s.cost[0], 7653.7136120633877, 1e-9, "as with the Cheapest radius")
+	t.near(s.cost[0], 10192.0728255635149, 1e-9, "as with the Cheapest radius")
 	t.ok(a == nil or sa.cost[0] >= s.cost[0] - 1e-9, "the wide radius never finds a cheaper path")
 end)
 
@@ -494,4 +496,21 @@ t.test("grid: the path's off-centre ends don't cut a blocked cell's corner", fun
 		end), ("segment %d clear: (%.0f, %.0f) to (%.0f, %.0f)"):format(i - 1, path[i - 1].x, path[i - 1].y,
 			path[i].x, path[i].y))
 	end
+end)
+
+t.test("grid: a knight move doesn't hop over a ridge one cell wide", function()
+	-- A wall of 100 m high cells across the middle row, open at the far west end: the search must go round, not
+	-- step over it from one side to the other between cell centres.
+	local g = grid.new(0, 0, 100, 21, 11)
+	for ix = 4, 21 do
+		g.height[grid.index(g, ix, 6)] = 100
+	end
+	local path = run(g, { x = 1500, y = 0 }, { x = 1500, y = 1000 }, with({ minRadius = 220 }))
+	t.ok(path ~= nil, "found")
+	for __, p in ipairs(path) do
+		local ix = math.floor(p.x / 100 + 0.5) + 1
+		local iy = math.floor(p.y / 100 + 0.5) + 1
+		t.ok(not (iy == 6 and ix >= 4), ("never on the wall (%d, %d)"):format(ix, iy))
+	end
+	t.ok(path[1].x > 0 and math.min(table.unpack((function() local xs = {} for __, p in ipairs(path) do xs[#xs + 1] = p.x end return xs end)())) <= 300, "went round the west end")
 end)

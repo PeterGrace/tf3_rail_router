@@ -127,6 +127,17 @@ for i, leg in ipairs(plan.legs) do
 		leg.length, leg.searchRadius, leg.searchExpansions, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves,
 		leg.blockedSamples, leg.guarded,
 		#arcs > 0 and (", tight arcs " .. table.concat(arcs, " ")) or ""))
+	for __, span in ipairs(leg.spans) do
+		if span.kind ~= "ground" then
+			local a, b
+			for __, sample in ipairs(leg.samples) do
+				if a == nil and sample.s >= span.s0 then a = sample end
+				if sample.s <= span.s1 then b = sample end
+			end
+			print(("    %s %.0f m from (%.0f, %.0f) to (%.0f, %.0f)"):format(span.kind, span.s1 - span.s0, a.p.x, a.p.y,
+				b.p.x, b.p.y))
+		end
+	end
 	for __, sample in ipairs(leg.samples) do
 		local ix, iy = grid.cellOf(g, sample.p)
 		if g.blocked[grid.index(g, ix, iy)] then
