@@ -77,6 +77,8 @@ end
 
 local record Work
 	stops : {Town}
+	-- The track type planned for (the plan's estimate is priced with the game's price for it when the plan is done).
+	track : TrackType
 	weights : PgraceRailRouterModes.Weights
 	platform : integer
 	-- The survey margin in use, and how many times the work was started over with a wider one.
@@ -178,16 +180,21 @@ local function planDetail(job : PgraceRailRouterRoute.Job) : string
 	return fill(_("leg {leg} of {legs}"), legs)
 end
 
+-- The track template built: the electrified variant when ticked and available in `year`, else the track type's own.
+local function templateFor(track : TrackType, electrified : boolean, year : integer) : string
+	if electrified and track.catenary ~= nil and (track.catenaryYearFrom == 0 or year >= track.catenaryYearFrom) then
+		return track.catenary
+	end
+	return track.name
+end
+
 -- The builder's settings for the window's choices: the track template (its electrified variant when ticked and
 -- available), its speed, the year, the bridge and tunnel types the game would pick (nil where none is available),
 -- the station's modules for the year's era (the station script's getEra), and whether streets the track collides with
 -- are level crossings. Main thread: reads the game's types.
 local function settingsFor(track : TrackType, electrified : boolean, year : integer, levelCrossings : boolean)
 		: PgraceRailRouterBuilder.Settings
-	local name = track.name
-	if electrified and track.catenary ~= nil and (track.catenaryYearFrom == 0 or year >= track.catenaryYearFrom) then
-		name = track.catenary
-	end
+	local name = templateFor(track, electrified, year)
 	local function structure(which : string) : PgraceRailRouterModes.StructureType
 		local ok, result = pcall(function() : PgraceRailRouterModes.StructureType
 			return modes.structureFor(survey.structureTypes(which), track.speed, year)
@@ -407,8 +414,8 @@ local function failureText(plan : Plan) : string
 	return _("Choose two different towns.")
 end
 
--- priceFactor scales the plan's estimate, made with the plain track's price, to the track to be built (its
--- electrified variant's price over the plain one's).
+-- priceFactor scales the plan's estimate, made with the track type's listed price, to what the game charges for
+-- the track to be built (pricesFor).
 local function resultRows(plan : Plan, priceFactor : number) : {TreeNodeId}
 	local rows : {TreeNodeId} = {}
 	local sum = plan.summary
@@ -462,6 +469,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local settingsState = react.useState(remembered) as ReactStateT<Settings>
 	local settings = settingsState:old()
 	local planState : ReactStateT<Plan> = react.useState(nil)
+	-- The game's price for a metre of double track, by track template (plain and electrified), dry-run at the plan's
+	-- first station when it's done; the estimate is scaled by it.
+	local priceState : ReactStateT<{string : number}> = react.useState({})
 	local generationState = react.useState(0) as ReactStateT<integer>
 	local showAllState = react.useState(rememberedShowAll) as ReactStateT<boolean>
 	local showState = react.useState(false) as ReactStateT<boolean>
@@ -502,6 +512,37 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		checkDoneState:set(nil)
 		checkState:set(nil)
 		checkErrorState:set(false)
+	end
+
+	-- The game's price per metre of the plan's track, plain and electrified (main thread: two dry runs, about a
+	-- millisecond each), at its first station along its direction; prices already known are kept.
+	local function pricesFor(track : TrackType, plan : Plan)
+		if track == nil or plan == nil or not plan.ok or #plan.stations == 0 then
+			return
+		end
+		local station = plan.stations[1]
+		local prices : {string : number} = {}
+		for name, price in pairs(priceState:old()) do
+			prices[name] = price
+		end
+		local year = currentYear(data.year)
+		for __, electrified in ipairs({ false, true }) do
+			local name = templateFor(track, electrified, year)
+			if prices[name] == nil then
+				local ok, price = pcall(function() : number
+					return builder.pricePerMetre(settingsFor(track, electrified, year, false),
+						{ x = station.site.centre.x, y = station.site.centre.y, z = station.z }, station.site.dir)
+				end)
+				if ok and price ~= nil then
+					prices[name] = price as number
+					debugPrint(LOG_PREFIX .. ("price of %s: %.1f a metre of double track (listed %.1f)"):format(name,
+						price as number, 2 * track.cost))
+				else
+					debugPrint(LOG_PREFIX .. "price of " .. name .. ": " .. tostring(price))
+				end
+			end
+		end
+		priceState:set(prices)
 	end
 
 	-- Every settings change drops the shown plan and any work in progress: a plan for other settings would mislead.
@@ -551,7 +592,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				table.insert(picked, candidate.town)
 			end
 		end
-		workRef:set({ stops = corridor.order(fromTown, toTown, picked), weights = modes.weights(settings.mode, track),
+		workRef:set({ stops = corridor.order(fromTown, toTown, picked), track = track,
+			weights = modes.weights(settings.mode, track),
 			platform = settings.platform, margin = SURVEY_MARGIN, retries = 0, slowestStepUs = {},
 			planUs = 0, planFrames = 0 })
 		resetCheck()
@@ -711,6 +753,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			generationState:set(nextGeneration)
 			resetCheck()
 			planState:set(plan)
+			pricesFor(work.track, plan)
 			workRef:set(nil)
 			progressState:set(nil)
 		else
@@ -1102,9 +1145,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			table.insert(body, textRow(failureText(plan), "font-scale-body"))
 		else
 			local priceFactor = 1.0
-			if electrified and track.catenaryCost ~= nil and track.cost > 0
-				and (track.catenaryYearFrom == 0 or data.year >= track.catenaryYearFrom) then
-				priceFactor = track.catenaryCost / track.cost
+			local perMetre = priceState:old()[templateFor(track, electrified, data.year)]
+			if perMetre ~= nil and track.cost > 0 then
+				priceFactor = perMetre / (2 * track.cost)
 			end
 			for __, row in ipairs(resultRows(plan, priceFactor)) do
 				table.insert(body, row)

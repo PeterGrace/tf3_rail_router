@@ -317,6 +317,33 @@ function builder.dryRun(proposal : SimpleProposal) : boolean, integer, {string},
 	return #messages == 0, cost, messages, us, pd
 end
 
+local PRICE_LENGTH = 100.0
+
+function builder.pricePerMetre(settings : Settings, at : Pt3, dir : PgraceRailRouterGeo.Pt) : number
+	local o = settings.network.offset
+	local left = { x = -dir.y * o, y = dir.x * o }
+	local t : Pt3 = { x = dir.x * PRICE_LENGTH, y = dir.y * PRICE_LENGTH, z = 0 }
+	local net : Network = { nodes = {}, edges = {}, chunks = {} }
+	for track = 1, 2 do
+		local side = track == 1 and 1 or -1
+		local p0 : Pt3 = { x = at.x + side * left.x, y = at.y + side * left.y, z = at.z }
+		local p1 : Pt3 = { x = p0.x + t.x, y = p0.y + t.y, z = at.z }
+		table.insert(net.nodes, p0)
+		table.insert(net.nodes, p1)
+		table.insert(net.edges, { node0 = #net.nodes - 1, node1 = #net.nodes, p0 = p0, p1 = p1, t0 = t, t1 = t,
+			kind = "ground", track = track, leg = 1, s0 = 0, s1 = PRICE_LENGTH })
+	end
+	local proposal = builder.chunkProposal(net, 1, 2, settings)
+	if proposal == nil then
+		return nil
+	end
+	local __, cost = builder.dryRun(proposal)
+	if cost == nil or cost <= 0 then
+		return nil
+	end
+	return cost / PRICE_LENGTH
+end
+
 function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) : Check
 	local clock = api.type.Clock.new()
 	local net = network.build(plan, settings.network)

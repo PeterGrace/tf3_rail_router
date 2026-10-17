@@ -103,6 +103,9 @@ global record PgraceRailRouterBuilder
 	-- The entities a dry run collided with, each once, with what each is and where. Empty when there are none or
 	-- they can't be read.
 	collisions : function(data : ProposalData) : {Collision}
+	-- The game's price for a metre of double track (settings.track, on the ground) at `at`: a 100 m straight along
+	-- `dir` dry-run there (its price whatever it collides with). nil if the dry run fails or prices it at nothing.
+	pricePerMetre : function(settings : Settings, at : PgraceRailRouterNetwork.Pt3, dir : PgraceRailRouterGeo.Pt) : number
 	-- A dry run: whether it's clean, the price, the error messages, its wall time in µs, and the raw ProposalData
 	-- (nil if the dry run threw).
 	dryRun : function(proposal : SimpleProposal) : boolean, integer, {string}, integer, ProposalData
