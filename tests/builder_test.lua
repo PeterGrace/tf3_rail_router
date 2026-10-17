@@ -1,13 +1,19 @@
 local t = ...
 local builder = t.requireTl("gui/pgrace_rail_router/builder.tl")
 
-local function hit(what)
-	return { entity = 1, what = what, x = 0, y = 0 }
+local function hit(what, node0, node1)
+	return { entity = 1, what = what, x = 0, y = 0, node0 = node0, node1 = node1 }
 end
 
 t.test("builder: streets collided with are level crossings", function()
 	t.eq(builder.levelCrossings({ "Collision" }, { hit("street") }), 1, "one street")
-	t.eq(builder.levelCrossings({ "Collision" }, { hit("street"), hit("street") }), 2, "two streets")
+	t.eq(builder.levelCrossings({ "Collision" }, { hit("street"), hit("street") }), 2, "two streets, nodes unknown")
+	t.eq(builder.levelCrossings({ "Collision" }, { hit("street", 1, 2), hit("street", 3, 4) }), 2, "two roads")
+	-- Bangor - Imperial Beach: the track crossed a road at the joint between two of its pieces.
+	t.eq(builder.levelCrossings({ "Collision" }, { hit("street", 1, 2), hit("street", 2, 3) }), 1,
+		"two pieces of one road, joined end to end")
+	t.eq(builder.levelCrossings({ "Collision" }, { hit("street", 1, 2), hit("street", 3, 4), hit("street", 2, 3) }), 1,
+		"three pieces, the joining one last")
 	t.eq(builder.levelCrossings({ "Collision" }, { hit("street"), hit("track"), hit("street") }), 2,
 		"with track hit too: the streets still count")
 end)

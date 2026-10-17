@@ -16,6 +16,9 @@ global record PgraceRailRouterBuilder
 		-- Where it is (its bounding box's centre, or an edge's middle); nil where it can't be read.
 		x : number
 		y : number
+		-- An edge's end nodes (streets and track); nil for anything else.
+		node0 : integer
+		node1 : integer
 	end
 
 	record Outcome
@@ -94,8 +97,8 @@ global record PgraceRailRouterBuilder
 	-- The station module's resource name as the module repository knows it: `name`, else the same with or without its
 	-- leading "::"; nil if neither is found.
 	resolveModule : function(name : string) : string
-	-- How many of a dry run's collisions are level crossings: the streets, where every message is a collision; 0
-	-- otherwise. A chunk all of whose collisions are these is clean. Pure.
+	-- How many level crossings a dry run's collisions make: the streets, pieces joined end to end counting once (a
+	-- crossing at a joint hits both), where every message is a collision; 0 otherwise. Pure.
 	levelCrossings : function(messages : {string}, collisions : {Collision}) : integer
 	-- The entities a dry run collided with, each once, with what each is and where. Empty when there are none or
 	-- they can't be read.

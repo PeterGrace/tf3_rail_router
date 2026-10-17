@@ -188,13 +188,35 @@ function builder.levelCrossings(messages : {string}, collisions : {Collision}) :
 			return 0
 		end
 	end
-	local streets = 0
-	for __, c in ipairs(collisions) do
+	-- Pieces of street that share a node are one road there: union-find over the nodes, then count the roots. A piece
+	-- whose nodes are unknown stands alone (a key of its own, below any entity id).
+	local parent : {integer : integer} = {}
+	local function root(n : integer) : integer
+		while parent[n] ~= nil do
+			n = parent[n]
+		end
+		return n
+	end
+	for i, c in ipairs(collisions) do
 		if c.what == "street" then
-			streets = streets + 1
+			local ra, rb = root(c.node0 or -i), root(c.node1 or -i)
+			if ra ~= rb then
+				parent[rb] = ra
+			end
 		end
 	end
-	return streets
+	local roads : {integer : boolean} = {}
+	local count = 0
+	for i, c in ipairs(collisions) do
+		if c.what == "street" then
+			local r = root(c.node0 or -i)
+			if not roads[r] then
+				roads[r] = true
+				count = count + 1
+			end
+		end
+	end
+	return count
 end
 
 local function has(entity : integer, ct : Engine.ComponentType) : boolean
@@ -250,7 +272,15 @@ function builder.collisions(data : ProposalData) : {Collision}
 			if e ~= nil and not seen[e] then
 				seen[e] = true
 				local x, y = whereIs(e)
-				table.insert(result, { entity = e, what = whatIs(e), x = x, y = y })
+				local c : Collision = { entity = e, what = whatIs(e), x = x, y = y }
+				pcall(function() : boolean
+					local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+					if edge ~= nil then
+						c.node0, c.node1 = edge.node0 as integer, edge.node1 as integer
+					end
+					return true
+				end)
+				table.insert(result, c)
 			end
 		end
 		return true
@@ -337,7 +367,13 @@ function builder.step(check : Check) : boolean
 		collisions = builder.collisions(data)
 		if not ok and item.kind == "chunk" and check.settings.levelCrossings then
 			crossings = builder.levelCrossings(messages, collisions)
-			if crossings > 0 and crossings == #collisions then
+			local others = 0
+			for __, c in ipairs(collisions) do
+				if c.what ~= "street" then
+					others = others + 1
+				end
+			end
+			if crossings > 0 and others == 0 then
 				ok, messages = true, {}
 			end
 		end
