@@ -55,6 +55,11 @@ local record Settings
 end
 
 -- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
+-- "Show all towns" in the stop list, kept until the game restarts.
+local rememberedShowAll = false
+-- Unticked candidates listed besides the ticked ones while the list is short.
+local EXTRA_STOPS = 5
+
 local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, ticked = {} }
 
 local record GameData
@@ -279,6 +284,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local settings = settingsState:old()
 	local planState : ReactStateT<Plan> = react.useState(nil)
 	local generationState = react.useState(0) as ReactStateT<integer>
+	local showAllState = react.useState(rememberedShowAll) as ReactStateT<boolean>
 	local showState = react.useState(false) as ReactStateT<boolean>
 	local progressState : ReactStateT<Progress> = react.useState(nil)
 	local errorState = react.useState(false) as ReactStateT<boolean>
@@ -642,7 +648,16 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	}))
 	if #candidates > 0 then
 		table.insert(body, textRow(_("Stops on the way:"), "font-scale-body"))
+		local on : {integer : boolean} = {}
 		for __, candidate in ipairs(candidates) do
+			on[candidate.town.id] = isTicked(candidate.town.id)
+		end
+		local showAll = showAllState:old()
+		local listed = candidates
+		if not showAll then
+			listed = corridor.visible(candidates, on, settings.ticked, EXTRA_STOPS)
+		end
+		for __, candidate in ipairs(listed) do
 			local id = candidate.town.id
 			-- A town (almost) on the direct line costs no detour worth a number.
 			local label = fill(_("{town} (on the way)"), { town = candidate.town.name })
@@ -669,6 +684,24 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				end,
 			})
 		end
+	end
+	if #candidates > 0 and (showAllState:old() or #candidates > EXTRA_STOPS) then
+		local expanded = showAllState:old()
+		local toggleLabel = expanded and _("Show fewer") or fill(_("Show all {count} towns"), { count = tostring(#candidates) })
+		table.insert(body, builtin.Button{
+			content = builtin.BoxLayout{
+				orientation = "HORIZONTAL",
+				children = {
+					builtin.ImageView{ path = expanded and "::/gui/builtin/combobox/arrow_down.tga"
+						or "::/gui/builtin/combobox/arrow_right.tga" },
+					builtin.TextView{ text = toggleLabel },
+				},
+			},
+			onClick = function()
+				rememberedShowAll = not expanded
+				showAllState:set(not expanded)
+			end,
+		})
 	end
 	table.insert(body, builtin.Button{
 		meta = { class = "primary" },

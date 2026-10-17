@@ -129,3 +129,16 @@ t.test("corridor: order of select's towns is select's order", function()
 	local stops = corridor.order(A, B, chosen)
 	t.eq(names(stops), "A " .. names(chosen) .. " B", "same order")
 end)
+
+t.test("corridor: visible keeps ticked and overridden towns plus the nearest few others", function()
+	local function cand(id, detour)
+		return { town = town(id, "T" .. id, 0, 0), detour = detour, along = id / 10 }
+	end
+	local list = { cand(1, 500), cand(2, 100), cand(3, 300), cand(4, 100), cand(5, 900), cand(6, 50) }
+	local shown = corridor.visible(list, { [5] = true }, { [6] = false }, 2)
+	local ids = {}
+	for _, c in ipairs(shown) do ids[#ids + 1] = c.town.id end
+	t.eq(table.concat(ids, ","), "2,4,5,6", "ticked 5, overridden 6, nearest unticked 2 and 4 (tie by id), route order")
+	t.eq(#corridor.visible(list, {}, {}, 0), 0, "nothing")
+	t.eq(#corridor.visible(list, {}, {}, 10), 6, "extra beyond the rest")
+end)
