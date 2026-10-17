@@ -103,6 +103,35 @@ global record PgraceRailRouterRoute
 		guard : PgraceRailRouterSmooth.Guard
 	end
 
+	-- A leg as built so far: its path, simplified and fitted, the radius it was searched for, and its search cost.
+	-- Internal.
+	record LegTry
+		path : {PgraceRailRouterGeo.Pt}
+		simplified : Simplified
+		fitted : PgraceRailRouterSmooth.Result
+		radius : number
+		cost : number
+	end
+
+	-- Re-siting a station whose arriving leg loops, hooks round into it, or has a curve below the build minimum: the
+	-- station (index), the directions to try, the candidate (0: the current site, then index into dirs), what is being
+	-- done for it ("site": its site search; "in", "out": the searches for the legs arriving and leaving), the best so
+	-- far and its cost, and the leg as built, to go back to. Internal.
+	record Resite
+		station : integer
+		dirs : {PgraceRailRouterGeo.Pt}
+		k : integer
+		site : PgraceRailRouterStations.Site
+		stage : string
+		finder : PgraceRailRouterStations.Finder
+		search : PgraceRailRouterGrid.Search
+		inCost : number
+		others : {integer : boolean}
+		best : PgraceRailRouterStations.Site
+		bestCost : number
+		keep : LegTry
+	end
+
 	-- Work in progress. The fields are internal.
 	record Job
 		input : Input
@@ -136,6 +165,11 @@ global record PgraceRailRouterRoute
 		-- A finished search's path, waiting for the next steps to build its leg: simplify it, fillet it, then sample
 		-- its heights.
 		path : {PgraceRailRouterGeo.Pt}
+		-- The search cost of path.
+		pathCost : number
+		-- A station being re-sited (nil: none), and the stations that have been (each at most once).
+		resite : Resite
+		resited : {integer : boolean}
 		simplified : Simplified
 		fitted : PgraceRailRouterSmooth.Result
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself

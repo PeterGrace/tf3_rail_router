@@ -487,6 +487,8 @@ local function walledStart(top, extra)
 				end
 			end
 			first = nil
+			-- Nor re-sited when a leg comes out with a curve below the build minimum.
+			job.resited = { true, true }
 		end
 		steps = steps + 1
 		assert(steps < 100000, "runaway")
@@ -771,4 +773,64 @@ t.test("route: the turning phase's steps stay within the site search's work budg
 	t.ok(route.plan(job).ok, "plans")
 	t.ok(turnSteps > 0, "turning searched")
 	t.ok(most <= 500 + 5 * 9 + 2, "most work in a turning step " .. most)
+end)
+
+-- Plans A to B on open ground with B's site forced, at the start of the legs, to face `dir` (as if the turning had
+-- kept a first site facing the wrong way). With resite false, B is never re-sited.
+local function forcedB(dir, resite)
+	local g = grid.new(-2000, -3000, 100, 91, 61)
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 5000, 0) }, weights = W,
+		platformLength = 160 })
+	local forced = false
+	while not route.step(job, 500) do
+		if job.phase == "legs" and not forced then
+			forced = true
+			local b = job.result.stations[2]
+			b.site = { centre = b.site.centre, dir = dir, distance = b.site.distance }
+			job.taken = {}
+			for __, station in ipairs(job.result.stations) do
+				local c, d = station.site.centre, station.site.dir
+				for o = -80, 80, 50 do
+					job.taken[grid.index(g, grid.cellOf(g, { x = c.x + d.x * o, y = c.y + d.y * o }))] = true
+				end
+			end
+			if not resite then
+				job.resited = { true, true }
+			end
+		end
+	end
+	return route.plan(job)
+end
+
+local function sweep(leg)
+	local h, lo, hi = 0, 0, 0
+	for __, piece in ipairs(leg.pieces) do
+		if piece.kind == "arc" then
+			h = h + piece.turn
+			lo, hi = math.min(lo, h), math.max(hi, h)
+		end
+	end
+	return math.deg(hi - lo)
+end
+
+t.test("route: a station facing back the way the line comes is re-sited, so the leg doesn't hook round into it", function()
+	-- B faces west, towards A: the line from A has to pass B and turn right round to enter it.
+	local west = { x = -1, y = 0 }
+	local hooked = forcedB(west, false)
+	t.ok(hooked.ok, "plans")
+	-- Turning right round: 180° and more, or a hairpin below the build minimum.
+	t.ok(sweep(hooked.legs[1]) >= 170 or hooked.legs[1].minRadius < W.minBuildRadius,
+		"without re-siting it hooks: " .. sweep(hooked.legs[1]) .. "°, " .. hooked.legs[1].minRadius .. " m")
+	local plan = forcedB(west, true)
+	t.ok(plan.ok, "plans")
+	t.ok(plan.stations[2].site.dir.x > 0.5, "B faces along the line: " .. plan.stations[2].site.dir.x)
+	t.ok(sweep(plan.legs[1]) < 90, "no hook: " .. sweep(plan.legs[1]))
+	t.ok(plan.legs[1].minRadius >= W.minBuildRadius, "buildable: " .. plan.legs[1].minRadius)
+	t.ok(plan.legs[1].length < hooked.legs[1].length, "shorter")
+end)
+
+t.test("route: a station facing the right way is kept when its leg is fine", function()
+	local plan = forcedB({ x = 1, y = 0 }, true)
+	t.ok(plan.ok, "plans")
+	t.near(plan.stations[2].site.dir.x, 1, 1e-9, "unchanged")
 end)
