@@ -24,22 +24,25 @@ global record PgraceRailRouterGrid
 	-- be stepped once a newer one has started, nor its path taken). Made once per grid and reused, so a search
 	-- allocates almost nothing: kept in tables of its own, its states' tables doubled as it grew, a step at a time,
 	-- each doubling allocating megabytes at once (up to 1.5 MB in one step on desktop Lua; the game's Lua 5.2 pays a
-	-- step's garbage collection debt, as much work as it allocated, at its next allocation). Per grid row (a page,
-	-- made when the row's first state is reached): for each of its states ((ix - 1) * 16 + k), the id of the search
-	-- that last reached it (stamp), and that search's cost and parent there (0: none). Internal.
+	-- step's garbage collection debt, as much work as it allocated, at its next allocation). In pages of 16 cells
+	-- along a row (made when a search first reaches one of their states): for each of a page's states (cell, then
+	-- arriving direction), the id of the search that last reached it (stamp), and that search's cost and parent
+	-- there (0: none). Internal.
 	record Store
 		-- Ids of the latest search and the next one.
 		current : integer
 		nextId : integer
-		-- States per page: nx * 16.
+		-- States per page (16 cells × 16 directions), and pages per grid row.
 		pageSize : integer
+		blocksPerRow : integer
 		stamp : {{integer}}
 		cost : {{number}}
 		parent : {{integer}}
 		heap : {integer}
 		heapF : {number}
-		-- The flood fill's: per cell, the id of the search whose fill has queued it; and its queue.
-		fillStamp : {integer}
+		-- The flood fill's: per grid row (made when first reached) and cell, the id of the search whose fill has
+		-- queued it; and its queue.
+		fillStamp : {{integer}}
 		fillQueue : {integer}
 	end
 

@@ -213,20 +213,33 @@ local function cellXY(g : Grid, cell : integer) : integer, integer
 	return (cell - 1) % g.nx + 1, math.floor((cell - 1) / g.nx) + 1
 end
 
+-- Cells along a row per page of the store: a page holds BLOCK × 16 states (a 16-cell stretch of a row, every
+-- arriving direction), so a search makes pages only where it goes, a few KB each.
+local BLOCK = 16
+
 -- The grid's store (see Store), made on its first search.
 local function storeOf(g : Grid) : Store
 	if g.store == nil then
-		local fillStamp : {integer} = {}
-		for i = 1, g.nx * g.ny do
-			fillStamp[i] = 0
-		end
-		g.store = { current = 0, nextId = 1, pageSize = g.nx * NDIRS, stamp = {}, cost = {}, parent = {}, heap = {},
-			heapF = {}, fillStamp = fillStamp, fillQueue = {} }
+		g.store = { current = 0, nextId = 1, pageSize = BLOCK * NDIRS, blocksPerRow = math.ceil(g.nx / BLOCK),
+			stamp = {}, cost = {}, parent = {}, heap = {}, heapF = {}, fillStamp = {}, fillQueue = {} }
 	end
 	return g.store
 end
 
--- The store's page for grid row p, made (every state unreached) if it isn't yet.
+-- The fill's stamps for grid row iy, made (none queued) if they aren't yet.
+local function fillRow(st : Store, nx : integer, iy : integer) : {integer}
+	local row = st.fillStamp[iy]
+	if row == nil then
+		row = {}
+		for i = 1, nx do
+			row[i] = 0
+		end
+		st.fillStamp[iy] = row
+	end
+	return row
+end
+
+-- The store's page p, made (every state unreached) if it isn't yet; its stamps.
 local function page(st : Store, p : integer) : {integer}
 	local stamp = st.stamp[p]
 	if stamp == nil then
@@ -241,16 +254,27 @@ local function page(st : Store, p : integer) : {integer}
 	return stamp
 end
 
--- A state's cost so far, or nil if the search hasn't reached it. States in the store, by page (grid row) and offset
--- in it; the finish, negative ids and a finished search's copy, in s.cost.
+-- Where the store keeps the state of cell (ix, iy) arriving in direction k: its page and the offset in it.
+local function slotXY(st : Store, ix : integer, iy : integer, k : integer) : integer, integer
+	local x0 = ix - 1
+	local b = math.floor(x0 / BLOCK)
+	return (iy - 1) * st.blocksPerRow + b + 1, (x0 - b * BLOCK) * NDIRS + k
+end
+
+local function slot(s : Search, node : integer) : integer, integer
+	local ix, iy = cellXY(s.g, cellOfNode(node))
+	return slotXY(s.store, ix, iy, dirOfNode(node))
+end
+
+-- A state's cost so far, or nil if the search hasn't reached it. States in the store (see slot); the finish,
+-- negative ids and a finished search's copy, in s.cost.
 local function costOf(s : Search, node : integer) : number
 	local st = s.store
 	if node <= 0 or st == nil then
 		return s.cost[node]
 	end
-	local p = math.floor((node - 1) / st.pageSize) + 1
+	local p, o = slot(s, node)
 	local stamp = st.stamp[p]
-	local o = node - (p - 1) * st.pageSize
 	if stamp == nil or stamp[o] ~= s.id then
 		return nil
 	end
@@ -263,9 +287,8 @@ local function parentOf(s : Search, node : integer) : integer
 	if node <= 0 or st == nil then
 		return s.parent[node]
 	end
-	local p = math.floor((node - 1) / st.pageSize) + 1
+	local p, o = slot(s, node)
 	local stamp = st.stamp[p]
-	local o = node - (p - 1) * st.pageSize
 	if stamp == nil or stamp[o] ~= s.id then
 		return nil
 	end
@@ -283,8 +306,7 @@ local function setState(s : Search, node : integer, c : number, par : integer)
 		s.cost[node], s.parent[node] = c, par
 		return
 	end
-	local p = math.floor((node - 1) / st.pageSize) + 1
-	local o = node - (p - 1) * st.pageSize
+	local p, o = slot(s, node)
 	page(st, p)[o] = s.id
 	st.cost[p][o], st.parent[p][o] = c, par or 0
 end
@@ -435,7 +457,8 @@ end
 local function fillStep(s : Search, budget : integer) : integer
 	local g = s.g
 	local nx, ny, blocked, avoid = g.nx, g.ny, g.blocked, s.avoid
-	local seen, queue, id = s.store.fillStamp, s.fillQueue, s.id
+	local st, queue, id = s.store, s.fillQueue, s.id
+	local seen = st.fillStamp
 	local head, tail = s.fillHead, s.fillTail
 	while budget > 0 and head <= tail do
 		local a = queue[head]
@@ -452,7 +475,8 @@ local function fillStep(s : Search, budget : integer) : integer
 			local bx, by = ax + dx, ay + dy
 			if bx >= 1 and bx <= nx and by >= 1 and by <= ny then
 				local b = (by - 1) * nx + bx
-				if seen[b] ~= id and not blocked[b] and not avoid[b] then
+				local row = seen[by] or fillRow(st, nx, by)
+				if row[bx] ~= id and not blocked[b] and not avoid[b] then
 					local open = true
 					-- A knight move passes between two cells: both must be passable.
 					if dx * dx + dy * dy == 5 then
@@ -465,7 +489,7 @@ local function fillStep(s : Search, budget : integer) : integer
 							s.filling = false
 							return budget
 						end
-						seen[b] = id
+						row[bx] = id
 						tail = tail + 1
 						queue[tail] = b
 					end
@@ -666,8 +690,9 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 		if s.goalCells[e.cell] ~= nil then
 			s.filling = false
 		end
-		if st.fillStamp[e.cell] ~= s.id then
-			st.fillStamp[e.cell] = s.id
+		local row = fillRow(st, g.nx, e.y)
+		if row[e.x] ~= s.id then
+			row[e.x] = s.id
 			s.fillTail = s.fillTail + 1
 			s.fillQueue[s.fillTail] = e.cell
 		end
@@ -855,7 +880,7 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 	local g, w = s.g, s.w
 	local cost = s.cost
 	local st, id = s.store, s.id
-	local stampPages, costPages, parentPages = st.stamp, st.cost, st.parent
+	local stampPages, costPages, parentPages, blocksPerRow = st.stamp, st.cost, st.parent, st.blocksPerRow
 	-- A backstop for goals that only the turn limit cuts off: by then the search has gone far past any sensible path.
 	local maxTotal = math.max(20000, MAX_EXPANSIONS_PER_CELL * g.nx * g.ny)
 	while budget > 0 do
@@ -990,12 +1015,15 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 								push(s, nb, nc + heuristic(s, bx, by) + turnBound(s, k))
 							end
 						else
-							-- In the store: its page is row by, at (bx - 1) * 16 + k.
-							local stamp = stampPages[by] or page(st, by)
-							local o = (bx - 1) * NDIRS + k
-							local costs = costPages[by]
+							-- In the store (slotXY).
+							local x0 = bx - 1
+							local blk = math.floor(x0 / BLOCK)
+							local p = (by - 1) * blocksPerRow + blk + 1
+							local o = (x0 - blk * BLOCK) * NDIRS + k
+							local stamp = stampPages[p] or page(st, p)
+							local costs = costPages[p]
 							if stamp[o] ~= id or nc < costs[o] - EPSILON then
-								stamp[o], costs[o], parentPages[by][o] = id, nc, node
+								stamp[o], costs[o], parentPages[p][o] = id, nc, node
 								push(s, nb, nc + heuristic(s, bx, by) + turnBound(s, k))
 							end
 						end
