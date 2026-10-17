@@ -245,6 +245,9 @@ global record PgraceRailRouterRoute
 		taken : {integer : boolean}
 		-- The most progress has shown so far (route.progress never goes back).
 		shown : number
+		-- Steps taken (route.step), and the last step route.progress crept on at (once a step).
+		steps : integer
+		creptAt : integer
 		result : Plan
 	end
 

@@ -84,6 +84,12 @@ local MAX_RADIUS_EXTRA = 0.1
 -- the line came down past the station and turned back up into it; South Valley on PottstownTown: 261°). Ordinary
 -- legs on the regression maps swing at most 192°.
 local SWEEP_LIMIT = 200.0
+-- While a leg's work stands still, the progress bar creeps this share of the rest of the way to the plan's end each
+-- step, up to CREEP_REACH of it (see route.progress). On New Game's Alliance → Aloha (Fastest), 0.0005 and 0.97 ran
+-- up to 96% with a third of the work left and then stood still for 800 steps; these keep it moving, at most 500 steps
+-- (under half a second in-game) on one percent.
+local CREEP_PER_STEP = 0.0003
+local CREEP_REACH = 0.99
 -- How many finished searches a job keeps (see searchFor).
 local SEARCH_CACHE_SIZE = 4
 -- With time priced (Fastest), a leg whose curves lose more than this many seconds (speed.tl) has the station nearer
@@ -1126,6 +1132,7 @@ end
 
 function route.step(job : Job, maxExpansions : integer) : boolean
 	local input, plan = job.input, job.result
+	job.steps = (job.steps or 0) + 1
 	if job.phase == "done" then
 		return true
 	end
@@ -1439,7 +1446,21 @@ function route.progress(job : Job) : number
 	end
 	-- Re-siting a station builds legs again (the one before it too, where it is the one the leg leaves from): the
 	-- share shown holds where it was until the work catches up, rather than fall back.
-	job.shown = math.max(job.shown or 0, math.min(1, done / total))
+	local share = math.min(1, done / total)
+	-- Work whose length can't be told in advance (re-siting a station: up to seven candidate sites, a rejected one's
+	-- search running to 68,000 expansions; a radius try that finds no path) leaves the work's share standing still,
+	-- for seconds on New Game's Alliance → Aloha (Fastest). In the legs phase the bar creeps on meanwhile, once a step,
+	-- towards the plan's end, but never more than CREEP_REACH of the way from the work's own share: legs' shares are
+	-- equal, but one leg's work can be a hundred times another's, so the bar can't know how near the end really is.
+	-- (The window says what is being done beside it.)
+	local shown = math.max(job.shown or 0, share)
+	local steps = job.steps or 0
+	if job.phase == "legs" and steps > (job.creptAt or 0) then
+		job.creptAt = steps
+		local cap = share + (1 - share) * CREEP_REACH
+		shown = math.max(shown, math.min(cap, shown + (1 - shown) * CREEP_PER_STEP))
+	end
+	job.shown = shown
 	return job.shown
 end
 

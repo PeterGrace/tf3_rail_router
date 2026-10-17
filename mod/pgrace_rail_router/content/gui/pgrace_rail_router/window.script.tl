@@ -105,6 +105,8 @@ local record Progress
 	percent : integer
 	-- A retry with a wider survey after "no path".
 	widening : boolean
+	-- While planning, what is being done (see planDetail): the bar alone can stand still for seconds.
+	detail : string
 end
 
 local nextGeneration = 0
@@ -129,6 +131,24 @@ local function fill(template : string, values : {string : string}) : string
 	return (template:gsub("{(%w+)}", function(key : string) : string
 		return values[key] or ("{" .. key .. "}")
 	end))
+end
+
+-- What the planner is doing, shown beside its progress: its share of the work can stand still for seconds where a
+-- leg is much harder than the others (re-siting a station, a radius that finds no path).
+local function planDetail(job : PgraceRailRouterRoute.Job) : string
+	local kind = route.stepKind(job)
+	if kind == "sites" then
+		return _("finding station sites")
+	elseif kind == "scout" or kind == "turn" then
+		return _("lining up the stations")
+	elseif kind == "done" then
+		return nil
+	end
+	local legs = { leg = tostring(job.legIndex), legs = tostring(#job.input.stops - 1) }
+	if kind == "resite" then
+		return fill(_("leg {leg} of {legs}, trying other station sites"), legs)
+	end
+	return fill(_("leg {leg} of {legs}"), legs)
 end
 
 local function textRow(text : string, class : string) : TreeNodeId
@@ -370,9 +390,14 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local function setProgress(work : Work, stage : string, share : number)
 		local percent = math.floor(100 * share)
 		local widening = work.retries > 0
+		local detail : string = nil
+		if stage == "plan" and work.routeJob ~= nil then
+			detail = planDetail(work.routeJob)
+		end
 		local old = progressState:old()
-		if old == nil or old.stage ~= stage or old.percent ~= percent or old.widening ~= widening then
-			progressState:set({ stage = stage, percent = percent, widening = widening })
+		if old == nil or old.stage ~= stage or old.percent ~= percent or old.widening ~= widening
+				or old.detail ~= detail then
+			progressState:set({ stage = stage, percent = percent, widening = widening, detail = detail })
 		end
 	end
 
@@ -752,7 +777,11 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			-- The same words for a retry's survey and its planning: the player only needs to know it's trying wider.
 			template = _("Widening the search… {percent}%")
 		end
-		table.insert(body, textRow(fill(template, { percent = tostring(progress.percent) }), "font-scale-annotation"))
+		local line = fill(template, { percent = tostring(progress.percent) })
+		if progress.detail ~= nil then
+			line = fill(_("{progress} · {detail}"), { progress = line, detail = progress.detail })
+		end
+		table.insert(body, textRow(line, "font-scale-annotation"))
 	end
 	if errorState:old() then
 		table.insert(body, textRow(_("Planning failed (see log)"), "font-scale-body"))
