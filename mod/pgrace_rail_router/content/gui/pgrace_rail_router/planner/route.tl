@@ -178,7 +178,7 @@ end
 -- The leg's search starts or ends at the last, and the track runs straight to it, so it is pulled back (half a cell
 -- at a time, at most to the approach point) until that straight is inside the grid and clear of blocked cells and
 -- other stations' platforms (`taken`). Where it's pulled back, the curve beyond may be tighter than minRadius (and
--- where that's below what can be built, fitLeg gives the extension up).
+-- where that's below what can be built, stepFit gives the extension up).
 local function stationEnds(input : Input, station : Station, forward : boolean, taken : {integer : boolean},
 		other : Station, radius ?: number) : Pt, Pt, Pt
 	local g = input.grid
@@ -473,7 +473,7 @@ local function startResite(job : Job, i : integer)
 
 		bestCost = math.huge, best = station.site, keep = { path = job.path, simplified = job.simplified,
 		fitted = job.fitted, radius = job.searchRadius, cost = job.pathCost } }
-	job.path, job.simplified, job.fitted, job.heights = nil, nil, nil, nil
+	job.path, job.simplified, job.fitting, job.fitted, job.heights = nil, nil, nil, nil, nil
 end
 
 -- One step of re-siting (see startResite): part of a candidate's site search, starting or running one of its legs'
@@ -609,17 +609,6 @@ local function fail(job : Job, failure : string, towns : {string}) : boolean
 	return true
 end
 
--- The point nearest to p on the segment a–b.
-local function project(p : Pt, a : Pt, b : Pt) : Pt
-	local ab = geo.sub(b, a)
-	local l2 = geo.dot(ab, ab)
-	if l2 < 1e-18 then
-		return a
-	end
-	local f = math.max(0, math.min(1, geo.dot(geo.sub(p, a), ab) / l2))
-	return geo.add(a, geo.scale(ab, f))
-end
-
 -- Whether track at a point stays on the kind of ground the grid path had, so that smoothing doesn't take it where
 -- the search chose not to go. clear(p, from, to) takes q, the point of the path line path[from..to] nearest to p,
 -- and is true when p is inside the grid and off blocked cells, over water only where q is, and its ground is within
@@ -640,6 +629,10 @@ local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean})
 	end
 	-- Checks come in runs along a piece, so the last answer is a good first guess for the next.
 	local hint = 1
+	-- The nearest point of the path line and its mirror image, reused: the guard is asked thousands of times per
+	-- leg, and a table per call made a leg's curves allocate most of a megabyte.
+	local qp : Pt = { x = 0, y = 0 }
+	local mirror : Pt = { x = 0, y = 0 }
 	local function nearest(p : Pt, from : integer, to : integer) : integer
 		from, to = math.max(1, from), math.min(n, to)
 		if hint < from or hint > to then
@@ -677,23 +670,34 @@ local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean})
 		if footprint ~= nil and footprint[cell] and k > END_POINTS and k <= n - END_POINTS then
 			return false
 		end
-		-- The nearest point of the path line lies on a segment either side of its nearest vertex.
-		local q = path[k]
-		local qd = geo.dist(p, q)
-		for __, m in ipairs({ k - 1, k + 1 }) do
+		-- The nearest point of the path line lies on a segment either side of its nearest vertex (as project, in
+		-- plain arithmetic).
+		local px, py = p.x, p.y
+		local v = path[k]
+		local qx, qy = v.x, v.y
+		local qd = math.sqrt((px - qx) * (px - qx) + (py - qy) * (py - qy))
+		for m = k - 1, k + 1, 2 do
 			if m >= from and m <= to then
-				local c = project(p, path[k], path[m])
-				local cd = geo.dist(p, c)
+				local w = path[m]
+				local abx, aby = w.x - v.x, w.y - v.y
+				local l2 = abx * abx + aby * aby
+				local cx, cy = v.x, v.y
+				if l2 >= 1e-18 then
+					local f = math.max(0, math.min(1, ((px - v.x) * abx + (py - v.y) * aby) / l2))
+					cx, cy = v.x + abx * f, v.y + aby * f
+				end
+				local cd = math.sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy))
 				if cd < qd then
-					q, qd = c, cd
+					qx, qy, qd = cx, cy, cd
 				end
 			end
 		end
-		if g.water[cell] and not grid.waterAt(g, q) then
+		qp.x, qp.y = qx, qy
+		if g.water[cell] and not grid.waterAt(g, qp) then
 			return false
 		end
-		local mirror = geo.sub(geo.scale(q, 2), p)
-		local bend = grid.heightAt(g, p) - 2 * grid.heightAt(g, q) + grid.heightAt(g, mirror)
+		mirror.x, mirror.y = qx * 2 - px, qy * 2 - py
+		local bend = grid.heightAt(g, p) - 2 * grid.heightAt(g, qp) + grid.heightAt(g, mirror)
 		return math.abs(bend) <= MAX_GROUND_DIFF
 	end
 end
@@ -709,13 +713,17 @@ local function simplifyLeg(input : Input, a : Station, b : Station, path : {Pt},
 	-- and buildings it went round), checked every quarter cell.
 	local clear = pathGuard(g, path, footprint)
 	local step = g.cell / 4
+	local probe : Pt = { x = 0, y = 0 }
 	local function straightOnPath(i : integer, j : integer) : boolean
 		local from, to = path[i], path[j]
 		local length = geo.dist(from, to)
-		local dir = geo.scale(geo.sub(to, from), 1 / math.max(length, 1e-9))
+		local scale = 1 / math.max(length, 1e-9)
+		local dx, dy = (to.x - from.x) * scale, (to.y - from.y) * scale
 		local d = 0.0
 		while true do
-			if not clear(geo.add(from, geo.scale(dir, math.min(d, length))), i, j) then
+			local along = math.min(d, length)
+			probe.x, probe.y = from.x + dx * along, from.y + dy * along
+			if not clear(probe, i, j) then
 				return false
 			end
 			if d >= length then
@@ -747,7 +755,10 @@ local function simplifyLeg(input : Input, a : Station, b : Station, path : {Pt},
 	return { pts = pts, guard = guard }
 end
 
-local function fitLeg(input : Input, simplified : PgraceRailRouterRoute.Simplified) : PgraceRailRouterSmooth.Result
+-- Fits a leg's curves to its simplified path, a stage per step (see the stages below): nil until the leg is fitted,
+-- then the fitted leg. `fitting` holds the stages' progress, from { stage = 1 }.
+local function stepFit(input : Input, simplified : PgraceRailRouterRoute.Simplified,
+		fitting : PgraceRailRouterRoute.Fitting) : PgraceRailRouterSmooth.Result
 	local w = input.weights
 	local pts, guard = simplified.pts, simplified.guard
 	-- freeA and freeB give up a's or b's extension point: the curve there moves to the approach point (the extension
@@ -786,52 +797,98 @@ local function fitLeg(input : Input, simplified : PgraceRailRouterRoute.Simplifi
 	end
 	-- Samples on blocked cells in each half of a fitted leg: a corner cut over buildings, where a point next to an
 	-- extension was dropped because the curves either side of it wouldn't fit even at the floor.
+	-- The samples are smooth.sample's, walked without making them.
+	local probe : Pt = { x = 0, y = 0 }
 	local function blockedHalves(f : PgraceRailRouterSmooth.Result) : integer, integer
-		local samples = smooth.sample(f.pieces, guard.step)
-		local total = #samples > 0 and samples[#samples].s or 0
+		local g = input.grid
+		local total = 0.0
+		for __, piece in ipairs(f.pieces) do
+			total = total + piece.length
+		end
 		local nA, nB = 0, 0
-		for __, sample in ipairs(samples) do
-			local ix, iy = grid.cellOf(input.grid, sample.p)
-			if input.grid.blocked[grid.index(input.grid, ix, iy)] then
-				if sample.s <= total / 2 then
+		local function count(piece : PgraceRailRouterSmooth.Piece, d : number, s : number)
+			probe.x, probe.y = smooth.pointAtXY(piece, d)
+			local ix, iy = grid.cellOf(g, probe)
+			if g.blocked[grid.index(g, ix, iy)] then
+				if s <= total / 2 then
 					nA = nA + 1
 				else
 					nB = nB + 1
 				end
 			end
 		end
+		local s0 = 0.0
+		for __, piece in ipairs(f.pieces) do
+			local m = math.max(1, math.ceil(piece.length / guard.step))
+			for j = 0, m - 1 do
+				local d = piece.length * j / m
+				count(piece, d, s0 + d)
+			end
+			s0 = s0 + piece.length
+		end
+		if #f.pieces > 0 then
+			local last = f.pieces[#f.pieces]
+			count(last, last.length, s0)
+		end
 		return nA, nB
 	end
-	local fitted = fit(false, false)
-	-- Where the fixed points squeeze an arc below what can be built (an extension pulled back short of a sharp turn),
-	-- give up that end's extension: the turn then starts at the approach, or the point after the extension, with
-	-- more room. An end that still can't reach the floor keeps its extension (and its tight arc, counted below).
-	local tightA, tightB = belowFloor(fitted)
-	local freedA, freedB = false, false
-	if tightA or tightB then
-		local refit = fit(tightA, tightB)
-		local stillA, stillB = belowFloor(refit)
-		local freeA, freeB = tightA and not stillA, tightB and not stillB
-		if freeA == tightA and freeB == tightB then
-			fitted = refit
-		elseif freeA or freeB then
-			fitted = fit(freeA, freeB)
+	-- One fillet a step (each up to a millisecond or two on a long leg; all of them in one step took 4.7 ms on the
+	-- desktop, and allocated half a megabyte): the stages below, in order, until the leg is fitted.
+	local f = fitting
+	while true do
+		if f.stage == 1 then
+			f.fitted = fit(false, false)
+			-- Where the fixed points squeeze an arc below what can be built (an extension pulled back short of a sharp
+			-- turn), give up that end's extension: the turn then starts at the approach, or the point after the
+			-- extension, with more room. An end that still can't reach the floor keeps its extension (and its tight
+			-- arc, counted below).
+			f.tightA, f.tightB = belowFloor(f.fitted)
+			f.freedA, f.freedB = false, false
+			if f.tightA or f.tightB then
+				f.stage = 2
+				return nil
+			end
+			f.stage = 4
+		elseif f.stage == 2 then
+			local refit = fit(f.tightA, f.tightB)
+			local stillA, stillB = belowFloor(refit)
+			local freeA, freeB = f.tightA and not stillA, f.tightB and not stillB
+			f.freedA, f.freedB = freeA, freeB
+			if freeA == f.tightA and freeB == f.tightB then
+				f.fitted = refit
+				f.stage = 4
+			elseif freeA or freeB then
+				f.stage = 3
+			else
+				f.stage = 4
+			end
+			return nil
+		elseif f.stage == 3 then
+			f.fitted = fit(f.freedA, f.freedB)
+			f.stage = 4
+			return nil
+		elseif f.stage == 4 then
+			-- The search lets a sharp turn at an extension point slide back into the station's straight
+			-- (grid.startSearch's rooms), so a curve there that the fixed extension leaves no room for cuts the corner
+			-- instead. Where that puts track over buildings near an end, give that extension up too, if it does
+			-- better.
+			f.blockedA, f.blockedB = blockedHalves(f.fitted)
+			if (f.blockedA > 0 and not f.freedA) or (f.blockedB > 0 and not f.freedB) then
+				f.stage = 5
+				return nil
+			end
+			return f.fitted
+		else
+			local refit = fit(f.freedA or f.blockedA > 0, f.freedB or f.blockedB > 0)
+			local againA, againB = blockedHalves(refit)
+			local stillA, stillB = belowFloor(refit)
+			if againA + againB < f.blockedA + f.blockedB and not (stillA and not f.tightA)
+					and not (stillB and not f.tightB) then
+				return refit
+			end
+			return f.fitted
 		end
-		freedA, freedB = freeA, freeB
 	end
-	-- The search lets a sharp turn at an extension point slide back into the station's straight (grid.startSearch's
-	-- rooms), so a curve there that the fixed extension leaves no room for cuts the corner instead. Where that puts
-	-- track over buildings near an end, give that extension up too, if it does better.
-	local blockedA, blockedB = blockedHalves(fitted)
-	if (blockedA > 0 and not freedA) or (blockedB > 0 and not freedB) then
-		local refit = fit(freedA or blockedA > 0, freedB or blockedB > 0)
-		local againA, againB = blockedHalves(refit)
-		local stillA, stillB = belowFloor(refit)
-		if againA + againB < blockedA + blockedB and not (stillA and not tightA) and not (stillB and not tightB) then
-			fitted = refit
-		end
-	end
-	return fitted
 end
 
 -- Samples a fitted leg's ground and starts fitting its heights (profile.start; stepped by route.step).
@@ -1104,7 +1161,14 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			return false
 		end
 		if job.fitted == nil then
-			job.fitted = fitLeg(input, job.simplified)
+			if job.fitting == nil then
+				job.fitting = { stage = 1 }
+			end
+			job.fitted = stepFit(input, job.simplified, job.fitting)
+			if job.fitted == nil then
+				return false
+			end
+			job.fitting = nil
 			if job.radii ~= nil then
 				-- One of several radii being weighed (time priced): its fitted curves tell what time it loses.
 				local t = job.pathCost + input.weights.timeCost * legTimeLost(input, job.fitted)

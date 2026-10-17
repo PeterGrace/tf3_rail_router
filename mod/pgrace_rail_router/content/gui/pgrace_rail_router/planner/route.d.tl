@@ -108,6 +108,20 @@ global record PgraceRailRouterRoute
 		guard : PgraceRailRouterSmooth.Guard
 	end
 
+	-- A leg's curves being fitted (spread over steps, a fillet each): the stage next, the leg as fitted so far, which
+	-- ends had an arc below the build minimum (tight), which gave up their extension points (freed), and the samples
+	-- on blocked cells in each half. Internal.
+	record Fitting
+		stage : integer
+		fitted : PgraceRailRouterSmooth.Result
+		tightA : boolean
+		tightB : boolean
+		freedA : boolean
+		freedB : boolean
+		blockedA : integer
+		blockedB : integer
+	end
+
 	-- A leg's heights being fitted (spread over steps): its samples, and what finishing it needs. Internal.
 	record LegHeights
 		fitted : PgraceRailRouterSmooth.Result
@@ -189,6 +203,7 @@ global record PgraceRailRouterRoute
 		resite : Resite
 		resited : {integer : boolean}
 		simplified : Simplified
+		fitting : Fitting
 		fitted : PgraceRailRouterSmooth.Result
 		heights : LegHeights
 		-- Finished searches with no cost limit, by their inputs (see searchFor), so a search asked for again isn't
