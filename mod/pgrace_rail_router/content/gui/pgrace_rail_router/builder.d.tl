@@ -32,7 +32,8 @@ global record PgraceRailRouterBuilder
 		-- What it ran into, each entity once (the game lists some several times).
 		collisions : {Collision}
 		-- Streets crossed on the level (Settings.levelCrossings): in a dry run the track collides with them, since a
-		-- level crossing splits the street (milestone 3). An outcome whose only errors are these is ok.
+		-- level crossing splits the street (milestone 3). An outcome whose only errors are these is ok; one with other
+		-- collisions too still counts them.
 		crossings : integer
 	end
 
@@ -93,9 +94,9 @@ global record PgraceRailRouterBuilder
 	-- The station module's resource name as the module repository knows it: `name`, else the same with or without its
 	-- leading "::"; nil if neither is found.
 	resolveModule : function(name : string) : string
-	-- Whether a dry run's errors are only level crossings: every message is a collision, and everything collided with
-	-- is a street (and there is at least one). Pure.
-	crossingsOnly : function(messages : {string}, collisions : {Collision}) : boolean
+	-- How many of a dry run's collisions are level crossings: the streets, where every message is a collision; 0
+	-- otherwise. A chunk all of whose collisions are these is clean. Pure.
+	levelCrossings : function(messages : {string}, collisions : {Collision}) : integer
 	-- The entities a dry run collided with, each once, with what each is and where. Empty when there are none or
 	-- they can't be read.
 	collisions : function(data : ProposalData) : {Collision}

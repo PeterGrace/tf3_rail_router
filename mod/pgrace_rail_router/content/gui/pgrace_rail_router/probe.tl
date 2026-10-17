@@ -340,6 +340,89 @@ function probe.dryRunCrossing(settings : Settings) : {function()}
 	}
 end
 
+-- P8 -------------------------------------------------------------------------------------------------------------
+
+-- The nearest track or street edge to the camera, as the point on its chord closest to the camera, its direction and
+-- height there.
+local record Crossed
+	p : Pt
+	dir : Pt
+	z : number
+	entity : integer
+end
+
+local P8_HEIGHTS : {number} = { 6, 7, 8, 9, 10, 11, 12, 14 }
+
+function probe.bridgeClearance(settings : Settings) : {function()}
+	local c = camera()
+	local found : {string : Crossed} = {}
+	local o = network.defaults()
+	local tasks : {function()} = {}
+	table.insert(tasks, guarded("P8", function()
+		local best : {string : number} = {}
+		local edges = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(c.x, c.y), 200,
+			api.type.ComponentType.BASE_EDGE)
+		for __, e in ipairs(edges) do
+			pcall(function() : boolean
+				local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+				local isTrack = edge.roadType == api.type["enum"].RoadType.TRACK
+				if edge.type ~= api.type["enum"].BaseEdgeType.NORMAL then
+					return true
+				end
+				local kind = isTrack and "track" or "street"
+				local n0 = api.engine.getComponent(edge.node0, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+				local n1 = api.engine.getComponent(edge.node1, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+				local a : Pt = { x = n0.position.x, y = n0.position.y }
+				local b : Pt = { x = n1.position.x, y = n1.position.y }
+				local ab = geo.sub(b, a)
+				local len = geo.len(ab)
+				if len < 1 then
+					return true
+				end
+				local t = math.max(0, math.min(1, geo.dot(geo.sub(c, a), ab) / (len * len)))
+				local q = geo.add(a, geo.scale(ab, t))
+				local d = geo.len(geo.sub(c, q))
+				if best[kind] == nil or d < best[kind] then
+					best[kind] = d
+					found[kind] = { p = q, dir = geo.scale(ab, 1 / len),
+						z = n0.position.z + t * (n1.position.z - n0.position.z), entity = e }
+				end
+				return true
+			end)
+		end
+		log("P8", ("camera (%.1f %.1f): %d edges within 200 m"):format(c.x, c.y, #edges))
+		for __, kind in ipairs({ "track", "street" }) do
+			local f = found[kind]
+			if f ~= nil then
+				log("P8", ("nearest %s: edge %d, %.0f m away at (%.1f %.1f), height %.2f, ground %.2f"):format(kind,
+					f.entity, best[kind], f.p.x, f.p.y, f.z, groundAt(f.p)))
+			else
+				log("P8", "no " .. kind .. " within 200 m")
+			end
+		end
+	end))
+	for __, kind in ipairs({ "track", "street" }) do
+		for __, h in ipairs(P8_HEIGHTS) do
+			table.insert(tasks, guarded("P8", function()
+				local f = found[kind]
+				if f == nil then
+					return
+				end
+				-- Square across it, 300 m centred on the crossing point, a bridge throughout.
+				local across : Pt = { x = -f.dir.y, y = f.dir.x }
+				local start = geo.add(f.p, geo.scale(across, -150))
+				local name = ("P8 %s +%.0f m"):format(kind, h)
+				logCollisions(name, tryPlan(name, testPlan({ straight(start, across, 300) }, f.z + h, 0, "bridge"),
+					settings, o))
+			end))
+		end
+	end
+	table.insert(tasks, function()
+		log("P8", "done")
+	end)
+	return tasks
+end
+
 -- P6 -------------------------------------------------------------------------------------------------------------
 
 local function moduleLookup(name : string) : string

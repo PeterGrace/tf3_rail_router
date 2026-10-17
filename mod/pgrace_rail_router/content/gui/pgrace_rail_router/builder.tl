@@ -182,21 +182,19 @@ function builder.stationProposal(plan : Plan, index : integer, settings : Settin
 	return proposal
 end
 
-function builder.crossingsOnly(messages : {string}, collisions : {Collision}) : boolean
-	if #collisions == 0 then
-		return false
-	end
+function builder.levelCrossings(messages : {string}, collisions : {Collision}) : integer
 	for __, m in ipairs(messages) do
 		if m:lower() ~= "collision" then
-			return false
+			return 0
 		end
 	end
+	local streets = 0
 	for __, c in ipairs(collisions) do
-		if c.what ~= "street" then
-			return false
+		if c.what == "street" then
+			streets = streets + 1
 		end
 	end
-	return true
+	return streets
 end
 
 local function has(entity : integer, ct : Engine.ComponentType) : boolean
@@ -337,9 +335,11 @@ function builder.step(check : Check) : boolean
 		local data : ProposalData
 		ok, cost, messages, us, data = builder.dryRun(proposal as SimpleProposal)
 		collisions = builder.collisions(data)
-		if not ok and item.kind == "chunk" and check.settings.levelCrossings
-			and builder.crossingsOnly(messages, collisions) then
-			ok, crossings, messages = true, #collisions, {}
+		if not ok and item.kind == "chunk" and check.settings.levelCrossings then
+			crossings = builder.levelCrossings(messages, collisions)
+			if crossings > 0 and crossings == #collisions then
+				ok, messages = true, {}
+			end
 		end
 	end
 	table.insert(check.outcomes, { item = item, ok = ok, cost = cost, messages = messages, x = x, y = y, us = us,

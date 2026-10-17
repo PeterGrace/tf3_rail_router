@@ -5,14 +5,15 @@ local function hit(what)
 	return { entity = 1, what = what, x = 0, y = 0 }
 end
 
-t.test("builder: collisions with streets alone are level crossings", function()
-	t.ok(builder.crossingsOnly({ "Collision" }, { hit("street") }), "one street")
-	t.ok(builder.crossingsOnly({ "Collision" }, { hit("street"), hit("street") }), "two streets")
+t.test("builder: streets collided with are level crossings", function()
+	t.eq(builder.levelCrossings({ "Collision" }, { hit("street") }), 1, "one street")
+	t.eq(builder.levelCrossings({ "Collision" }, { hit("street"), hit("street") }), 2, "two streets")
+	t.eq(builder.levelCrossings({ "Collision" }, { hit("street"), hit("track"), hit("street") }), 2,
+		"with track hit too: the streets still count")
 end)
 
-t.test("builder: anything else in the way is an error", function()
-	t.ok(not builder.crossingsOnly({ "Collision" }, { hit("street"), hit("building") }), "a building too")
-	t.ok(not builder.crossingsOnly({ "Collision" }, { hit("track") }), "track")
-	t.ok(not builder.crossingsOnly({ "Collision", "Too Much Incline" }, { hit("street") }), "another message")
-	t.ok(not builder.crossingsOnly({ "Collision" }, {}), "nothing known to have been hit")
+t.test("builder: no level crossings where nothing is a street, or another error came too", function()
+	t.eq(builder.levelCrossings({ "Collision" }, { hit("track") }), 0, "track")
+	t.eq(builder.levelCrossings({ "Collision", "Too Much Incline" }, { hit("street") }), 0, "another message")
+	t.eq(builder.levelCrossings({ "Collision" }, {}), 0, "nothing known to have been hit")
 end)

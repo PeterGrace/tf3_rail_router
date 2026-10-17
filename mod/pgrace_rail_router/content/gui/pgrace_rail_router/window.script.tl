@@ -267,7 +267,10 @@ local function problemRow(check : PgraceRailRouterBuilder.Check, outcome : Pgrac
 	local named : {string : boolean} = {}
 	local target : PgraceRailRouterBuilder.Collision = nil
 	for __, c in ipairs(outcome.collisions or {}) do
-		if not named[c.what] then
+		-- Streets are level crossings there, counted on their own line.
+		if outcome.crossings > 0 and c.what == "street" then
+			-- skip
+		elseif not named[c.what] then
 			named[c.what] = true
 			table.insert(whats, collidedWith(c.what))
 		end
@@ -779,6 +782,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.dryRunTrack(settings, data.tracks)
 			elseif work.name == "P4" then
 				work.tasks = probe.dryRunCrossing(settings)
+			elseif work.name == "P8" then
+				work.tasks = probe.bridgeClearance(settings)
 			elseif work.name == "P5" then
 				work.tasks = probe.buildStraight(settings)
 			else
@@ -1069,6 +1074,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		{ "P1", "Probe P1: log track near camera" },
 		{ "P2", "Probe P2: dry-run test track" },
 		{ "P4", "Probe P4: dry-run across a street" },
+		{ "P8", "Probe P8: bridge clearance over track and street" },
 		{ "P6", "Probe P6: dry-run a station" },
 		{ "P5", "Probe P5: build test straight (test map only)" },
 	}) do

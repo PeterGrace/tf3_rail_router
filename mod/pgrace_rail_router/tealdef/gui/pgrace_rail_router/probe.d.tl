@@ -10,6 +10,9 @@ global record PgraceRailRouterProbe
 	dryRunTrack : function(settings : PgraceRailRouterBuilder.Settings, tracks : {PgraceRailRouterModes.TrackType}) : {function()}
 	-- P4: a 300 m double track across a street at the camera, on the ground and as a bridge.
 	dryRunCrossing : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
+	-- P8: the nearest plain track and street edges within 200 m of the camera, each crossed square-on by a 300 m
+	-- double-track bridge whose rails are 6 to 14 m above theirs: the clearance the game asks for.
+	bridgeClearance : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 	-- P6: a 160 m station at the camera facing east, without and with the main building and stairs (and roofs), with
 	-- its bounding box's length along the axis; the module names.
 	dryRunStation : function(settings : PgraceRailRouterBuilder.Settings, tracks : {PgraceRailRouterModes.TrackType}) : {function()}
