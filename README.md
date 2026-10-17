@@ -19,6 +19,7 @@ mod/pgrace_rail_router/                        # the mod folder TF3 loads
 └── content/gui/pgrace_rail_router/
     ├── window.res.lua / window.script.tl / window.css.lua   # mod button and window
     ├── survey.tl                     # engine reads: towns, track types, terrain grid
+    ├── mapcapture.tl, mapformat.tl   # whole-map capture to the log (dev tool)
     ├── preview.tl                    # the route on the map
     └── planner/                      # pure planner modules (unit-tested)
 tools/                                # type check, tests, install, release checks
@@ -36,6 +37,22 @@ just install    # symlink into TF3's staging area (just install-copy to copy)
 
 Restart TF3 after code changes. The log is
 `~/.local/share/Steam/userdata/*/3493540/local/crash_dump/stdout.txt`; our lines start with `[rail_router]`.
+
+## Map captures (dev tool)
+
+A temporary **Capture whole map (probe)** button in the window writes the whole map to the log as `MAP` records
+(format: `docs/map-capture-format.md`); **Find route** writes its own input as `CAPTURE` records. Offline:
+
+```bash
+python3 tools/extract_captures.py                     # complete MAP / CAPTURE blocks from stdout.txt into captures/
+lua tools/replay.lua --map captures/<map> --list      # the map's towns and track types
+lua tools/replay.lua --map captures/<map> --from Ames --to Bridgeport [--mode fastest] [out.ppm]
+lua tools/replay.lua captures/<capture> [out.ppm]     # replay one in-game Find route
+lua tools/compare_capture.lua captures/<map> captures/<capture>   # map rasterised vs the in-game grid
+```
+
+`mod/.../mapcapture.tl` + `mapformat.tl`, `tools/maplib.lua` and `tools/extract_captures.py` depend on nothing else
+in Rail Router, so other mods can copy them.
 
 ## Releasing
 
