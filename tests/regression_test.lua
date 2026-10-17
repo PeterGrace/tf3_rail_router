@@ -250,6 +250,7 @@ probe:close()
 
 local lib = dofile(t.root .. "/tools/replaylib.lua")(t.root)
 local arrows = t.requireTl("gui/pgrace_rail_router/planner/arrows.tl")
+local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
 local maps = {}
 local function loadMap(name)
 	if maps[name] == nil then
@@ -336,6 +337,15 @@ local function check(rt, planFn, name)
 			t.ok(d >= 25 - 1e-9, ("leg %d: a %.1f m preview arrow"):format(li, d))
 		end
 	end
+	-- The network the dry runs would send: no edge longer than allowed, none of (next to) no length.
+	local net = network.build(plan, network.defaults())
+	local maxEdge = network.defaults().maxEdge
+	for __, e in ipairs(net.edges) do
+		local len = math.sqrt((e.p1.x - e.p0.x) ^ 2 + (e.p1.y - e.p0.y) ^ 2)
+		t.ok(len > 0.5, ("leg %d: a %.2f m edge at s %.0f"):format(e.leg, len, e.s0))
+		t.ok(e.s1 - e.s0 <= maxEdge + 1e-6, "edge within maxEdge")
+	end
+	t.ok(#net.chunks > 0, "some chunks")
 	local b = rt.base
 	noWorse("widest sweep of a leg (a loop or a hook?)", sweep, b.sweep, 0, SWEEP_SLACK)
 	noWorse("length", s.length, b.length, TOLERANCE.length)

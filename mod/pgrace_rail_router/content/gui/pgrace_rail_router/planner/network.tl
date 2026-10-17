@@ -70,15 +70,41 @@ local function tangentLength(piece : Piece, length : number, off : number, rule 
 	return 4 * r * math.tan(theta / 4)
 end
 
+-- The shortest an edge may be (metres of centre line). The smoother leaves the odd piece shorter than this between
+-- two longer ones (0.46 m on the regression maps), and span ends can fall as close to a piece's end; an edge that
+-- short is no use to the game.
+local MIN_EDGE = 0.5
+
 function network.trackEdges(leg : Leg, legIndex : integer, side : number, options : Options) : {Edge}
 	local off = side * options.offset
-	-- Where edges must break besides the pieces' ends: the spans' ends.
+	local pieces = leg.pieces
+	-- Where each piece starts along the leg, and where the leg ends.
+	local starts : {number} = {}
+	local total = 0.0
+	for i, piece in ipairs(pieces) do
+		starts[i] = total
+		total = total + piece.length
+	end
+	-- Where edges must break: where one piece meets the next, and the spans' ends.
 	local cuts : {number} = {}
+	for i = 2, #pieces do
+		table.insert(cuts, starts[i])
+	end
 	for __, span in ipairs(leg.spans) do
 		table.insert(cuts, span.s0)
 		table.insert(cuts, span.s1)
 	end
 	table.sort(cuts)
+	-- The cuts kept: one within MIN_EDGE of the last kept (or of the leg's end) is dropped. That also drops the second
+	-- copy where one span ends and the next starts. A dropped span end moves the span's end to the kept break; a
+	-- dropped piece end lets an edge run that far into the next piece, close enough to its own curve.
+	local breaks : {number} = { 0.0 }
+	for __, c in ipairs(cuts) do
+		if c > breaks[#breaks] + MIN_EDGE and c < total - MIN_EDGE then
+			table.insert(breaks, c)
+		end
+	end
+	table.insert(breaks, total)
 	local function kindAt(s : number) : string
 		for __, span in ipairs(leg.spans) do
 			if s >= span.s0 - 1e-6 and s < span.s1 - 1e-6 then
@@ -88,43 +114,91 @@ function network.trackEdges(leg : Leg, legIndex : integer, side : number, option
 		return "ground"
 	end
 	local edges : {Edge} = {}
-	local s = 0.0
-	for __, piece in ipairs(leg.pieces) do
-		local pieceStart, pieceEnd = s, s + piece.length
-		-- This piece's breaks: its ends, the span ends inside it, and as many more as keep edges within maxEdge. One
-		-- span ends where the next starts, so each cut is in the list twice: compare with the last break, not the
-		-- piece's start, or the second copy makes an edge of no length.
-		local breaks : {number} = { pieceStart }
-		for __, c in ipairs(cuts) do
-			if c > breaks[#breaks] + 1e-6 and c < pieceEnd - 1e-6 then
-				table.insert(breaks, c)
+	-- The pieces an edge's start and end lie on; both only move forward, as the edges do.
+	local i0, i1 = 1, 1
+	for k = 1, #breaks - 1 do
+		local a, b = breaks[k], breaks[k + 1]
+		-- As many parts as keep edges within maxEdge.
+		local parts = math.max(1, math.ceil((b - a) / options.maxEdge - 1e-9))
+		for m = 0, parts - 1 do
+			local s0, s1 = a + (b - a) * m / parts, a + (b - a) * (m + 1) / parts
+			-- The start is on the piece that begins at or before it (the next one where two meet), the end on the
+			-- piece that reaches it (the earlier one where two meet).
+			while i0 < #pieces and starts[i0 + 1] <= s0 + 1e-6 do
+				i0 = i0 + 1
 			end
-		end
-		table.insert(breaks, pieceEnd)
-		for k = 1, #breaks - 1 do
-			local a, b = breaks[k], breaks[k + 1]
-			local parts = math.max(1, math.ceil((b - a) / options.maxEdge - 1e-9))
-			for m = 0, parts - 1 do
-				local s0, s1 = a + (b - a) * m / parts, a + (b - a) * (m + 1) / parts
-				local q0, d0 = along(piece, s0 - pieceStart, off)
-				local q1, d1 = along(piece, s1 - pieceStart, off)
-				local tl = tangentLength(piece, s1 - s0, off, options.tangent)
-				local z0, g0 = heightAt(leg, s0)
-				local z1, g1 = heightAt(leg, s1)
-				table.insert(edges, {
-					p0 = { x = q0.x, y = q0.y, z = z0 }, p1 = { x = q1.x, y = q1.y, z = z1 },
-					t0 = { x = d0.x * tl, y = d0.y * tl, z = g0 * tl }, t1 = { x = d1.x * tl, y = d1.y * tl, z = g1 * tl },
-					kind = kindAt((s0 + s1) / 2), track = side > 0 and 1 or 2, leg = legIndex, s0 = s0, s1 = s1,
-				})
+			if i1 < i0 then
+				i1 = i0
 			end
+			while i1 < #pieces and starts[i1] + pieces[i1].length < s1 - 1e-6 do
+				i1 = i1 + 1
+			end
+			local q0, d0 = along(pieces[i0], s0 - starts[i0], off)
+			local q1, d1 = along(pieces[i1], s1 - starts[i1], off)
+			-- Each piece's share of the edge, at its own rule (an edge only spans two pieces by under MIN_EDGE).
+			local tl = 0.0
+			for i = i0, i1 do
+				local share = math.min(s1, starts[i] + pieces[i].length) - math.max(s0, starts[i])
+				if share > 0 then
+					tl = tl + tangentLength(pieces[i], share, off, options.tangent)
+				end
+			end
+			local z0, g0 = heightAt(leg, s0)
+			local z1, g1 = heightAt(leg, s1)
+			table.insert(edges, {
+				p0 = { x = q0.x, y = q0.y, z = z0 }, p1 = { x = q1.x, y = q1.y, z = z1 },
+				t0 = { x = d0.x * tl, y = d0.y * tl, z = g0 * tl }, t1 = { x = d1.x * tl, y = d1.y * tl, z = g1 * tl },
+				kind = kindAt((s0 + s1) / 2), track = side > 0 and 1 or 2, leg = legIndex, s0 = s0, s1 = s1,
+			})
 		end
-		s = pieceEnd
 	end
 	return edges
 end
 
 function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : PgraceRailRouterNetwork.Network
-	return { nodes = {}, edges = {}, chunks = {} }
+	local net : PgraceRailRouterNetwork.Network = { nodes = {}, edges = {}, chunks = {} }
+	for li, leg in ipairs(plan.legs) do
+		-- Each track's edges, then grouped by stretch: a chunk takes both tracks' edges between two cut points along
+		-- the centre line, so the two tracks of a bridge are in one proposal (one parallel strip, probe P3).
+		local tracks : {{Edge}} = { network.trackEdges(leg, li, 1, options), network.trackEdges(leg, li, -1, options) }
+		for __, list in ipairs(tracks) do
+			local previous : integer = nil
+			for __, e in ipairs(list) do
+				if previous == nil then
+					table.insert(net.nodes, e.p0)
+					previous = #net.nodes
+				end
+				table.insert(net.nodes, e.p1)
+				e.node0, e.node1 = previous, #net.nodes
+				previous = e.node1
+			end
+		end
+		-- Chunk cut points: after chunkLength of centre line, at the next edge end that isn't inside a bridge or tunnel.
+		local left, right = tracks[1], tracks[2]
+		local k, startS = 1, 0.0
+		while k <= #left do
+			local j = k
+			while j < #left and (left[j].s1 - startS < options.chunkLength or left[j + 1].kind ~= "ground"
+					and left[j].kind ~= "ground") do
+				j = j + 1
+			end
+			local first = #net.edges + 1
+			local length = 0.0
+			for m = k, j do
+				table.insert(net.edges, left[m])
+				length = length + (left[m].s1 - left[m].s0)
+			end
+			-- The right track's edges over the same stretch (the two tracks are cut at the same places).
+			for m = k, j do
+				table.insert(net.edges, right[m])
+				length = length + (right[m].s1 - right[m].s0)
+			end
+			table.insert(net.chunks, { first = first, last = #net.edges, leg = li, length = length })
+			startS = left[j].s1
+			k = j + 1
+		end
+	end
+	return net
 end
 
 return network
