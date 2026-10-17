@@ -166,6 +166,11 @@ For each town, search outward in rings from the centre for a spot where a straig
 of approach at each end) is clear of blocked, water, road and track cells, checked every quarter cell and at both ends
 of the run. Every station is a through station with 2 tracks, both ends connected.
 
+The search is spread over `route.step` calls (`stations.startFind`/`stepFind`), about 500 µs of desktop work per step
+at most: out to 1.5 km it passes some 3,000 spots of up to 5 runs each, and one big town's site took 41 ms in one
+step in-game. A spot whose centre cell is taken is passed over, and a run's end cells are looked at before its cells
+are walked, so a built-up town is cheap (4.4 ms → 0.5 ms for the slowest site on the Ames–Bridgeport capture).
+
 **Facing the line** (`route.tl`). The first sites face from the previous stop to the next. Then each leg is scouted:
 a search between the two site centres, free to start and end in any direction and turning as freely as the Cheapest
 radius allows (with the mode's costs). Each station's direction is then taken from the scouts: from the point D before

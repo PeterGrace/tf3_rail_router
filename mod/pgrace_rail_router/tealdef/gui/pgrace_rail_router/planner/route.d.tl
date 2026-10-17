@@ -107,8 +107,11 @@ global record PgraceRailRouterRoute
 		input : Input
 		-- "sites", "scout", "turn", "legs" or "done"
 		phase : string
-		-- The station being sited, or turned.
+		-- The station being sited, or turned; its site search, spread over steps (nil between stations); and, when
+		-- turning, the other stations' platform cells, kept off.
 		siteIndex : integer
+		finder : PgraceRailRouterStations.Finder
+		others : {integer : boolean}
 		-- Scouting: the round (1..), the leg being scouted, and the scouts' paths by leg (nil where none was found).
 		round : integer
 		scoutIndex : integer
@@ -136,7 +139,7 @@ global record PgraceRailRouterRoute
 	end
 
 	start : function(input : Input) : Job
-	-- One unit of work: a station site, starting a search (a scout or a leg's), up to maxExpansions states of it,
+	-- One unit of work: part of a station's site search (see stations.stepFind), starting a search (a scout or a leg's), up to maxExpansions states of it,
 	-- turning a station to face the scouted line, or building a leg from its path (curves, heights). true once the
 	-- plan is finished (whether it succeeded or not).
 	-- Where weights.minSearchRadius is below weights.minRadius, a leg is searched several times: first with turns
