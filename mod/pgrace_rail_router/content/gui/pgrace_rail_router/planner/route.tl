@@ -86,6 +86,12 @@ local MAX_RADIUS_EXTRA = 0.1
 local SWEEP_LIMIT = 200.0
 -- How many finished searches a job keeps (see searchFor).
 local SEARCH_CACHE_SIZE = 4
+-- With time priced (Fastest), a leg whose curves lose more than this many seconds (speed.tl) has the station nearer
+-- its tightest curve re-sited too: mostly a station whose end faces buildings, so the line hooks round into it
+-- (Owings Mills on New Game: re-sited, Alliance → Aloha lost 41 s instead of 58 s, and cost 14% less). On the
+-- regression maps' Fastest routes, 10 s took the time lost from 672 s to 423 s and the estimates 7% down (20 s: 541 s,
+-- 3% down), for about twice the work (re-siting searches 8 directions' legs).
+local RESITE_TIME_LOST = 10.0
 -- A re-sited station (see Resite) is taken if its two legs cost at least this share less than with its old site.
 local RESITE_GAIN = 0.02
 -- Re-siting looks this much farther from the town's centre than the old site (metres).
@@ -407,6 +413,17 @@ local function belowAt(input : Input, fitted : PgraceRailRouterSmooth.Result) : 
 		end
 	end
 	return nil
+end
+
+-- Where the tightest arc starts in a fitted leg; nil if none.
+local function tightestAt(fitted : PgraceRailRouterSmooth.Result) : Pt
+	local best : PgraceRailRouterSmooth.Piece = nil
+	for __, piece in ipairs(fitted.pieces) do
+		if piece.kind == "arc" and (best == nil or piece.radius < best.radius) then
+			best = piece
+		end
+	end
+	return best ~= nil and best.a or nil
 end
 
 -- How far a leg's heading swings (degrees): the widest spread of its arcs' signed turns added up from its start.
@@ -925,16 +942,21 @@ local function nextTry(job : Job)
 	job.radii, job.fallback, job.best, job.bestTotal = nil, nil, nil, nil
 end
 
--- A fitted leg that loops, or hooks round into or out of a station, or has a curve the game can't build: perhaps a
--- station faces the wrong way for it. Weigh other directions for one by their legs' costs: the one nearer the curve
--- that can't be built, else the one the leg arrives at; each station once.
+-- A fitted leg that loops, or hooks round into or out of a station, or has a curve the game can't build, or (time
+-- priced) loses more than RESITE_TIME_LOST to its curves: perhaps a station faces the wrong way for it. Weigh other
+-- directions for one by their legs' costs: the one nearer the curve that can't be built (or for a slow leg, its
+-- tightest curve), else the one the leg arrives at; each station once.
 local function checkLeg(job : Job, a : Station, b : Station)
 	local input = job.input
-	if belowBuild(input, job.fitted) == 0 and sweepOf(job.fitted) <= SWEEP_LIMIT then
+	local slow = timePriced(input.weights) and legTimeLost(input, job.fitted) > RESITE_TIME_LOST
+	if belowBuild(input, job.fitted) == 0 and sweepOf(job.fitted) <= SWEEP_LIMIT and not slow then
 		return
 	end
 	local first, second = job.legIndex + 1, job.legIndex
 	local p = belowAt(input, job.fitted)
+	if p == nil and slow then
+		p = tightestAt(job.fitted)
+	end
 	if p ~= nil and geo.dist(p, a.site.centre) < geo.dist(p, b.site.centre) then
 		first, second = job.legIndex, job.legIndex + 1
 	end
@@ -1244,7 +1266,10 @@ function route.progress(job : Job) : number
 			done = done + LEG_WEIGHT * SEARCH_SHARE * tried / tries
 		end
 	end
-	return math.min(1, done / total)
+	-- Re-siting a station builds legs again (the one before it too, where it is the one the leg leaves from): the
+	-- share shown holds where it was until the work catches up, rather than fall back.
+	job.shown = math.max(job.shown or 0, math.min(1, done / total))
+	return job.shown
 end
 
 function route.plan(job : Job) : Plan

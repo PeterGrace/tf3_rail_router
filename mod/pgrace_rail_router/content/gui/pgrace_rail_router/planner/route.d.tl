@@ -203,6 +203,8 @@ global record PgraceRailRouterRoute
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
 		-- is never changed.
 		taken : {integer : boolean}
+		-- The most progress has shown so far (route.progress never goes back).
+		shown : number
 		result : Plan
 	end
 
@@ -217,7 +219,8 @@ global record PgraceRailRouterRoute
 	-- lose (speed.tl, estimated from the path's corners) is least is taken; without, the first path that costs at most
 	-- 10% more than the fallback's, else the fallback's.
 	step : function(job : Job, maxExpansions : integer) : boolean
-	-- Share of the work done, 0 to 1.
+	-- Share of the work done, 0 to 1, never falling (where re-siting builds legs again, it holds until the work
+	-- catches up).
 	progress : function(job : Job) : number
 	-- The plan; complete once step has returned true.
 	plan : function(job : Job) : Plan
