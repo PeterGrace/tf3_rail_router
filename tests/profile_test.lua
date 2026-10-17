@@ -401,12 +401,23 @@ t.test("profile: the fit costs no more than the old balanced clamp on ridges and
 	end
 end)
 
-t.test("profile: a long hilly leg fits quickly", function()
-	-- 10 km of rolling 80 m hills at Fastest's grade: the DP's whole work, run once.
+t.test("profile: a long hilly leg's fit spread over steps gives the same heights", function()
+	-- 10 km of rolling 80 m hills at Fastest's grade: about 250,000 units of work, the most a leg is likely to need.
 	local s, ground, water = longLine(10000, function(x) return 40 * (1 - math.cos(2 * math.pi * x / 1700)) end)
+	local o = opts({ maxGrade = 0.025, zStart = 0, zEnd = 0 })
 	local started = os.clock()
-	local r = profile.fit(s, ground, water, opts({ maxGrade = 0.025, zStart = 0, zEnd = 0 }))
-	local ms = (os.clock() - started) * 1000
-	print(("  profile: 10 km hilly leg fitted in %.1f ms"):format(ms))
-	t.ok(gradesWithin(r, s, 0.025), "grades")
+	local whole = profile.fit(s, ground, water, o)
+	print(("  profile: 10 km hilly leg fitted in %.1f ms"):format((os.clock() - started) * 1000))
+	local job = profile.start(s, ground, water, o)
+	local steps = 1
+	while not profile.step(job, 20000) do
+		steps = steps + 1
+	end
+	t.ok(steps >= 5, "steps " .. steps)
+	t.ok(profile.step(job, 20000), "stays done")
+	for k = 1, #s do
+		t.eq(job.result.z[k], whole.z[k], "z " .. k)
+	end
+	t.eq(#job.result.spans, #whole.spans, "spans")
+	t.ok(gradesWithin(whole, s, 0.025), "grades")
 end)

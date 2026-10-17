@@ -38,6 +38,16 @@ global record PgraceRailRouterProfile
 		feasible : boolean
 	end
 
+	-- A fit spread over steps (start, step until it returns true, then result).
+	record FitJob
+		-- true once the fit is complete.
+		done : boolean
+		-- The fit, once done.
+		result : Result
+		-- profile.tl's own working state.
+		state : any
+	end
+
 	-- `s` is metres along the route per sample (increasing), `ground` the ground height and `water` whether it's
 	-- water. The track's heights are the cheapest within the grade limit: plain track costs 1 a metre (plus a little
 	-- per metre of cut or fill, so it keeps to the ground where nothing is saved), bridges and tunnels their cost
@@ -48,4 +58,9 @@ global record PgraceRailRouterProfile
 	-- Crossings are bridges with the track at least 7 m above the ground; the pinned ends win over that clearance when
 	-- a crossing is too near them to climb to it.
 	fit : function(s : {number}, ground : {number}, water : {boolean}, options : Options) : Result
+	-- The same fit, spread over steps: start sets it up (linear in the samples), each step weighs heights until it has
+	-- done `budget` units of work (a height times the predecessors it looks at; a 10 km leg over hills is a few
+	-- hundred thousand) and returns true once the fit is complete, in job.result.
+	start : function(s : {number}, ground : {number}, water : {boolean}, options : Options) : FitJob
+	step : function(job : FitJob, budget : integer) : boolean
 end
