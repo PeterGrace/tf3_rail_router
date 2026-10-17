@@ -687,7 +687,9 @@ local function finishLeg(input : Input, a : Station, b : Station, fitted : Pgrac
 		end
 		crossing[i] = g.track[cell] or (w.bridgeRoads and g.road[cell]) or false
 	end
-	local fit = profile.fit(s, ground, water, w.maxGrade, w.bridgeAbove, w.tunnelBelow, a.z, b.z, crossing)
+	local fit = profile.fit(s, ground, water, { maxGrade = w.maxGrade, bridgeAbove = w.bridgeAbove,
+		tunnelBelow = w.tunnelBelow, bridgeCostFactor = w.bridgeCostFactor, tunnelCostFactor = w.tunnelCostFactor,
+		zStart = a.z, zEnd = b.z, crossing = crossing })
 	local length = 0.0
 	if #s > 0 then
 		length = s[#s]

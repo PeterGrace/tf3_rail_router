@@ -2,11 +2,25 @@ local profile : PgraceRailRouterProfile = {}
 
 local type Span = PgraceRailRouterProfile.Span
 local type Result = PgraceRailRouterProfile.Result
+local type Options = PgraceRailRouterProfile.Options
 
 -- Bridges, tunnels and stretches of ground shorter than this are merged into their neighbours (metres).
 local MIN_SPAN = 75.0
 -- Over a crossed road or track, the track runs at least this far above the ground (metres).
 local CLEARANCE = 7.0
+-- The height search runs on evenly spaced nodes at most this far apart (metres; route.tl samples every 25 m at most).
+local NODE_STEP = 25.0
+-- The coarsest height step it tries (metres). The step is the grade limit's rise between nodes split evenly, so the
+-- steepest allowed climb is a whole number of steps: 0.3125 m at 2.5% (Fastest), 0.425 m at 8.5%.
+local MAX_RESOLUTION = 0.5
+-- What a metre of plain track costs per metre of cut or fill under it, on top of its 1 (in metres of plain track).
+-- The game doesn't charge for earthworks, so this only keeps the track at the ground where leaving it saves
+-- nothing (else it would ride anywhere up to 8 m above it, or 12 m below, at no cost), and makes a big embankment or
+-- cutting pay its way: 8 m of fill is 1.4 times plain track, still far below a bridge's 5.
+local EARTHWORKS = 0.05
+-- The same for bridges and tunnels, smaller: a bridge's deck keeps low, a tunnel shallow, over water near the
+-- banks' line, without that moving where they start and end.
+local STRUCTURE_LEAN = 0.002
 
 -- Merges spans shorter than MIN_SPAN, shortest first: one between two of the same kind takes that kind, any other
 -- joins its longer neighbour. Spans over water or a crossing (keep[k]) are never merged away, though they may absorb
@@ -42,12 +56,230 @@ local function mergeShort(spans : {Span}, keep : {boolean}) : {Span}
 	return spans
 end
 
-function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrade : number, bridgeAbove : number,
-		tunnelBelow : number, zStart ?: number, zEnd ?: number, crossing ?: {boolean}) : Result
+-- Clamps each sample to its neighbour ± the grade limit, forward from the start's pin then backward from the end's, so
+-- afterwards every pair is within it and both pins hold (when they're within reach of each other; else the end's
+-- pin is kept and the grade next to the start breaks). In place.
+local function clampToGrade(s : {number}, z : {number}, maxGrade : number, zStart : number, zEnd : number)
+	local n = #z
+	if n == 0 then
+		return
+	end
+	if zStart ~= nil then
+		z[1] = zStart
+	end
+	for k = 2, n do
+		local limit = maxGrade * (s[k] - s[k - 1])
+		z[k] = math.max(z[k - 1] - limit, math.min(z[k - 1] + limit, z[k]))
+	end
+	if zEnd ~= nil then
+		z[n] = zEnd
+	end
+	for k = n - 1, 1, -1 do
+		local limit = maxGrade * (s[k + 1] - s[k])
+		z[k] = math.max(z[k + 1] - limit, math.min(z[k + 1] + limit, z[k]))
+	end
+	if zStart ~= nil then
+		z[1] = zStart
+	end
+end
+
+-- The cost of a metre of track at height z over a node whose reference height (the ground, over water the banks'
+-- line) is r, in metres of plain track.
+local function costAt(z : number, r : number, overWater : boolean, crossing : boolean, o : Options) : number
+	local dz = z - r
+	if overWater or crossing then
+		return o.bridgeCostFactor + STRUCTURE_LEAN * math.abs(dz)
+	elseif dz > o.bridgeAbove then
+		return o.bridgeCostFactor + STRUCTURE_LEAN * dz
+	elseif -dz > o.tunnelBelow then
+		return o.tunnelCostFactor - STRUCTURE_LEAN * dz
+	end
+	return 1 + EARTHWORKS * math.abs(dz)
+end
+
+-- The cheapest heights within the grade limit, by dynamic programming over evenly spaced nodes and heights on a grid
+-- of `h` metres (Viterbi: per node and height, the cheapest way there from the start). Returns the heights at the
+-- samples (linear between nodes, which keeps the nodes' grades) and h, or nil when no path fits (it always should).
+-- `ref` is the reference height per sample, `floor` the lowest the track may be (crossings' clearance spread at the
+-- grade, already capped by what the pins can reach), zEnd within reach of zStart.
+local function cheapest(s : {number}, ref : {number}, water : {boolean}, crossing : {boolean}, floor : {number},
+		o : Options, zStart : number, zEnd : number) : {number}, number
 	local n = #s
-	crossing = crossing or {}
+	local g = o.maxGrade
+	local length = s[n] - s[1]
+	local nodes = math.max(1, math.ceil(length / NODE_STEP - 1e-9))
+	local du = length / nodes
+	local rise = g * du
+	-- The steepest climb or descent between nodes is `steps` grid steps exactly.
+	local steps = math.max(1, math.ceil(rise / MAX_RESOLUTION - 1e-9))
+	local h = rise / steps
+	if rise <= 0 then
+		steps, h = 0, MAX_RESOLUTION
+	end
+	-- Node m (0-based) is at s[1] + m du: its reference height interpolated, water and crossing from the nearest
+	-- sample, and the floor of every sample in the intervals either side (so the line between nodes clears them).
+	local refN : {number} = {}
+	local waterN : {boolean} = {}
+	local crossN : {boolean} = {}
+	local floorN : {number} = {}
+	local j = 1
+	for m = 0, nodes do
+		local u = s[1] + m * du
+		while j < n - 1 and s[j + 1] < u do
+			j = j + 1
+		end
+		local span = s[j + 1] - s[j]
+		local t = 0.0
+		if span > 0 then
+			t = math.max(0, math.min(1, (u - s[j]) / span))
+		end
+		refN[m] = ref[j] + (ref[j + 1] - ref[j]) * t
+		local near = j
+		if t >= 0.5 then
+			near = j + 1
+		end
+		waterN[m] = water[near] or false
+		crossN[m] = crossing[near] or false
+		floorN[m] = -math.huge
+	end
+	for k = 1, n do
+		if floor[k] > -math.huge then
+			local m = math.max(0, math.min(nodes, math.floor((s[k] - s[1]) / du)))
+			floorN[m] = math.max(floorN[m], floor[k])
+			if m < nodes then
+				floorN[m + 1] = math.max(floorN[m + 1], floor[k])
+			end
+		end
+	end
+	for m = 1, nodes do
+		floorN[m] = math.max(floorN[m], floorN[m - 1] - rise)
+	end
+	for m = nodes - 1, 0, -1 do
+		floorN[m] = math.max(floorN[m], floorN[m + 1] - rise)
+	end
+	-- What the pins allow at each node.
+	local reachLo : {number} = {}
+	local reachHi : {number} = {}
+	for m = 0, nodes do
+		local lo, hi = -math.huge, math.huge
+		if zStart ~= nil then
+			lo, hi = math.max(lo, zStart - m * rise), math.min(hi, zStart + m * rise)
+		end
+		if zEnd ~= nil then
+			lo, hi = math.max(lo, zEnd - (nodes - m) * rise), math.min(hi, zEnd + (nodes - m) * rise)
+		end
+		reachLo[m], reachHi[m] = lo, hi
+		floorN[m] = math.min(floorN[m], hi)
+	end
+	-- Each node's band of heights worth trying. A cheapest track never goes under the lowest the reference heights
+	-- allow at the grade limit (lifting it up to that only brings it nearer the reference: no dearer), nor over the
+	-- highest that they and the floors need: so clip to those envelopes, and to the pins' reach.
+	local lower : {number} = {}
+	local upper : {number} = {}
+	for m = 0, nodes do
+		lower[m] = refN[m]
+		upper[m] = math.max(refN[m], floorN[m])
+	end
+	if zStart ~= nil then
+		lower[0], upper[0] = zStart, zStart
+	end
+	if zEnd ~= nil then
+		lower[nodes], upper[nodes] = zEnd, zEnd
+	end
+	for m = 1, nodes do
+		lower[m] = math.min(lower[m], lower[m - 1] + rise)
+		upper[m] = math.max(upper[m], upper[m - 1] - rise)
+	end
+	for m = nodes - 1, 0, -1 do
+		lower[m] = math.min(lower[m], lower[m + 1] + rise)
+		upper[m] = math.max(upper[m], upper[m + 1] - rise)
+	end
+	local base = zStart or 0.0
+	local first : {integer} = {}
+	local last : {integer} = {}
+	for m = 0, nodes do
+		local lo = math.max(lower[m], floorN[m], reachLo[m])
+		local hi = math.max(lo, math.min(upper[m], reachHi[m]))
+		-- A feasible track rounded up to the grid stays feasible (rounding keeps a rise of whole steps), so the band
+		-- runs from lo, and up to hi, rounded up.
+		first[m] = math.ceil((lo - base) / h - 1e-9)
+		last[m] = math.ceil((hi - base) / h - 1e-9)
+	end
+	-- The last node, when pinned, is that exact height, reached from any grid height within the grade (plus a grid
+	-- step: the grade is put right afterwards).
+	local lastNode = nodes
+	if zEnd ~= nil then
+		lastNode = nodes - 1
+	end
+	local cost : {number} = {}
+	local back : {{integer}} = {}
+	for i = first[0], last[0] do
+		cost[i - first[0] + 1] = costAt(base + i * h, refN[0], waterN[0], crossN[0], o) * du
+	end
+	for m = 1, lastNode do
+		local a0, b0, a1, b1 = first[m - 1], last[m - 1], first[m], last[m]
+		local weight = du
+		if m == nodes then
+			weight = 0
+		end
+		local r, wat, cr = refN[m], waterN[m], crossN[m]
+		local nextCost : {number} = {}
+		local from : {integer} = {}
+		for i = a1, b1 do
+			local best, arg = math.huge, -1
+			for p = math.max(a0, i - steps), math.min(b0, i + steps) do
+				local v = cost[p - a0 + 1]
+				if v < best then
+					best, arg = v, p
+				end
+			end
+			if best < math.huge then
+				best = best + costAt(base + i * h, r, wat, cr, o) * weight
+			end
+			nextCost[i - a1 + 1] = best
+			from[i - a1 + 1] = arg
+		end
+		cost = nextCost
+		back[m] = from
+	end
+	local zN : {number} = {}
+	local best, arg = math.huge, -1
+	local a, b = first[lastNode], last[lastNode]
+	for i = a, b do
+		local v = cost[i - a + 1]
+		if v < best and (zEnd == nil or math.abs(zEnd - (base + i * h)) <= rise + h + 1e-9) then
+			best, arg = v, i
+		end
+	end
+	if best == math.huge then
+		return nil, h
+	end
+	if zEnd ~= nil then
+		zN[nodes] = zEnd
+	end
+	local level = arg
+	for m = lastNode, 0, -1 do
+		zN[m] = base + level * h
+		if m > 0 then
+			level = back[m][level - first[m] + 1]
+		end
+	end
+	local z : {number} = {}
+	for k = 1, n do
+		local x = (s[k] - s[1]) / du
+		local m = math.max(0, math.min(nodes - 1, math.floor(x)))
+		z[k] = zN[m] + (zN[m + 1] - zN[m]) * (x - m)
+	end
+	return z, h
+end
+
+function profile.fit(s : {number}, ground : {number}, water : {boolean}, o : Options) : Result
+	local n = #s
+	local maxGrade = o.maxGrade
+	local crossing = o.crossing or {}
+	local zStart, zEnd = o.zStart, o.zEnd
 	-- What the track would like to follow: the ground, and over water a straight line between the banks.
-	local target : {number} = {}
+	local ref : {number} = {}
 	local i = 1
 	while i <= n do
 		if water[i] then
@@ -65,100 +297,87 @@ function profile.fit(s : {number}, ground : {number}, water : {boolean}, maxGrad
 			end
 			for k = i, j do
 				if left ~= nil and right ~= nil then
-					target[k] = left + (right - left) * (s[k] - s[i - 1]) / (s[j + 1] - s[i - 1])
+					ref[k] = left + (right - left) * (s[k] - s[i - 1]) / (s[j + 1] - s[i - 1])
 				else
-					target[k] = left or right or ground[k]
+					ref[k] = left or right or ground[k]
 				end
 			end
 			i = j + 1
 		else
-			target[i] = ground[i]
+			ref[i] = ground[i]
 			i = i + 1
 		end
 	end
+	-- Pins too far apart for the grade: aim for the nearest height the start's pin can reach, and put the end's pin
+	-- back at the very end (the last grade breaks the limit).
+	local feasible = true
+	local zEndFit = zEnd
+	if n > 1 and zStart ~= nil and zEnd ~= nil then
+		local reach = maxGrade * (s[n] - s[1])
+		if math.abs(zEnd - zStart) > reach + 1e-9 then
+			feasible = false
+			zEndFit = math.max(zStart - reach, math.min(zStart + reach, zEnd))
+		end
+	end
 	-- Over a crossing the track must clear the crossed line: a floor of CLEARANCE over the ground there, spread to the
-	-- neighbours at the grade limit (forward, then backward), so the track can climb to it in time. The grade passes
-	-- below never take the track under a floor that is itself within the grade limit. The spread floor is: it's the
-	-- highest of the raw ground + CLEARANCE values less maxGrade × distance, so even a run of crossing samples on
-	-- ground steeper than the limit keeps its clearance (the track is lifted higher there instead, more than
-	-- CLEARANCE above the lower samples). Only the pinned ends can break it, when a crossing is too near them.
+	-- neighbours at the grade limit (forward, then backward), so the track can climb to it in time. It's the highest
+	-- of the raw ground + CLEARANCE values less maxGrade × distance, so even a run of crossing samples on ground
+	-- steeper than the limit keeps its clearance (the track is lifted higher there instead). Where the pins can't
+	-- reach that high, they win: the floor is capped at their reach.
 	local floor : {number} = {}
-	local anyCrossing = false
 	for k = 1, n do
 		if crossing[k] then
 			floor[k] = ground[k] + CLEARANCE
-			anyCrossing = true
 		else
 			floor[k] = -math.huge
 		end
 	end
-	if anyCrossing then
-		for k = 2, n do
-			floor[k] = math.max(floor[k], floor[k - 1] - maxGrade * (s[k] - s[k - 1]))
-		end
-		for k = n - 1, 1, -1 do
-			floor[k] = math.max(floor[k], floor[k + 1] - maxGrade * (s[k + 1] - s[k]))
-		end
-		for k = 1, n do
-			target[k] = math.max(target[k], floor[k])
-		end
+	for k = 2, n do
+		floor[k] = math.max(floor[k], floor[k - 1] - maxGrade * (s[k] - s[k - 1]))
 	end
-	-- Pinned ends are where the track must be, whatever the ground (and whatever a crossing next to them needs).
-	if n > 0 and zStart ~= nil then
-		target[1] = zStart
+	for k = n - 1, 1, -1 do
+		floor[k] = math.max(floor[k], floor[k + 1] - maxGrade * (s[k + 1] - s[k]))
 	end
-	if n > 0 and zEnd ~= nil then
-		target[n] = zEnd
-	end
-	local feasible = true
-	if n > 1 and zStart ~= nil and zEnd ~= nil and math.abs(zEnd - zStart) > maxGrade * (s[n] - s[1]) + 1e-9 then
-		feasible = false
-	end
-	-- Clamp each sample to its neighbour ± the grade limit, one direction after the other, so afterwards every pair is
-	-- within it. A single order is lopsided: over a ridge the first pass lags below the ground on the way up (a tunnel
-	-- near that end) and stays above it on the way down (a long viaduct), and a valley is the reverse. So run both
-	-- orders and average them. Each result keeps the grade limit and the pins, and neither goes under a crossing floor
-	-- (the floor is itself within the grade limit, and the targets are at or above it), so the average keeps all
-	-- three. When the pins are infeasible they still win over the grade, in both.
-	local function clamp(forwardFirst : boolean) : {number}
-		local out : {number} = {}
-		for k = 1, n do
-			out[k] = target[k]
-		end
-		for pass = 1, 2 do
-			if (pass == 1) == forwardFirst then
-				for k = 2, n do
-					local limit = maxGrade * (s[k] - s[k - 1])
-					out[k] = math.max(out[k - 1] - limit, math.min(out[k - 1] + limit, out[k]))
-				end
-				-- The end just reached goes back to its pin before the other pass starts from it.
-				if n > 0 and zEnd ~= nil then
-					out[n] = zEnd
-				end
-			else
-				for k = n - 1, 1, -1 do
-					local limit = maxGrade * (s[k + 1] - s[k])
-					out[k] = math.max(out[k + 1] - limit, math.min(out[k + 1] + limit, out[k]))
-				end
-				if n > 0 and zStart ~= nil then
-					out[1] = zStart
-				end
-			end
-		end
-		return out
-	end
-	local za = clamp(true)
-	local zb = clamp(false)
-	local z : {number} = {}
 	for k = 1, n do
-		z[k] = (za[k] + zb[k]) / 2
+		if zStart ~= nil then
+			floor[k] = math.min(floor[k], zStart + maxGrade * (s[k] - s[1]))
+		end
+		if zEndFit ~= nil then
+			floor[k] = math.min(floor[k], zEndFit + maxGrade * (s[n] - s[k]))
+		end
+	end
+	-- The cheapest heights, on a grid of h metres; then each sample is moved up to h towards its reference height
+	-- (so a track that can follow the ground does so exactly, and a grid step doesn't decide a bridge's end) and the
+	-- grade limit and pins are put right (by less than h: the clamp keeps each sample within h of the grid track).
+	local z : {number} = nil
+	local h = 0.0
+	if n >= 3 and s[n] > s[1] then
+		z, h = cheapest(s, ref, water, crossing, floor, o, zStart, zEndFit)
+	end
+	local target : {number} = {}
+	for k = 1, n do
+		if z ~= nil then
+			target[k] = math.max(z[k] - h, math.min(z[k] + h, ref[k]))
+		else
+			target[k] = math.max(ref[k], floor[k])
+		end
+	end
+	clampToGrade(s, target, maxGrade, zStart, zEndFit)
+	z = target
+	-- The clamp never takes the track under a floor it started above (the floor is within the grade limit), but the
+	-- step towards the reference might: lift those back (still within the grade, and under the pins' reach).
+	for k = 1, n do
+		z[k] = math.max(z[k], floor[k])
+	end
+	if not feasible then
+		z[n] = zEnd
 	end
 	local kinds : {string} = {}
 	local maxG = 0.0
 	for k = 1, n do
-		if water[k] or crossing[k] or z[k] - ground[k] > bridgeAbove then
+		if water[k] or crossing[k] or z[k] - ground[k] > o.bridgeAbove then
 			kinds[k] = "bridge"
-		elseif ground[k] - z[k] > tunnelBelow then
+		elseif ground[k] - z[k] > o.tunnelBelow then
 			kinds[k] = "tunnel"
 		else
 			kinds[k] = "ground"
