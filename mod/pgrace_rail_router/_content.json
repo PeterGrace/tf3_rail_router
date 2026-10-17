@@ -1,6 +1,12 @@
 {
     "archives": null,
     "files": [
+        "gui/pgrace_rail_router/mapcapture.d.tl",
+        "gui/pgrace_rail_router/mapcapture.tl",
+        "gui/pgrace_rail_router/mapformat.d.tl",
+        "gui/pgrace_rail_router/mapformat.tl",
+        "gui/pgrace_rail_router/planner/area.d.tl",
+        "gui/pgrace_rail_router/planner/area.tl",
         "gui/pgrace_rail_router/planner/corridor.d.tl",
         "gui/pgrace_rail_router/planner/corridor.tl",
         "gui/pgrace_rail_router/planner/geo.d.tl",
