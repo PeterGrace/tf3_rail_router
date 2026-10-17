@@ -27,5 +27,9 @@ global record PgraceRailRouterCorridor
 	-- a, the picked towns, then b, the picked towns ordered by cheapest insertion with no limit (each put in where it
 	-- adds least, the cheapest first), not by where they project onto the line: towns the player ticks on both sides
 	-- still make a sensible tour. For select's towns it gives select's order. a and b are skipped if picked.
+	-- The candidates to list when the list is short, in their given order: those with on[id] true, those with
+	-- overridden[id] non-nil (the player has set them either way), and of the rest the `extra` with the smallest detour
+	-- (ties: lower town id).
+	visible : function(candidates : {Candidate}, on : {integer : boolean}, overridden : {integer : boolean}, extra : integer) : {Candidate}
 	order : function(a : Town, b : Town, picked : {Town}) : {Town}
 end

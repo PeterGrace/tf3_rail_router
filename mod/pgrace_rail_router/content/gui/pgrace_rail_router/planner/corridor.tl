@@ -85,6 +85,35 @@ function corridor.select(a : Town, b : Town, candidates : {Candidate}, budget : 
 	return chosen
 end
 
+function corridor.visible(candidates : {Candidate}, on : {integer : boolean}, overridden : {integer : boolean},
+		extra : integer) : {Candidate}
+	local rest : {Candidate} = {}
+	for __, candidate in ipairs(candidates) do
+		local id = candidate.town.id
+		if not on[id] and overridden[id] == nil then
+			table.insert(rest, candidate)
+		end
+	end
+	table.sort(rest, function(x : Candidate, y : Candidate) : boolean
+		if x.detour ~= y.detour then
+			return x.detour < y.detour
+		end
+		return x.town.id < y.town.id
+	end)
+	local shown : {integer : boolean} = {}
+	for k = 1, math.min(extra, #rest) do
+		shown[rest[k].town.id] = true
+	end
+	local result : {Candidate} = {}
+	for __, candidate in ipairs(candidates) do
+		local id = candidate.town.id
+		if on[id] or overridden[id] ~= nil or shown[id] then
+			table.insert(result, candidate)
+		end
+	end
+	return result
+end
+
 function corridor.order(a : Town, b : Town, picked : {Town}) : {Town}
 	return insertCheapest(a, b, picked, nil)
 end
