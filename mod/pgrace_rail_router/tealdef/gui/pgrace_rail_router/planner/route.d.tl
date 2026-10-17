@@ -27,7 +27,7 @@ global record PgraceRailRouterRoute
 	-- From one station's platform end to the next one's: a straight approach of 100 m at each end, then room for the
 	-- search's first turn at full radius before the searched path: 45° where the search turns freely, one 22.5° step
 	-- where it spaces its turns (less where buildings or the grid edge are in the way, which may leave a curve tighter
-	-- than the radius).
+	-- than the radius, and never more than a quarter of the way to the other station, past both approaches).
 	record Leg
 		pieces : {PgraceRailRouterSmooth.Piece}
 		samples : {PgraceRailRouterSmooth.Sample}

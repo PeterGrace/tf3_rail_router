@@ -120,11 +120,18 @@ end
 
 -- Where a station's platforms end, where its straight approach ends, and where the room to turn beyond it ends
 -- (extensionLength), on its leaving side (forward = true) or its arriving side.
+-- The room to turn takes at most a quarter of the way to the neighbouring station on that side (`other`: the
+-- distance ahead along this station's axis, less both stations' platform halves and approaches), so two close
+-- stations' rooms don't overlap. Overlapping, the leg's search had to start beyond where it ends and loop back round
+-- (Fastest at 3 km on the 54-town map: Temple City to Miami, 1.3 km apart, became a loop that smoothing cut with a
+-- 55 m curve over buildings). On the regression maps' Fastest routes a quarter did best: estimates 92.4 M in all
+-- against 99.6 M uncapped, 93.2 M at a half and 104.4 M at a third, and samples on blocked cells 4 against 6, 6 and 4.
 -- The leg's search starts or ends at the last, and the track runs straight to it, so it is pulled back (half a cell
 -- at a time, at most to the approach point) until that straight is inside the grid and clear of blocked cells and
 -- other stations' platforms (`taken`). Where it's pulled back, the curve beyond may be tighter than minRadius (and
 -- where that's below what can be built, fitLeg gives the extension up).
-local function stationEnds(input : Input, station : Station, forward : boolean, taken : {integer : boolean}) : Pt, Pt, Pt
+local function stationEnds(input : Input, station : Station, forward : boolean, taken : {integer : boolean},
+		other : Station) : Pt, Pt, Pt
 	local g = input.grid
 	local sign = forward and 1 or -1
 	local half = input.platformLength / 2
@@ -133,6 +140,10 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 	local approach = geo.add(c, geo.scale(d, sign * (half + APPROACH)))
 	local own = platformCells(input, station)
 	local ext = extensionLength(input)
+	if other ~= nil then
+		local ahead = sign * geo.dot(geo.sub(other.site.centre, c), d)
+		ext = math.min(ext, (ahead - 2 * (half + APPROACH)) / 4)
+	end
 	while ext > 0 do
 		local extension = geo.add(c, geo.scale(d, sign * (half + APPROACH + ext)))
 		if straightClear(input, approach, extension, taken, own) then
@@ -144,8 +155,9 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 end
 
 -- How far a station's room to turn reaches beyond its approach, on one side (metres; see stationEnds).
-local function turnRoom(input : Input, station : Station, forward : boolean, taken : {integer : boolean}) : number
-	local __, approach, extension = stationEnds(input, station, forward, taken)
+local function turnRoom(input : Input, station : Station, forward : boolean, taken : {integer : boolean},
+		other : Station) : number
+	local __, approach, extension = stationEnds(input, station, forward, taken, other)
 	return geo.dist(approach, extension)
 end
 
@@ -324,8 +336,8 @@ end
 local function simplifyLeg(input : Input, a : Station, b : Station, path : {Pt},
 		taken : {integer : boolean}) : PgraceRailRouterRoute.Simplified
 	local g, w = input.grid, input.weights
-	local aEnd, aApproach = stationEnds(input, a, true, taken)
-	local bEnd, bApproach = stationEnds(input, b, false, taken)
+	local aEnd, aApproach = stationEnds(input, a, true, taken, b)
+	local bEnd, bApproach = stationEnds(input, b, false, taken, a)
 	-- Simplifying and filleting are guarded, so the track keeps to the ground the path chose (off water, hillsides
 	-- and buildings it went round), checked every quarter cell.
 	local clear = pathGuard(g, path)
@@ -577,9 +589,10 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			if site ~= nil then
 				local turned : Station = { town = station.town, site = site, z = station.z }
 				for __, forward in ipairs({ true, false }) do
-					if (forward and next ~= nil) or (not forward and prev ~= nil) then
-						roomy = roomy and turnRoom(input, turned, forward, others)
-							>= turnRoom(input, station, forward, others) - 1e-6
+					local other = forward and next or prev
+					if other ~= nil then
+						roomy = roomy and turnRoom(input, turned, forward, others, other)
+							>= turnRoom(input, station, forward, others, other) - 1e-6
 					end
 				end
 			end
@@ -628,8 +641,8 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		return false
 	end
 	if job.search == nil then
-		local aExtension = select(3, stationEnds(input, a, true, job.taken))
-		local bExtension = select(3, stationEnds(input, b, false, job.taken))
+		local aExtension = select(3, stationEnds(input, a, true, job.taken, b))
+		local bExtension = select(3, stationEnds(input, b, false, job.taken, a))
 		if job.radii == nil then
 			job.radii, job.tryIndex, job.searchExpansions = searchRadii(input.weights), 1, 0
 		end
