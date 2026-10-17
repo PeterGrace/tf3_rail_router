@@ -202,6 +202,7 @@ end
 probe:close()
 
 local lib = dofile(t.root .. "/tools/replaylib.lua")(t.root)
+local arrows = t.requireTl("gui/pgrace_rail_router/planner/arrows.tl")
 local maps = {}
 local function loadMap(name)
 	if maps[name] == nil then
@@ -267,6 +268,14 @@ for _, rt in ipairs(ROUTES) do
 			t.eq(#below, rt.knownBelow or 0, "arcs below " .. r.weights.minBuildRadius .. " m: " .. table.concat(list, "; "))
 			local blocked = lib.blockedSamples(r)
 			t.eq(#blocked, rt.knownBlocked or 0, "samples on blocked cells")
+			-- The preview's arrows (100 m chords, at least 25 m: shorter ones crash the game).
+			for li, leg in ipairs(plan.legs) do
+				for __, a in ipairs(arrows.split(leg, 100, 25)) do
+					local d = math.sqrt((leg.samples[a.j].p.x - leg.samples[a.i].p.x) ^ 2
+						+ (leg.samples[a.j].p.y - leg.samples[a.i].p.y) ^ 2)
+					t.ok(d >= 25 - 1e-9, ("leg %d: a %.1f m preview arrow"):format(li, d))
+				end
+			end
 			local b = rt.base
 			noWorse("widest sweep of a leg (a loop or a hook?)", sweep, b.sweep, 0, SWEEP_SLACK)
 			noWorse("length", s.length, b.length, TOLERANCE.length)
