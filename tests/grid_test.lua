@@ -668,3 +668,33 @@ t.test("grid: the ends may move out along the stations' axes, short of anything 
 	t.ok(p == nil or (p[1] == from and p[#p] == to), "fixed ends")
 	t.ok(p == nil or fixed.cost[0] >= s.cost[0] - 1e-6, "runs never cost more")
 end)
+
+t.test("grid: a grid's searches share its store, one at a time, and find what they would alone", function()
+	-- A wall with a gap, searched one way and back on one grid, then each on a grid of its own.
+	local function walled()
+		local g = grid.new(0, 0, 100, 31, 21)
+		for iy = 1, 21 do
+			if iy ~= 5 then
+				g.blocked[grid.index(g, 16, iy)] = true
+			end
+		end
+		return g
+	end
+	local WEST = { x = -1, y = 0 }
+	local shared = walled()
+	local there, sThere = run(shared, { x = 200, y = 1500 }, { x = 2800, y = 1500 }, W)
+	local back, sBack = run(shared, { x = 2800, y = 500 }, { x = 200, y = 1800 }, W, 7, WEST, WEST)
+	local alone, sAlone = run(walled(), { x = 2800, y = 500 }, { x = 200, y = 1800 }, W, 7, WEST, WEST)
+	t.ok(there ~= nil and back ~= nil, "both found")
+	t.near(sBack.cost[0], sAlone.cost[0], 1e-9, "the second search's cost as alone")
+	t.eq(#back, #alone, "and its path")
+	for i = 1, #back do
+		t.ok(back[i].x == alone[i].x and back[i].y == alone[i].y, "point " .. i)
+	end
+	t.ok(grid.path(grid.finished(sBack)) ~= nil, "a finished copy keeps its path")
+	-- The first search's store is the second's now: it can't be stepped on or its path taken.
+	t.ok(not pcall(grid.path, sThere), "an older search's path is refused")
+	local older = grid.startSearch(shared, { x = 200, y = 1500 }, { x = 2800, y = 1500 }, EAST, EAST, W)
+	grid.startSearch(shared, { x = 200, y = 300 }, { x = 2800, y = 300 }, EAST, EAST, W)
+	t.ok(not pcall(grid.stepSearch, older, 10), "an older search can't go on")
+end)
