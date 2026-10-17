@@ -27,6 +27,8 @@
         "gui/pgrace_rail_router/planner/smooth.tl",
         "gui/pgrace_rail_router/planner/speed.d.tl",
         "gui/pgrace_rail_router/planner/speed.tl",
+        "gui/pgrace_rail_router/planner/stationlayout.d.tl",
+        "gui/pgrace_rail_router/planner/stationlayout.tl",
         "gui/pgrace_rail_router/planner/stations.d.tl",
         "gui/pgrace_rail_router/planner/stations.tl",
         "gui/pgrace_rail_router/preview.d.tl",
