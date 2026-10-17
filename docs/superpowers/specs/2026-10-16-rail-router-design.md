@@ -34,6 +34,7 @@ content/gui/pgrace_rail_router/
 │   ├── smooth.tl          jagged path → straights + arcs ≥ min radius
 │   ├── profile.tl         heights under the grade limit → bridge/tunnel spans
 │   ├── stations.tl        nearest clear straight spot to each town centre
+│   ├── speed.tl           a train's run between stops; time tight curves lose
 │   └── modes.tl           Cheapest/Fastest weights; track type → limits
 ├── preview.tl           draws the route on the map (chain of static arrows)
 └── builder.tl           plan → proposals → dry run → build
@@ -86,9 +87,27 @@ is pure, so it can be tested end to end on artificial maps.
 | Bridges and tunnels  | expensive                         | cheap relative to detours                       |
 | Turn penalty         | low                               | high                                            |
 | Road crossings       | level crossing                    | bridge                                          |
+| Travel time          | not priced                        | a second lost to tight curves = 50 m of track   |
 
 Defaults: the best track type available in the current year (high-speed in Fastest mode once it's unlocked),
 electrified once catenary is available, 160 m platforms.
+
+### Speed model (`speed.tl`)
+
+How long a train takes over a leg, and how much of that its curves below the mode's radius cost. Every station is a
+stop, so the run starts and ends at a standstill at the station centres. The train accelerates at 0.5 m/s² and, once
+its power runs short, at 12 W/kg ÷ v (an ICE 1: two 4,790 kW power cars with 200 kN of tractive effort each, about
+800 t), and brakes at 1 m/s² (the ICE 1's data says 2.5; a starting value). A curve of radius R allows
+sqrt(2 m/s² · R); the line is planned for what the mode's radius allows (`Weights.topSpeed`, at most the track's
+speed: 77 m/s at 3 km). The run is worked out every 10 m, forward for acceleration and backward for braking.
+`timeLost` is the run with the curves' limits less the run without them.
+
+Such a train needs about 13 km to reach 77 m/s, so on legs of a few kilometres it never does: a 4.5 km leg peaks at
+about 42 m/s, where curves of 900 m or more cost nothing, and a tight curve next to a station costs little (the train
+is slow there anyway). Each leg reports `timeLost`, the plan's summary the sum, and the regression routes are held to
+it. Fastest prices it at `Weights.timeCost` = 50 m of plain track a second (`FASTEST_TIME_COST`; on the regression
+maps, before slow legs' stations were re-sited, 20 gave 704 s lost over the Fastest routes, 50 672 s, 100 663 s with a
+quarter more search work, 200 614 s but estimates 7% up and nearly twice the work); Cheapest doesn't price it.
 
 ### Grid search (`grid.tl`)
 
@@ -164,14 +183,36 @@ on, so it matters only for stations facing between them.
 
 A leg is built over three steps (simplify, fillet, heights), so no frame does all three.
 
-**Radius fallback.** A Fastest leg is searched first with turns spaced for the Cheapest radius (the fallback; if that
-finds nothing, the plan fails "no_path"), then for the mode's radius, halving while above the Cheapest one, until a
-path costs at most 10% more than the fallback's; if none does, the fallback's path is taken. A radius that doesn't fit
-(station ends misaligned or close together, a passage too narrow) otherwise finds a loop or a wide detour, or nothing
-after a long search; the cost limit ends those searches early. The radius used is recorded per leg (`searchRadius`, in
-the log and the replay tool); smoothing still aims for the full radius, so a leg searched with a smaller one may have
-tight curves. Cost on the captured Fastest map (4 legs, R = 3000 m): about twice the expansions of the one-step
-search (7,400 against 3,900; about 45 ms against 28 ms offline), Cheapest unchanged. Known cost (plain Lua, desktop): a 500 × 500 grid with 15% clutter took about 1.6 s and 35 MB in Cheapest
+**Search radii, weighed by time.** A Fastest leg is searched first with turns spaced for the Cheapest radius (the
+fallback; if that finds nothing, the plan fails "no_path"), then for the mode's radius, halving while above the
+Cheapest one (3000, 1500, 750, 375 m at 3 km). Each try's ends have the stations' rooms to turn sized for its own
+radius (below). Every path found is built (simplified and filleted, a step each) and weighed: its search cost plus
+`timeCost` × the seconds its fitted curves lose (Speed model); the least total is the leg. A try's search stops once
+every path left costs more than the best total so far (no path loses less than nothing), which also ends early the
+searches of a radius that doesn't fit (station ends misaligned or close together, a passage too narrow), which would
+otherwise find a loop or a wide detour, or nothing after a long search. Without `timeCost` (and so in tests with older
+weights), the first try within 10% of the fallback's cost is taken. The radius used is recorded per leg
+(`searchRadius`, in the log and the replay tool); smoothing still aims for the full radius, so a leg searched with a
+smaller one may have tight curves.
+
+The rooms used to be sized for the mode's radius at every try (597 m beyond the approach at 3 km): on legs of 1–5 km
+the ends then sat so close together, or so far into the next obstacle, that no wider radius found a way. On New
+Game's Alliance → Aloha every leg fell back, and a 375 m try failed where a plan with a 375 m target planned its
+legs 1 and 4 at 375. The fallback's own rooms sized for it (91 m) also made Fastest's lines cheaper and faster (time
+lost 672 s against 826 s over the Fastest routes, estimates 307 M against 331 M); re-siting's searches size theirs
+the same way.
+
+Weighing the tries by an estimate from the grid path (each corner rounded as widely as the straights either side
+allow) changed little: the estimate missed the curves the smoothing guard tightens, and the 10% rule did as well.
+Weighing the fitted legs is what made the time count. Tried and dropped: letting a spaced search turn freely at its
+ends, or within 300–800 m of them (where a station's end faces buildings, one 22.5° step either side of its axis is no
+way out): at best 2% less time lost over the set, but up to 3 samples on blocked cells and up to 75% more search
+work. Pricing the
+time inside the free-turning search was not tried: its corners only know the half moves either side of them, so
+every corner of a gentle curve would be priced as a sharp one. Cost on the captured Fastest map (4 legs, R = 3000 m): about twice the expansions of the one-step
+search (7,400 against 3,900; about 45 ms against 28 ms offline), Cheapest unchanged. Weighing every radius and
+re-siting slow legs' stations (below) about doubled Fastest's planning work on the regression maps (4.5 s to 9.6 s
+desktop over its 15 routes); the slowest single step stayed about 7 ms (fitting a leg's curves). Known cost (plain Lua, desktop): a 500 × 500 grid with 15% clutter took about 1.6 s and 35 MB in Cheapest
 mode and about 6 s and 90 MB in Fastest mode, spread over frames. If that's too slow in-game, weight the heuristic
 (f = g + 1.2·h) in Fastest mode, giving up exact optimality that smoothing hides anyway.
 
@@ -282,13 +323,17 @@ sites facing 8 axes, within 300 m more of the town, by the costs of the fallback
 site 2% cheaper replaces it, and the legs either side are built again. The searches price a hook's tight curves
 (Grid search), so the comparison is fair, but a hook still happens where every site within reach faces badly.
 Re-siting is still worth it: without it the regression set's estimates were 4% higher (Dover → Camarillo, Fastest
-29%) and as many routes hooked. It runs less often than before (8 stations on the set against 11), and cheaper: the
+29%) and as many routes hooked. In Fastest, a leg whose curves lose more than 10 s (`RESITE_TIME_LOST`; Speed model)
+has the station nearer its tightest curve weighed again too: mostly one whose end faces buildings, so the line hooks
+round into it. Owings Mills on New Game was such a station; re-sited on the bay's east shore, facing west, Alliance →
+Aloha lost 41 s to its curves instead of 58 s and cost 14% less. Over the Fastest routes 10 s took the time lost from
+672 s to 423 s and the estimates 7% down (20 s: 541 s, 3%), for about twice the work. It runs less often than before (8 stations on the set against 11), and cheaper: the
 current site's two legs are the legs' own searches, kept (the last 4 finished searches without a cost limit, by
 their inputs), and a candidate's leg in is cut off once it costs more than the best less the straight distance of its
 leg out.
 
 **Room to turn beyond the approach** (the leg's search starts and ends there): enough for the search's first turn at
-full radius. Where every move may turn (Cheapest) that may be anything up to 90°, so room for 45°
+its radius (each of a Fastest leg's tries has its own; the stations' turning checks size it for the mode's). Where every move may turn (Cheapest) that may be anything up to 90°, so room for 45°
 (R·tan 22.5°, 91 m at 220 m); where it spaces its turns, one 22.5° step (R·tan 11.25°, 597 m at 3 km). The longer
 room (1.24 km at 3 km) cost Fastest dear once the stations faced the line: it pushed the legs' ends past their turns,
 into a ridge (a 300 m tunnel) and loops (estimate 23.2–23.5 M against 19.6 M on the captured map).
@@ -362,6 +407,10 @@ don't keep engine components across a `sendCommand`.
 - `grid`: a straight line on flat ground; going round a lake when that's cheaper than a bridge; a bridge when going
   round is too long; impassable buildings; Fastest choosing a straighter path than Cheapest on the same map.
 - `smooth`: every arc is at least the minimum radius, and the end directions are kept.
+- `speed`: a short run's time matches the formula; a long run cruises; a limit costs time mid-leg, less near a stop,
+  nothing above the speed reached, and two close limits slow the train once.
+- `route`: with time priced, a wider radius whose curves lose less time is taken through a chicane when time is worth a
+  lot, and the cheapest when it isn't; progress never goes back while radii are weighed and stations re-sited.
 - `profile`: grades stay under the limit (also on rough random ground and unevenly spaced samples); a valley becomes
   one bridge, a ridge one tunnel, a hill within the grade neither; a crossing a bridge with 7 m of clearance; flat
   ground before a ridge that's tunnelled isn't bridged; a fit spread over steps gives the same heights.
@@ -401,6 +450,10 @@ Each ends with one in-game test by the user.
 
 ## Known issues after milestone 1 (to settle with in-game data)
 
+- **Tight curves are counted against the mode's radius, not the speed reached.** On the regression maps Fastest's legs
+  are 1–5 km between stops, where a high-speed train never gets near 77 m/s, so most of the 230 curves below 3 km
+  (Fastest routes) cost no time; the planner weighs time lost (Speed model), and the regression set holds it per route.
+  The figures below (tight curves on the captures) are from before that.
 - **Curves near station ends can be tight.** The search spaces its turns for the radius, and the stations face the
   scouted line, so in open country and round lakes, hills and buildings the path leaves room for full-radius curves.
   On the second Fastest capture without Mercer Island (10 tight curves) two legs still fall back to the Cheapest
@@ -430,7 +483,10 @@ Each ends with one in-game test by the user.
 - **Small changes move stations.** The scouts and the station turning are sensitive: Alliance → Aloha, Fastest, came
   out 29% dearer with the turn pricing (long bridges over the lake before Owings Mills): Turlock's turned site moved,
   and no leg hooked or curved below the build minimum any more to set off the re-siting that had turned Owings Mills
-  west.
+  west. (Re-siting slow legs' stations turned it west again: leg 3 now runs north over land.)
+- **The regression set's samples on blocked cells:** 3 now (Bossier City → Ashland, Cheapest; Gardner → Herndon and
+  Dover → Camarillo, Fastest), each a straight or a curve held at the build minimum grazing a building buffer's corner
+  between the guard's checks.
 
 ## Out of scope for version 1
 
