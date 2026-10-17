@@ -13,6 +13,9 @@ local CHEAPEST_RADIUS_FACTOR = 4.0
 local FASTEST_LATERAL_ACCEL = 2.0
 local FASTEST_MAX_RADIUS = 3000.0
 local FASTEST_MAX_GRADE = 0.025
+-- Fastest: what a second of travel time lost to curves below its radius is worth, in metres of plain track (see
+-- Weights.timeCost and route.tl's choice of search radius). A starting value, tuned on the regression maps.
+local FASTEST_TIME_COST = 50.0
 
 function modes.isAvailable(t : TrackType, year : integer) : boolean
 	return (t.yearFrom == 0 or year >= t.yearFrom) and (t.yearTo == 0 or year < t.yearTo)
@@ -48,10 +51,10 @@ end
 function modes.weights(mode : Mode, t : TrackType) : Weights
 	local cheapestRadius = t.minCurveRadiusBuild * CHEAPEST_RADIUS_FACTOR
 	if mode == "fastest" then
-		local radius = math.max(cheapestRadius, t.speed * t.speed / FASTEST_LATERAL_ACCEL)
+		local radius = math.min(FASTEST_MAX_RADIUS, math.max(cheapestRadius, t.speed * t.speed / FASTEST_LATERAL_ACCEL))
 		return {
 			maxGrade = math.min(FASTEST_MAX_GRADE, t.maxSlopeBuild),
-			minRadius = math.min(FASTEST_MAX_RADIUS, radius),
+			minRadius = radius,
 			minBuildRadius = t.minCurveRadiusBuild,
 			minSearchRadius = cheapestRadius,
 			slopePenalty = 1.5,
@@ -65,6 +68,9 @@ function modes.weights(mode : Mode, t : TrackType) : Weights
 			bridgeAbove = 8.0,
 			tunnelBelow = 12.0,
 			bridgeRoads = true,
+			lateralAccel = FASTEST_LATERAL_ACCEL,
+			topSpeed = math.min(t.speed, math.sqrt(FASTEST_LATERAL_ACCEL * radius)),
+			timeCost = FASTEST_TIME_COST,
 		}
 	end
 	return {
@@ -83,6 +89,9 @@ function modes.weights(mode : Mode, t : TrackType) : Weights
 		bridgeAbove = 8.0,
 		tunnelBelow = 12.0,
 		bridgeRoads = false,
+		lateralAccel = FASTEST_LATERAL_ACCEL,
+		topSpeed = math.min(t.speed, math.sqrt(FASTEST_LATERAL_ACCEL * cheapestRadius)),
+		timeCost = 0,
 	}
 end
 

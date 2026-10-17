@@ -56,6 +56,15 @@ global record PgraceRailRouterModes
 		tunnelBelow : number
 		-- Whether roads are crossed by a bridge (fastest) or on the level (cheapest). Existing track is always bridged.
 		bridgeRoads : boolean
+		-- The speed model (speed.tl): the most sideways acceleration a curve may ask of a train (m/s²: a curve of radius
+		-- R allows sqrt(lateralAccel · R)), and the speed the line is planned for: the track's top speed, or what
+		-- minRadius allows if less (m/s).
+		lateralAccel : number
+		topSpeed : number
+		-- What a second of travel time lost to curves below minRadius is worth, in metres of plain track: Fastest
+		-- weighs a leg's search radii by their paths' cost plus this times the time they lose (route.tl). 0: time is
+		-- not priced (Cheapest).
+		timeCost : number
 	end
 
 	isAvailable : function(t : TrackType, year : integer) : boolean
