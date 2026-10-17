@@ -215,6 +215,16 @@ local function apartEnough(input : Input, a : PgraceRailRouterStations.Site, b :
 		and geo.dot(apart, b.dir) > 0
 end
 
+-- Expansions for one step of a search. With turns spaced for a wide radius, an expansion walks a whole straight (up
+-- to a dozen cells), so a step gets proportionally fewer: in-game a 150-expansion step at 3 km took 16–21 ms.
+local function searchBudget(search : PgraceRailRouterGrid.Search, maxExpansions : integer) : integer
+	local longest = 1
+	for __, steps in ipairs(search.straightSteps) do
+		longest = math.max(longest, steps)
+	end
+	return math.max(1, math.floor(maxExpansions / longest))
+end
+
 local function fail(job : Job, failure : string, towns : {string}) : boolean
 	job.result.ok = false
 	job.result.failure = failure
@@ -514,7 +524,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			job.search = grid.startSearch(input.grid, a, b, any, any, w, w.minSearchRadius or w.minRadius)
 			return false
 		end
-		if not grid.stepSearch(job.search, maxExpansions) then
+		if not grid.stepSearch(job.search, searchBudget(job.search, maxExpansions)) then
 			return false
 		end
 		-- No scout (no path): the station keeps its direction on that side; the leg's own search reports it.
@@ -621,7 +631,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			radius, maxCost, run, run)
 		return false
 	end
-	if not grid.stepSearch(job.search, maxExpansions) then
+	if not grid.stepSearch(job.search, searchBudget(job.search, maxExpansions)) then
 		return false
 	end
 	-- The leg is built on the next step, so no step does both.
