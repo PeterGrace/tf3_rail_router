@@ -8,6 +8,16 @@ global record PgraceRailRouterBuilder
 		index : integer
 	end
 
+	-- Something a dry run's track or station ran into, as the game lists it.
+	record Collision
+		entity : integer
+		-- "street", "track", "building" (a town building), "construction" or "other".
+		what : string
+		-- Where it is (its bounding box's centre, or an edge's middle); nil where it can't be read.
+		x : number
+		y : number
+	end
+
 	record Outcome
 		item : Item
 		ok : boolean
@@ -19,6 +29,11 @@ global record PgraceRailRouterBuilder
 		y : number
 		-- Wall time of the dry run (microseconds); 0 if there was none.
 		us : integer
+		-- What it ran into, each entity once (the game lists some several times).
+		collisions : {Collision}
+		-- Streets crossed on the level (Settings.levelCrossings): in a dry run the track collides with them, since a
+		-- level crossing splits the street (milestone 3). An outcome whose only errors are these is ok.
+		crossings : integer
 	end
 
 	record Settings
@@ -37,6 +52,9 @@ global record PgraceRailRouterBuilder
 		-- The main building, stairs and roofs besides the platforms and tracks; nil for none (probe P6 tries both).
 		addons : PgraceRailRouterStationLayout.Addons
 		network : PgraceRailRouterNetwork.Options
+		-- The plan crosses roads on the level (Weights.bridgeRoads false): a collision with streets alone is a level
+		-- crossing, not an error.
+		levelCrossings : boolean
 	end
 
 	record Check
@@ -50,6 +68,8 @@ global record PgraceRailRouterBuilder
 		-- The sum of the game's prices, and the outcomes that weren't clean.
 		total : integer
 		failures : integer
+		-- Level crossings over all the outcomes.
+		crossings : integer
 		-- The slowest dry run so far and the time of all of them (microseconds).
 		slowestUs : integer
 		totalUs : integer
@@ -73,6 +93,12 @@ global record PgraceRailRouterBuilder
 	-- The station module's resource name as the module repository knows it: `name`, else the same with or without its
 	-- leading "::"; nil if neither is found.
 	resolveModule : function(name : string) : string
+	-- Whether a dry run's errors are only level crossings: every message is a collision, and everything collided with
+	-- is a street (and there is at least one). Pure.
+	crossingsOnly : function(messages : {string}, collisions : {Collision}) : boolean
+	-- The entities a dry run collided with, each once, with what each is and where. Empty when there are none or
+	-- they can't be read.
+	collisions : function(data : ProposalData) : {Collision}
 	-- A dry run: whether it's clean, the price, the error messages, its wall time in µs, and the raw ProposalData
 	-- (nil if the dry run threw).
 	dryRun : function(proposal : SimpleProposal) : boolean, integer, {string}, integer, ProposalData

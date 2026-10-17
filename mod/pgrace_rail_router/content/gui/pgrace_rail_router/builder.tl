@@ -6,6 +6,7 @@ local builder : PgraceRailRouterBuilder = {}
 local type Check = PgraceRailRouterBuilder.Check
 local type Settings = PgraceRailRouterBuilder.Settings
 local type Item = PgraceRailRouterBuilder.Item
+local type Collision = PgraceRailRouterBuilder.Collision
 local type Network = PgraceRailRouterNetwork.Network
 local type Pt3 = PgraceRailRouterNetwork.Pt3
 local type Plan = PgraceRailRouterRoute.Plan
@@ -181,6 +182,84 @@ function builder.stationProposal(plan : Plan, index : integer, settings : Settin
 	return proposal
 end
 
+function builder.crossingsOnly(messages : {string}, collisions : {Collision}) : boolean
+	if #collisions == 0 then
+		return false
+	end
+	for __, m in ipairs(messages) do
+		if m:lower() ~= "collision" then
+			return false
+		end
+	end
+	for __, c in ipairs(collisions) do
+		if c.what ~= "street" then
+			return false
+		end
+	end
+	return true
+end
+
+local function has(entity : integer, ct : Engine.ComponentType) : boolean
+	local ok, comp = pcall(function() : any
+		return api.engine.getComponent(entity, ct)
+	end)
+	return ok and comp ~= nil
+end
+
+local function whatIs(entity : integer) : string
+	local ct = api.type.ComponentType
+	if has(entity, ct.BASE_EDGE_STREET) then
+		return "street"
+	elseif has(entity, ct.BASE_EDGE) then
+		return "track"
+	elseif has(entity, ct.TOWN_BUILDING) then
+		return "building"
+	elseif has(entity, ct.CONSTRUCTION) then
+		return "construction"
+	end
+	return "other"
+end
+
+-- The centre of the entity's bounding box, else the middle of its edge's ends; nil where neither can be read.
+local function whereIs(entity : integer) : number, number
+	local x, y : number, number = nil, nil
+	pcall(function() : boolean
+		local bv = api.engine.getComponent(entity, api.type.ComponentType.BOUNDING_VOLUME) as Engine.Component.BoundingVolume
+		if bv ~= nil then
+			x, y = (bv.bbox.min.x + bv.bbox.max.x) / 2, (bv.bbox.min.y + bv.bbox.max.y) / 2
+			return true
+		end
+		local edge = api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if edge ~= nil then
+			local a = api.engine.getComponent(edge.node0, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+			local b = api.engine.getComponent(edge.node1, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+			x, y = (a.position.x + b.position.x) / 2, (a.position.y + b.position.y) / 2
+		end
+		return true
+	end)
+	return x, y
+end
+
+function builder.collisions(data : ProposalData) : {Collision}
+	local result : {Collision} = {}
+	if data == nil then
+		return result
+	end
+	local seen : {integer : boolean} = {}
+	pcall(function() : boolean
+		for __, d in ipairs(data.collisionInfo.collisionEntities or {}) do
+			local e = d.entity as integer
+			if e ~= nil and not seen[e] then
+				seen[e] = true
+				local x, y = whereIs(e)
+				table.insert(result, { entity = e, what = whatIs(e), x = x, y = y })
+			end
+		end
+		return true
+	end)
+	return result
+end
+
 function builder.dryRun(proposal : SimpleProposal) : boolean, integer, {string}, integer, ProposalData
 	local clock = api.type.Clock.new()
 	-- makeProposalData takes a SimpleProposal, despite the tealdef (AGENTS.md).
@@ -225,7 +304,7 @@ function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) 
 		settings.bridge ~= nil and settings.bridge.name or "none", settings.tunnel ~= nil and settings.tunnel.name or "none",
 		settings.year or 0, settingsUs or 0, math.floor(clock:getTime())))
 	return { plan = plan, settings = settings, net = net, items = items, next = 1, outcomes = {}, total = 0,
-		failures = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
+		failures = 0, crossings = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
 end
 
 function builder.step(check : Check) : boolean
@@ -248,14 +327,24 @@ function builder.step(check : Check) : boolean
 		return builder.chunkProposal(check.net, chunk.first, chunk.last, check.settings)
 	end)
 	local ok, cost, messages, us = false, 0, {} as {string}, 0
+	local collisions : {Collision} = {}
+	local crossings = 0
 	if not made then
 		messages = { "couldn't make the proposal: " .. tostring(proposal) }
 	elseif proposal == nil then
 		messages = { tostring(why) }
 	else
-		ok, cost, messages, us = builder.dryRun(proposal as SimpleProposal)
+		local data : ProposalData
+		ok, cost, messages, us, data = builder.dryRun(proposal as SimpleProposal)
+		collisions = builder.collisions(data)
+		if not ok and item.kind == "chunk" and check.settings.levelCrossings
+			and builder.crossingsOnly(messages, collisions) then
+			ok, crossings, messages = true, #collisions, {}
+		end
 	end
-	table.insert(check.outcomes, { item = item, ok = ok, cost = cost, messages = messages, x = x, y = y, us = us })
+	table.insert(check.outcomes, { item = item, ok = ok, cost = cost, messages = messages, x = x, y = y, us = us,
+		collisions = collisions, crossings = crossings })
+	check.crossings = check.crossings + crossings
 	check.total = check.total + cost
 	check.totalUs = check.totalUs + us
 	check.slowestUs = math.max(check.slowestUs, us)
@@ -267,11 +356,17 @@ function builder.step(check : Check) : boolean
 		local chunk = check.net.chunks[item.index]
 		extra = (" (%d edges, %.0f m)"):format(chunk.last - chunk.first + 1, chunk.length)
 	end
-	debugPrint(LOG_PREFIX .. ("dry run %s %d%s: %s, cost %d, %d us%s"):format(item.kind, item.index, extra,
-		ok and "clean" or "errors", cost, us, #messages > 0 and (": " .. table.concat(messages, "; ")) or ""))
+	local hits : {string} = {}
+	for __, c in ipairs(collisions) do
+		table.insert(hits, ("%s %d at (%.0f %.0f)"):format(c.what, c.entity, c.x or 0, c.y or 0))
+	end
+	debugPrint(LOG_PREFIX .. ("dry run %s %d%s: %s, cost %d, %d us%s%s"):format(item.kind, item.index, extra,
+		ok and (crossings > 0 and ("clean but for %d level crossings"):format(crossings) or "clean") or "errors", cost,
+		us, #messages > 0 and (": " .. table.concat(messages, "; ")) or "",
+		#hits > 0 and ("; collided with " .. table.concat(hits, ", ")) or ""))
 	if check.done then
-		debugPrint(LOG_PREFIX .. ("check done: %d items, %d with errors, price %d, dry runs %.1f ms, the slowest %d us")
-			:format(#check.items, check.failures, check.total, check.totalUs / 1000, check.slowestUs))
+		debugPrint(LOG_PREFIX .. ("check done: %d items, %d with errors, %d level crossings, price %d, dry runs %.1f ms, the slowest %d us")
+			:format(#check.items, check.failures, check.crossings, check.total, check.totalUs / 1000, check.slowestUs))
 	end
 	return check.done
 end
