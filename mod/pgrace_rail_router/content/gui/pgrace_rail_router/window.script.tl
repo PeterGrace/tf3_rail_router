@@ -447,11 +447,12 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		if done then
 			local plan = route.plan(work.routeJob)
 			local length = plan.summary ~= nil and plan.summary.length or 0
-			-- Each leg's search radius (below the mode's where its turns didn't fit) and expansions.
+			-- Each leg's search radius (below the mode's where its turns didn't fit, or didn't pay), expansions, and the
+			-- seconds its tight curves lose (planner/speed.tl).
 			local searches : {string} = {}
 			for __, leg in ipairs(plan.legs or {}) do
 				table.insert(searches, tostring(math.floor(leg.searchRadius or 0)) .. " m/"
-					.. tostring(leg.searchExpansions or 0))
+					.. tostring(leg.searchExpansions or 0) .. "/" .. string.format("%.1f", leg.timeLost or 0) .. " s")
 			end
 			debugPrint(LOG_PREFIX .. "plan done: " .. (plan.ok and "ok" or tostring(plan.failure)) .. ", "
 				.. tostring(math.floor(work.planUs / 1000)) .. " ms over " .. tostring(work.planFrames)
@@ -460,7 +461,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				.. " us, legs " .. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
 				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0) .. ", survey margin " .. tostring(work.margin)
 				.. ", retries " .. tostring(work.retries) .. ", guarded "
-				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0) .. ", leg searches (radius/expansions) "
+				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0) .. ", leg searches (radius/expansions/time lost) "
 				.. table.concat(searches, " "))
 			-- Perhaps the way round lies outside the surveyed area: start over on a wider one, unless that is the same
 			-- area (already the whole map that way). no_exit (walled in) never gets better with a wider area.

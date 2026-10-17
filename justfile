@@ -31,7 +31,7 @@ check:
 test:
     lua tools/test.lua
 
-# Run the unit tests and every regression route (all the kit's maps, and the in-game captures beside them; about 13 s)
+# Run the unit tests and every regression route (all the kit's maps, and the in-game captures beside them; about 20 s)
 regress:
     RAIL_ROUTER_REGRESS=full lua tools/test.lua
 

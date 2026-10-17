@@ -852,3 +852,53 @@ t.test("route: a station facing the right way is kept when its leg is fine", fun
 	t.ok(plan.ok, "plans")
 	t.near(plan.stations[2].site.dir.x, 1, 1e-9, "unchanged")
 end)
+
+-- Fastest-like weights at 1500 m: the speed model, and a second lost worth `timeCost` metres of plain track.
+local function timed(timeCost)
+	return withWeights({ minRadius = 1500, lateralAccel = 2, topSpeed = math.sqrt(2 * 1500), timeCost = timeCost })
+end
+
+-- A chicane: a wall up from the bottom edge to y = 600 at x = 2000..2100, and one down from the top to y = -600 at
+-- x = 2900..3000, so the line from A to B must weave between them.
+local function chicane()
+	local g = flatGrid()
+	for iy = 1, 31 do
+		for ix = 1, 81 do
+			local c = grid.centre(g, ix, iy)
+			if (c.x >= 2000 and c.x <= 2100 and c.y <= 600) or (c.x >= 2900 and c.x <= 3000 and c.y >= -600) then
+				g.blocked[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+	return g
+end
+
+t.test("route: with time priced, a leg's radius is weighed by the time its curves lose", function()
+	local AB = { town(1, "A", 0, 0), town(2, "B", 6000, 0) }
+	-- Time worth next to nothing: the cheapest try wins, a 375 m weave (about a minute lost).
+	local cheap = run(chicane(), AB, 160, timed(1e-6))
+	-- Time worth a lot: a wider weave, a little dearer, loses less.
+	local fast = run(chicane(), AB, 160, timed(1000))
+	t.ok(cheap.ok and fast.ok, "ok")
+	local slow, quick = cheap.legs[1], fast.legs[1]
+	t.ok(quick.timeLost < slow.timeLost - 5, ("time lost %.1f s against %.1f s"):format(quick.timeLost, slow.timeLost))
+	t.ok(quick.searchRadius > slow.searchRadius, ("radius %.0f against %.0f"):format(quick.searchRadius,
+		slow.searchRadius))
+	t.near(fast.summary.timeLost, quick.timeLost, 1e-9, "summary")
+	t.eq(fast.legs[1].blockedSamples, 0, "between the walls")
+	-- A straight leg loses nothing.
+	local straight = run(flatGrid(), { ABC[1], ABC[2] }, 160, timed(50))
+	t.near(straight.legs[1].timeLost, 0, 1e-9, "straight")
+end)
+
+t.test("route: weighing every radius, progress never goes back", function()
+	local job = route.start({ grid = chicane(), stops = { town(1, "A", 0, 0), town(2, "B", 6000, 0) },
+		weights = timed(50), platformLength = 160 })
+	local last = 0
+	while not route.step(job, 50) do
+		local p = route.progress(job)
+		t.ok(p >= last - 1e-9, ("progress %.4f after %.4f"):format(p, last))
+		last = p
+	end
+	t.ok(route.plan(job).ok, "ok")
+end)

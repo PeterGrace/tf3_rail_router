@@ -58,6 +58,9 @@ global record PgraceRailRouterRoute
 		-- uniform slope across the path (no hills or hollows it went round). Never below weights.minBuildRadius
 		-- (smooth.Result.guarded). For the log.
 		guarded : integer
+		-- Seconds a train stopping at both stations loses to the leg's curves below weights.minRadius (speed.tl); 0
+		-- where weights.topSpeed or lateralAccel is not given.
+		timeLost : number
 	end
 
 	record Summary
@@ -79,6 +82,8 @@ global record PgraceRailRouterRoute
 		guarded : integer
 		-- Legs whose steepEnds is set.
 		steepLegs : integer
+		-- Sum over the legs of Leg.timeLost (seconds).
+		timeLost : number
 	end
 
 	record Plan
@@ -164,12 +169,15 @@ global record PgraceRailRouterRoute
 		legIndex : integer
 		search : PgraceRailRouterGrid.Search
 		-- The current leg's search tries: the radii to try (nil before its first), and which one is running; the
-		-- fallback's path and cost once the first has finished; the radius of the path taken, and the states expanded
+		-- fallback's path and cost once the first has finished, and the best try so far (its path, radius, search cost
+		-- and that plus the time it loses, priced: see step); the radius of the path taken, and the states expanded
 		-- over all its tries.
 		radii : {number}
 		tryIndex : integer
 		fallback : {PgraceRailRouterGeo.Pt}
 		fallbackCost : number
+		best : LegTry
+		bestTotal : number
 		searchRadius : number
 		searchExpansions : integer
 		-- A finished search's path, waiting for the next steps to build its leg: simplify it, fillet it, then sample
@@ -195,6 +203,8 @@ global record PgraceRailRouterRoute
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
 		-- is never changed.
 		taken : {integer : boolean}
+		-- The most progress has shown so far (route.progress never goes back).
+		shown : number
 		result : Plan
 	end
 
@@ -204,10 +214,13 @@ global record PgraceRailRouterRoute
 	-- one step or more). true once the plan is finished (whether it succeeded or not).
 	-- Where weights.minSearchRadius is below weights.minRadius, a leg is searched several times: first with turns
 	-- spaced for minSearchRadius (the fallback; no path there fails the plan with "no_path"), then for minRadius,
-	-- halving while above minSearchRadius, until a path costs at most 10% more than the fallback's; if none does,
-	-- the fallback's path is taken.
+	-- halving while above minSearchRadius, each with its stations' rooms to turn sized for its own radius. With
+	-- weights.timeCost, every radius is tried and the path whose search cost plus timeCost × the seconds its curves
+	-- lose (speed.tl, estimated from the path's corners) is least is taken; without, the first path that costs at most
+	-- 10% more than the fallback's, else the fallback's.
 	step : function(job : Job, maxExpansions : integer) : boolean
-	-- Share of the work done, 0 to 1.
+	-- Share of the work done, 0 to 1, never falling (where re-siting builds legs again, it holds until the work
+	-- catches up).
 	progress : function(job : Job) : number
 	-- The plan; complete once step has returned true.
 	plan : function(job : Job) : Plan

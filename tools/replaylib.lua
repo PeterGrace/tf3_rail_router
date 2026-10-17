@@ -91,7 +91,9 @@ return function(root)
 			if done then
 				break
 			end
-			if job.path ~= nil and paths[job.legIndex] == nil then
+			-- The leg's path once taken (not while its search radii are weighed), the last one where re-siting builds a
+			-- leg again.
+			if job.path ~= nil and job.radii == nil then
 				paths[job.legIndex] = job.path
 			end
 		end
