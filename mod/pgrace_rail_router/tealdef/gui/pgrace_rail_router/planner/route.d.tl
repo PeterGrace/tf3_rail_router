@@ -135,6 +135,8 @@ global record PgraceRailRouterRoute
 		search : PgraceRailRouterGrid.Search
 		inCost : number
 		others : {integer : boolean}
+		-- The stations' footprints with the candidate site in place (route.tl's footprints), for its legs' searches.
+		avoid : {integer : boolean}
 		best : PgraceRailRouterStations.Site
 		bestCost : number
 		keep : LegTry
@@ -181,6 +183,15 @@ global record PgraceRailRouterRoute
 		simplified : Simplified
 		fitted : PgraceRailRouterSmooth.Result
 		heights : LegHeights
+		-- Finished searches with no cost limit, by their inputs (see searchFor), so a search asked for again isn't
+		-- run again (re-siting weighs the current site's legs first, the same searches the legs run); the keys in the
+		-- order they came, oldest first, to keep only the last few.
+		searchCache : {string : PgraceRailRouterGrid.Search}
+		searchKeys : {string}
+		-- Grid cells (by index) under the stations' platforms and approaches, which legs' searches keep off, and how
+		-- many times they have been worked out (a key of searchCache's: a re-sited station changes them).
+		footprint : {integer : boolean}
+		footprintVersion : integer
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
 		-- is never changed.
 		taken : {integer : boolean}

@@ -17,6 +17,10 @@ local DIRS : {{integer}} = {
 grid.DIRS = DIRS
 -- A single move may turn at most this many 22.5° steps (90°), where the radius leaves room to turn on every move.
 local MAX_TURN_STEPS = 4
+-- Where every move may turn, each metre by which the straight between two corners falls short of what curves of the
+-- search's radius need costs this many metres of plain track: about the track a path with room for those curves
+-- would take (see turnModel).
+local SHORTFALL_FACTOR = 1.0
 -- A step from one road cell to another costs this many times its length: entering a road is paid once
 -- (roadCrossing), so without it a path could run along a road for free, laid on it in Cheapest and on a long bridge
 -- in Fastest. At least 1, so the heuristic stays admissible.
@@ -188,7 +192,18 @@ local MAX_EXPANSIONS_PER_CELL = 12
 local FINISH = 0
 
 local function cellOfNode(node : integer) : integer
+	if node < 0 then
+		node = -node
+	end
 	return math.floor((node - 1) / NDIRS) + 1
+end
+
+-- A state's arriving direction (1..16).
+local function dirOfNode(node : integer) : integer
+	if node < 0 then
+		node = -node
+	end
+	return (node - 1) % NDIRS + 1
 end
 
 local function cellXY(g : Grid, cell : integer) : integer, integer
@@ -295,7 +310,8 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 		return nil
 	end
 	local b = grid.index(g, bx, by)
-	if g.blocked[b] then
+	local avoid = s.avoid
+	if g.blocked[b] or avoid[b] then
 		return nil
 	end
 	local overWater = g.water[a] or g.water[b]
@@ -306,7 +322,7 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 	if math.abs(d[1]) + math.abs(d[2]) == 3 then
 		local m1 = grid.index(g, ax + math.floor(d[1] / 2), ay + math.floor(d[2] / 2))
 		local m2 = grid.index(g, ax + math.ceil(d[1] / 2), ay + math.ceil(d[2] / 2))
-		if g.blocked[m1] or g.blocked[m2] then
+		if g.blocked[m1] or g.blocked[m2] or avoid[m1] or avoid[m2] then
 			return nil
 		end
 		overWater = overWater or g.water[m1] or g.water[m2]
@@ -339,7 +355,7 @@ end
 -- giving up. Fills up to `budget` cells; returns the budget left.
 local function fillStep(s : Search, budget : integer) : integer
 	local g = s.g
-	local nx, ny, blocked = g.nx, g.ny, g.blocked
+	local nx, ny, blocked, avoid = g.nx, g.ny, g.blocked, s.avoid
 	local seen, queue = s.fillSeen, s.fillQueue
 	local head, tail = s.fillHead, #queue
 	while budget > 0 and head <= tail do
@@ -357,12 +373,13 @@ local function fillStep(s : Search, budget : integer) : integer
 			local bx, by = ax + dx, ay + dy
 			if bx >= 1 and bx <= nx and by >= 1 and by <= ny then
 				local b = (by - 1) * nx + bx
-				if not seen[b] and not blocked[b] then
+				if not seen[b] and not blocked[b] and not avoid[b] then
 					local open = true
 					-- A knight move passes between two cells: both must be passable.
 					if dx * dx + dy * dy == 5 then
-						open = not blocked[(ay + math.floor(dy / 2) - 1) * nx + ax + math.floor(dx / 2)]
-							and not blocked[(ay + math.ceil(dy / 2) - 1) * nx + ax + math.ceil(dx / 2)]
+						local m1 = (ay + math.floor(dy / 2) - 1) * nx + ax + math.floor(dx / 2)
+						local m2 = (ay + math.ceil(dy / 2) - 1) * nx + ax + math.ceil(dx / 2)
+						open = not blocked[m1] and not blocked[m2] and not avoid[m1] and not avoid[m2]
 					end
 					if open then
 						if s.goalCells[b] ~= nil then
@@ -388,25 +405,86 @@ local function fillStep(s : Search, budget : integer) : integer
 	return budget
 end
 
+-- What one side of a corner costs, beyond the turn penalty: the corner turns by θ, with tan(θ / 2) = t, and has
+-- `room` metres of straight to itself on that side. Its curve at radius R takes R·t of that straight. Nil if a curve
+-- of the build minimum doesn't fit; otherwise SHORTFALL_FACTOR per metre that one of the search's radius would lack.
+local function side(s : Search, t : number, room : number) : number
+	if s.buildRadius * t > room + EPSILON then
+		return nil
+	end
+	local short = s.radius * t - room
+	if short > 0 then
+		return SHORTFALL_FACTOR * short
+	end
+	return 0
+end
+
+-- Two corners (tan of half their turns a and b) with `length` of straight between them, where both are known: they
+-- share it as they need, so their curves at radius R fit where R · (a + b) ≤ length. Priced as side prices one.
+local function shared(s : Search, a : number, b : number, length : number) : number
+	return side(s, a + b, length)
+end
+
+-- Both sides of a corner (nil if either doesn't fit).
+local function both(a : number, b : number) : number
+	if a == nil or b == nil then
+		return nil
+	end
+	return a + b
+end
+
+-- tan(θ / 2) for the angle θ between directions u and v (0 if either is nil or zero, and huge for opposite ones).
+local function tanHalf(u : Pt, v : Pt) : number
+	if u == nil or v == nil then
+		return 0
+	end
+	local lu, lv = geo.len(u), geo.len(v)
+	if lu < 1e-9 or lv < 1e-9 then
+		return 0
+	end
+	local denom = lu * lv + u.x * v.x + u.y * v.y
+	if denom < 1e-9 then
+		return math.huge
+	end
+	return math.abs(u.x * v.y - u.y * v.x) / denom
+end
+
+local function dirVec(k : integer) : Pt
+	return { x = DIRS[k][1], y = DIRS[k][2] }
+end
+
 -- The turn model for a curve radius: a 22.5° arc of radius R takes R·tan(11.25°) of straight on each side of its
 -- corner, so two turns need 2·R·tan(11.25°) between them. Where every move is at least that long (no more than a cell),
--- any move may turn, by up to 90° (the old model, kept exactly). Otherwise a move may turn by one step only, and a
--- turning move runs on straight in its new direction for as many steps as that length takes: the search's states stay
--- (cell, direction), each one free to turn again.
+-- any move may turn, by up to 90°, and each corner is priced by the room its curve has: it gets half of each move
+-- either side of it (the other half is the next corner's), and a turn whose curve at the build minimum wouldn't fit in
+-- that is not allowed (a 90° turn needs a diagonal or knight move on one side, or two 45° turns), while the straight
+-- a curve at the search's radius would lack is charged (see side). Otherwise a move may turn by one step only, and a
+-- turning move runs on straight in its new direction for as many steps as that length takes. Either way the search's
+-- states stay (cell, direction), each one free to turn again.
 local function turnModel(s : Search, cell : number, radius : number)
 	local straight = 2 * radius * math.tan(math.pi / 16)
 	s.straightSteps = {}
+	s.halfLength = {}
+	for k, d in ipairs(DIRS) do
+		s.halfLength[k] = cell * math.sqrt(d[1] * d[1] + d[2] * d[2]) / 2
+	end
 	if straight <= cell + EPSILON then
 		s.maxTurn = MAX_TURN_STEPS
+		s.free = true
+		s.cornerCost = {}
 		for k = 1, NDIRS do
 			s.straightSteps[k] = 1
+			for j = 1, NDIRS do
+				local t = math.tan(turnSteps(k, j) * math.pi / 16)
+				s.cornerCost[(k - 1) * NDIRS + j] = both(side(s, t, s.halfLength[k]), side(s, t, s.halfLength[j])) or -1
+			end
 		end
 		return
 	end
 	s.maxTurn = 1
-	for k, d in ipairs(DIRS) do
-		local length = cell * math.sqrt(d[1] * d[1] + d[2] * d[2])
-		s.straightSteps[k] = math.max(1, math.ceil(straight / length - EPSILON))
+	s.free = false
+	for k = 1, NDIRS do
+		s.straightSteps[k] = math.max(1, math.ceil(straight / (2 * s.halfLength[k]) - EPSILON))
 	end
 end
 
@@ -444,14 +522,22 @@ local function ray(g : Grid, w : Weights, p : Pt, dir : Pt, run : number) : {End
 end
 
 function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights,
-		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number) : Search
+		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number, startRoom ?: number,
+		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}) : Search
 	local sx, sy = grid.cellOf(g, from)
 	local gx, gy = grid.cellOf(g, to)
 	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
 		goalDir = nearestDir(goalDir), radius = radius or w.minRadius, maxCost = maxCost or math.huge, done = false,
 		found = false, expansions = 0, h0 = 0, bestH = 0, heap = {}, heapF = {}, cost = {}, parent = {},
 		origin = {}, finishDir = 0, finishSteps = 0, finishGoal = 1, filling = true, fillQueue = {}, fillHead = 1,
-		fillSeen = {}, fillEdge = false, enclosed = false }
+		fillSeen = {}, fillEdge = false, enclosed = false, buildRadius = w.minBuildRadius or 0,
+		startRoom = startRoom or 0, goalRoom = goalRoom or 0, approach = approach or math.huge, avoid = {} }
+	if geo.len(startDir) > 1e-9 then
+		s.startVec = geo.norm(startDir)
+	end
+	if geo.len(goalDir) > 1e-9 then
+		s.goalVec = geo.norm(goalDir)
+	end
 	turnModel(s, g.cell, s.radius)
 	local start = grid.index(g, sx, sy)
 	s.start = start
@@ -467,6 +553,18 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 		s.goals = ray(g, w, to, geo.scale(geo.norm(goalDir), -1), goalRun)
 	else
 		s.goals = { { pt = to, cell = s.goal, x = gx, y = gy, cost = 0 } }
+	end
+	-- Cells to keep off besides blocked ones, less the ends' own cells.
+	if avoid ~= nil then
+		for i in pairs(avoid) do
+			s.avoid[i] = true
+		end
+		for __, e in ipairs(s.starts) do
+			s.avoid[e.cell] = nil
+		end
+		for __, e in ipairs(s.goals) do
+			s.avoid[e.cell] = nil
+		end
 	end
 	s.goalCells = {}
 	for i, e in ipairs(s.goals) do
@@ -526,6 +624,132 @@ local function finish(s : Search, fc : number, from : integer, k : integer, step
 	end
 end
 
+-- Whether a state is a start state whose moves leave from its start point (not reached any cheaper way).
+local function fromStartPoint(s : Search, node : integer) : boolean
+	return node ~= nil and node > 0 and s.parent[node] == nil and s.origin[node] ~= nil
+end
+
+-- Where corners are priced, the state a start state's first move reaches is a state of its own (its node id
+-- negated): its next move prices the start's corner (startPair), unlike a state reached any other way. The start
+-- point it came from.
+local function freshFrom(s : Search, node : integer) : Pt
+	if node == nil or node >= 0 then
+		return nil
+	end
+	return s.starts[s.origin[s.parent[node]]].pt
+end
+
+-- Where the curve at a station end may be (where corners are priced): at the end point itself (the search's start or
+-- goal point, its extension), with the station's room to turn on its far side, or the approach where there is no
+-- such room; or, where there is, at the approach point, the approach on its far side (fitLeg gives the extension up
+-- there). For the start (sign -1, axis startVec) or the goal (sign 1, axis goalVec): the points and their far rooms.
+local function endOptions(s : Search, p : Pt, axis : Pt, room : number, sign : number) : {Pt}, {number}
+	if axis == nil then
+		return { p }, { math.huge }
+	end
+	if room <= EPSILON then
+		return { p }, { s.approach }
+	end
+	return { p, geo.add(p, geo.scale(axis, sign * room)) }, { room, s.approach }
+end
+
+-- The corner at a station end point `e` (its far side `far`, the station's axis `axis`) and the next corner, at `c`,
+-- which turns onto `out`: both their sides, the straight between them shared as they need it. Beyond c, the next
+-- corner's own straight is `outRoom` (nextT nil), or is shared with a known corner nextT over nextLen. Nil if they don't
+-- fit, or where `check` asks and the straight from e to c crosses a blocked cell.
+local function pairAtEnd(s : Search, e : Pt, far : number, axis : Pt, c : Pt, out : Pt, outRoom : number,
+		nextT : number, nextLen : number, check : boolean) : number
+	local v = geo.sub(c, e)
+	local te, tc = tanHalf(axis, v), tanHalf(v, out)
+	local beyond : number
+	if nextT == nil then
+		beyond = side(s, tc, outRoom)
+	else
+		beyond = shared(s, tc, nextT, nextLen)
+	end
+	local charge = both(both(side(s, te, far), shared(s, te, tc, geo.len(v))), beyond)
+	if charge ~= nil and check and not segmentClear(s.g, e, c) then
+		return nil
+	end
+	return charge
+end
+
+-- The least of the start's options (endOptions) for its corner and the next, at c (see pairAtEnd); nil if none fits.
+local function startPair(s : Search, sp : Pt, c : Pt, out : Pt, outRoom : number, nextT : number,
+		nextLen : number) : number
+	local pts, rooms = endOptions(s, sp, s.startVec, s.startRoom, -1)
+	local best : number = nil
+	for i, e in ipairs(pts) do
+		local charge = pairAtEnd(s, e, rooms[i], s.startVec, c, out, outRoom, nextT, nextLen, i > 1)
+		if charge ~= nil and (best == nil or charge < best) then
+			best = charge
+		end
+	end
+	return best
+end
+
+-- Where corners are priced: what finishing from state `node` (at a goal cell, arriving in direction prev) adds for
+-- its last corners, or nil if they don't fit. The goal point takes the place of the cell's centre, so the last
+-- straight runs from the corner before it (the cell before, or the start point) to the goal's corner (at the goal
+-- point or its approach, endOptions), and the two share it. The corner before was priced when this state's move was
+-- made, as the path ran on then: it is priced again as it really turns, for any more it costs.
+local function finishCharge(s : Search, node : integer, par : integer, prev : integer, gp : Pt) : number
+	local g = s.g
+	local goals, fronts = endOptions(s, gp, s.goalVec, s.goalRoom, 1)
+	local sp = freshFrom(s, node)
+	if fromStartPoint(s, node) then
+		sp = s.starts[s.origin[node]].pt
+	end
+	local best : number = nil
+	local function offer(charge : number)
+		if charge ~= nil and (best == nil or charge < best) then
+			best = charge
+		end
+	end
+	if sp ~= nil then
+		-- From the start's corner straight to the goal's: neither was priced on the way here.
+		local starts, backs = endOptions(s, sp, s.startVec, s.startRoom, -1)
+		for i, e in ipairs(starts) do
+			for j, q in ipairs(goals) do
+				local axis : Pt = s.goalVec
+				if axis == nil then
+					axis = geo.sub(q, e)
+				end
+				offer(pairAtEnd(s, e, backs[i], s.startVec, q, axis, fronts[j], nil, nil, i > 1 or j > 1))
+			end
+		end
+		return best
+	end
+	-- The corner at the cell before, c, turned onto prev when this state's move was priced: `was`.
+	local ax, ay = cellXY(g, cellOfNode(node))
+	local c = grid.centre(g, ax - DIRS[prev][1], ay - DIRS[prev][2])
+	local grandStart = freshFrom(s, par)
+	local into = dirVec(dirOfNode(par))
+	local was : number
+	if grandStart ~= nil then
+		was = startPair(s, grandStart, c, dirVec(prev), s.halfLength[prev], nil, nil) or 0
+	else
+		was = s.cornerCost[(dirOfNode(par) - 1) * NDIRS + prev]
+	end
+	for j, q in ipairs(goals) do
+		local v = geo.sub(q, c)
+		local length = geo.len(v)
+		local tq = tanHalf(v, s.goalVec)
+		local now : number
+		if grandStart ~= nil then
+			now = startPair(s, grandStart, c, v, 0, tq, length)
+		else
+			local tc = tanHalf(into, v)
+			now = both(side(s, tc, s.halfLength[dirOfNode(par)]), shared(s, tc, tq, length))
+		end
+		local goalFar = side(s, tq, fronts[j])
+		if goalFar ~= nil and now ~= nil and (j == 1 or segmentClear(g, c, q)) then
+			offer(goalFar + math.max(0, now - was))
+		end
+	end
+	return best
+end
+
 function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 	if s.done then
 		return true
@@ -559,7 +783,7 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 			end
 		else
 			local a = cellOfNode(node)
-			local prev = node - (a - 1) * NDIRS
+			local prev = dirOfNode(node)
 			local base = cost[node]
 			local ax, ay = cellXY(g, a)
 			local h = heuristic(s, ax, ay)
@@ -578,9 +802,14 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 				local maxTurn = s.maxTurn
 				-- A start state not reached any cheaper way: its first move runs from its start point.
 				local origin : Pt = nil
-				if s.parent[node] == nil and s.origin[node] ~= nil then
+				if fromStartPoint(s, node) then
 					origin = s.starts[s.origin[node]].pt
 				end
+				-- Where corners are priced (s.free), those next to a start or goal point, off its cell's centre, are
+				-- priced as the path really runs there: a start's corner with the next one (startPair), once the state
+				-- after its first move (here: startAt) moves on, and the last ones when the path finishes.
+				local par = s.parent[node]
+				local startAt = freshFrom(s, node)
 				local goalHere = s.goalCells[a]
 				if goalHere ~= nil then
 					-- The final turn onto the asked direction obeys the same limit as any other: this state is free to
@@ -590,12 +819,17 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 						turn = turnSteps(prev, s.goalDir)
 					end
 					-- The last segment runs from the cell before (or the start point) to the goal point.
-					local before = origin
+					local before = origin or startAt
 					if before == nil then
 						before = grid.centre(g, ax - DIRS[prev][1], ay - DIRS[prev][2])
 					end
-					if turn <= maxTurn and segmentClear(g, before, s.goals[goalHere].pt) then
-						finish(s, base + w.turnPenalty * turn * turn, node, prev, 0, goalHere)
+					local goalPt = s.goals[goalHere].pt
+					local charge : number = 0
+					if s.free then
+						charge = finishCharge(s, node, par, prev, goalPt)
+					end
+					if turn <= maxTurn and charge ~= nil and segmentClear(g, before, goalPt) then
+						finish(s, base + w.turnPenalty * turn * turn + charge, node, prev, 0, goalHere)
 					end
 				end
 				for turn = -maxTurn, maxTurn do
@@ -608,7 +842,26 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 					end
 					local d = DIRS[k]
 					local bx, by, b = ax, ay, a
-					local nc = base + w.turnPenalty * turn * turn
+					local charge : number = 0
+					if s.free then
+						if origin ~= nil then
+							-- The start's corner is priced with the next one, after this move (startPair).
+							charge = 0
+						elseif startAt ~= nil then
+							charge = startPair(s, startAt, grid.centre(g, ax, ay), dirVec(k), s.halfLength[k], nil, nil)
+						else
+							charge = s.cornerCost[(prev - 1) * NDIRS + k]
+							if charge < 0 then
+								charge = nil
+							end
+						end
+					end
+					local nc : number = nil
+					if charge ~= nil then
+						nc = base + w.turnPenalty * turn * turn + charge
+					else
+						steps = 0
+					end
 					for j = 1, steps do
 						local c = moveCost(s, b, bx, by, k)
 						if c == nil then
@@ -633,6 +886,9 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 					end
 					if nc ~= nil then
 						local nb = (b - 1) * NDIRS + k
+						if origin ~= nil and s.free then
+							nb = -nb
+						end
 						-- Gains below EPSILON are rounding (the same cost summed in another order): taking them would
 						-- expand a finished state again.
 						if cost[nb] == nil or nc < cost[nb] - EPSILON then
@@ -652,6 +908,26 @@ function grid.progress(s : Search) : number
 		return 1
 	end
 	return math.max(0, math.min(1, 1 - s.bestH / s.h0))
+end
+
+function grid.finished(s : Search) : Search
+	local parent : {integer : integer} = {}
+	local origin : {integer : integer} = {}
+	local node = s.parent[FINISH]
+	parent[FINISH] = node
+	while node ~= nil do
+		parent[node] = s.parent[node]
+		if s.parent[node] == nil then
+			origin[node] = s.origin[node]
+		end
+		node = s.parent[node]
+	end
+	return { g = s.g, w = s.w, startPt = s.startPt, goalPt = s.goalPt, start = s.start, starts = s.starts,
+		goals = s.goals, goalCells = s.goalCells, goal = s.goal, gx = s.gx, gy = s.gy, goalDir = s.goalDir,
+		radius = s.radius, maxTurn = s.maxTurn, straightSteps = s.straightSteps, maxCost = s.maxCost, done = true,
+		found = s.found, expansions = 0, h0 = s.h0, bestH = s.bestH, heap = {}, heapF = {}, cost = { [FINISH] = s.cost[FINISH] },
+		parent = parent, origin = origin, finishDir = s.finishDir, finishSteps = s.finishSteps,
+		finishGoal = s.finishGoal, filling = false, fillEdge = s.fillEdge, enclosed = s.enclosed }
 end
 
 function grid.path(s : Search) : {Pt}
@@ -682,7 +958,7 @@ function grid.path(s : Search) : {Pt}
 	end
 	for i = 2, #nodes do
 		local c = cellOfNode(nodes[i])
-		local k = nodes[i] - (c - 1) * NDIRS
+		local k = dirOfNode(nodes[i])
 		walk(k, s.straightSteps[k], c)
 	end
 	local goal = s.goals[s.finishGoal]

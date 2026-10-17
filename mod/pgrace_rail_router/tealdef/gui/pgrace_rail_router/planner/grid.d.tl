@@ -30,7 +30,8 @@ global record PgraceRailRouterGrid
 
 	-- A search in progress. The fields other than done, found, expansions and enclosed are internal.
 	-- Its states are (cell, arriving direction): node id (cell - 1) * 16 + k, k = 1..16 the move direction that
-	-- entered the cell; node 0 is the virtual finish, past the goal cell.
+	-- entered the cell; node 0 is the virtual finish, past the goal cell. Where corners are priced (free), the state a
+	-- start state's first move reaches has its id negated: its next move prices the start point's corner.
 	record Search
 		g : Grid
 		w : PgraceRailRouterModes.Weights
@@ -54,6 +55,24 @@ global record PgraceRailRouterGrid
 		radius : number
 		maxTurn : integer
 		straightSteps : {integer}
+		-- Whether every move may turn, its corners priced by the room their curves have (see startSearch); then per
+		-- pair of directions (index (k - 1) * 16 + j, from direction k onto j) what that corner costs between two cell
+		-- moves, -1 where it doesn't fit.
+		free : boolean
+		cornerCost : {number}
+		-- Half each direction's move length (metres), and the build minimum radius (w.minBuildRadius, 0 if not given).
+		halfLength : {number}
+		buildRadius : number
+		-- startDir and goalDir as unit vectors (nil for any direction).
+		startVec : PgraceRailRouterGeo.Pt
+		goalVec : PgraceRailRouterGeo.Pt
+		-- A station's room to turn behind the start point and beyond the goal point (metres: from its approach point
+		-- to that point), and the straight of its approach (from the platform's end to the approach point).
+		startRoom : number
+		goalRoom : number
+		approach : number
+		-- Cells kept off as if blocked (the stations' platforms and approaches), less the start and goal cells.
+		avoid : {integer : boolean}
 		-- Paths costing more are not wanted (math.huge: no limit).
 		maxCost : number
 		done : boolean
@@ -85,6 +104,8 @@ global record PgraceRailRouterGrid
 		fillSeen : {integer : boolean}
 		-- The fill reached a cell on the grid's edge.
 		fillEdge : boolean
+		-- Set by route.tl: the key a finished search is kept under (see route's searchFor); nil if it isn't kept.
+		cacheKey : string
 		-- Finished, not found, because the fill used up every cell it could reach from the start without meeting the
 		-- goal or the grid's edge: the start is closed off inside the grid, and a wider grid wouldn't help.
 		enclosed : boolean
@@ -126,11 +147,21 @@ global record PgraceRailRouterGrid
 	-- as far as any other move may, and that final turn is charged like any other (zero-length = any).
 	-- Turns are spaced for curves of `radius` (default w.minRadius): a 22.5° turn needs a straight of
 	-- L = 2 · radius · tan(11.25°) before the next one, so consecutive arcs fit. Where L is at most a cell, any move
-	-- may turn by up to 90°. Otherwise a move may turn by one 22.5° step only, and a move that turns carries on
-	-- straight in its new direction for ceil(L / step length) steps in all, each checked and costed as a move of
-	-- its own; passing through the goal cell part-way along, heading in goalDir, finishes there. The start state
-	-- (startDir) may turn at once (the station's extension gives room behind it), as may every state the search
-	-- reaches. With startRun (metres), the path may instead start at any point up to that far out along startDir from
+	-- may turn by up to 90°, and each corner is priced by the room its curve has: a curve of radius R turning by θ
+	-- takes R · tan(θ / 2) of straight on each side, and a corner between two cell moves has half of each to itself.
+	-- A turn whose curve at the build minimum (w.minBuildRadius) doesn't fit is not made; the straight a curve of
+	-- `radius` would lack costs a metre of plain track per metre (a 90° turn between two straight moves needs a
+	-- diagonal or knight move on one side, or two 45° turns). Next to the start and goal points, off their cells'
+	-- centres, corners are priced as the path really runs: the start point's corner with the next one, sharing the
+	-- straight between them, with the station's room to turn behind it (startRoom, from its approach point), or where
+	-- there is room, at the approach point instead with the approach behind it (`approach`, the approach's length;
+	-- default unlimited); the goal's alike (goalRoom). Otherwise a move may turn by one 22.5° step only, and a move
+	-- that turns carries on straight in its new direction for ceil(L / step length) steps in all, each checked and
+	-- costed as a move of its own; passing through the goal cell part-way along, heading in goalDir, finishes there.
+	-- The start state (startDir) may turn at once (the station's extension gives room behind it), as may every state
+	-- the search reaches. Cells in `avoid` (the stations' platforms and approaches) are kept off as if blocked, but
+	-- for the start's and goal's own cells. With startRun (metres), the path may instead start at any point up to
+	-- that far out along startDir from
 	-- `from`, one per cell, and with goalRun finish at any point up to that far back from `to` against goalDir: each
 	-- ray stops at the first blocked, water, road or track cell, and costs its straight (length and slope, as moves).
 	-- The path's first and last points are then those points. The first segment, from the start point to the next
@@ -142,13 +173,17 @@ global record PgraceRailRouterGrid
 	-- 1.5 × its length, so the path doesn't run along roads.
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
 		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights,
-		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number) : Search
+		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number, startRoom ?: number,
+		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}) : Search
 	-- Expands up to maxExpansions states (or fills that many cells first); true once the search is finished (found
 	-- or not). Gives up, not found, after 12 expansions per cell (a goal cut off only by the turn limit).
 	stepSearch : function(s : Search, maxExpansions : integer) : boolean
 	-- Rough share of the work done, 0 to 1, never falling: how much nearer to the goal (in distance over empty
 	-- ground) the search has reached than the start was; 1 once done.
 	progress : function(s : Search) : number
+	-- A finished search's result, without the work behind it (only its path's states): done, found, enclosed and
+	-- cost[0] as s's, expansions 0, and path() gives the same path.
+	finished : function(s : Search) : Search
 	-- The path as points from `from` to `to` (cell centres in between); nil if there is none.
 	path : function(s : Search) : {PgraceRailRouterGeo.Pt}
 end

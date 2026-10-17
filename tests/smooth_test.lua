@@ -289,3 +289,23 @@ t.test("smooth: an arc held at the guard's floor isn't squeezed below it by a wi
 	end
 	t.eq(arcs, 3, "three arcs")
 end)
+
+t.test("smooth: a guarded fillet doesn't fold a tight loop into one corner its floor can't take", function()
+	-- A line leaving a platform end (80, 0) eastwards that turns at the approach (180, 0) and loops round behind it
+	-- (the search's path round a station facing walls, simplified, as route's fitLeg passes it with the extension
+	-- given up): walls east of x = 250 below y = 450, and across y = 150..250 from x = 50 to 350. Dropping points to
+	-- make room for 220 m curves wherever the straight left is clear folded the loop into one corner at the approach,
+	-- a 13 m curve over the wall. With the floor at 55 m, points are kept where dropping them would leave a corner
+	-- whose curves don't fit even at the floor.
+	local pts = { P(80, 0), P(180, 0), P(180, 0), P(100, -200), P(0, -200), P(-200, -100), P(-300, 100), P(-200, 300),
+		P(100, 500), P(1200, 500) }
+	local function wall(p)
+		return (p.x >= 250 and p.y <= 450) or (p.x >= 50 and p.x <= 350 and p.y >= 150 and p.y <= 250)
+	end
+	local guard = { step = 25, minRadius = 55, clear = function(p) return not wall(p) end }
+	local r = smooth.fillet(pts, 220, { [2] = true, [3] = true }, guard)
+	t.ok(r.minRadius >= 55 - 1e-6, "no curve below the floor: " .. r.minRadius)
+	for __, sample in ipairs(smooth.sample(r.pieces, 10)) do
+		t.ok(not wall(sample.p), ("off the walls: (%.0f, %.0f)"):format(sample.p.x, sample.p.y))
+	end
+end)
