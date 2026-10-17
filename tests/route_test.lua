@@ -692,3 +692,21 @@ t.test("route: a station site far from a built-up centre is searched over severa
 	t.ok(#plan.stations == 2, "both sited")
 	t.ok(plan.stations[1].site.distance > 800, "A's site past the built-up centre: " .. plan.stations[1].site.distance)
 end)
+
+t.test("route: close stations' rooms to turn don't overlap, so the leg between them swings across instead of looping", function()
+	-- Fastest at 3 km wants 597 m of room to turn beyond each approach. B and C are 1.36 km apart, both facing east,
+	-- 400 m apart sideways: uncapped, C's room to turn started west of where B's ended, and the leg looped back with a
+	-- 57 m curve (Temple City to Miami on the 54-town map did the same over buildings).
+	local fastest = {}
+	for k, v in pairs(W) do
+		fastest[k] = v
+	end
+	fastest.minRadius, fastest.maxGrade, fastest.turnPenalty = 3000, 0.025, 150
+	local g = grid.new(-2000, -1500, 100, 101, 41)
+	local plan = run(g, { town(1, "A", -1500, 0), town(2, "B", 0, 0), town(3, "C", 1300, 400), town(4, "D", 2800, 400) },
+		160, fastest)
+	t.ok(plan.ok, "ok")
+	local leg = plan.legs[2]
+	t.ok(leg.minRadius >= 500, "B to C swings across: min radius " .. leg.minRadius)
+	t.ok(leg.length < 1300, "and doesn't loop: " .. leg.length .. " m")
+end)

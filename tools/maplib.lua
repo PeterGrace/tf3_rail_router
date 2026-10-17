@@ -1,9 +1,11 @@
--- Reads a map capture (docs/map-capture-format.md) and rasterises boxes of it into planner grids. Plain Lua (5.1 to
--- 5.4), no mod dependencies: other mods' tools can copy it as it is.
+-- Reads a whole-map capture (docs/map-capture-format.md): terrain, towns, objects, streets and track, for offline
+-- tools and tests. Plain Lua (5.1 to 5.4) with no mod dependencies: the same file is in the kit's template and in
+-- Rail Router. The shared maps are in the kit's maps/ folder (maps/README.md).
 --
 --   local maplib = dofile("tools/maplib.lua")
---   local map = maplib.load("maps/mymap.txt")          -- errors on a truncated or inconsistent file
---   local cells = maplib.rasterise(map, x0, y0, cell, nx, ny)
+--   local map = maplib.load("../maps/big-54-towns-16x16km.map")   -- errors on a truncated or inconsistent file
+--   local h = maplib.heightAt(map, x, y)                          -- bilinear between the 25 m grid points
+--   local cells = maplib.rasterise(map, x0, y0, cell, nx, ny)     -- optional: a grid by Rail Router's rules
 --
 -- map fields: version, meta {key = text}, extent {x0, y0, x1, y1, source}, terrain {key = text}, spacing, gx0, gy0
 -- (point (1, 1)), nx, ny, height {metres} and flag {"L"|"W"|"X"} per point at (iy - 1) * nx + ix, towns {{id, name,
@@ -13,7 +15,7 @@
 local maplib = {}
 
 maplib.VERSION = 1
--- As Rail Router's planner/area.tl.
+-- rasterise's default margin round object boxes (metres), as Rail Router's planner/area.tl.
 maplib.BUILDING_BUFFER = 30.0
 
 local function split(s)
@@ -200,7 +202,7 @@ function maplib.load(path, opts)
 	return map
 end
 
--- The towns as {id, name, pos = {x, y}} (the centre of their box), sorted by name, as survey.towns gives them.
+-- The towns as {id, name, pos = {x, y}} (the centre of their box), sorted by name (as Rail Router's survey.towns).
 function maplib.towns(map)
 	local out = {}
 	for _, t in ipairs(map.towns) do
@@ -236,6 +238,9 @@ function maplib.flagAt(map, x, y)
 	return map.flag[(iy - 1) * map.nx + ix]
 end
 
+-- Optional, from here on: rasterising boxes of the map into grids of cells, by the rules Rail Router's in-game survey
+-- uses (survey.tl, planner/area.tl). Other mods can use it as it is, or write their own from the records above.
+
 -- Grid helpers with Rail Router's grid conventions (planner/grid.tl): cell (1, 1)'s centre at (x0, y0).
 local function cellOf(g, x, y)
 	local ix = math.floor((x - g.x0) / g.cell + 1.5)
@@ -249,8 +254,8 @@ local function inside(g, x, y)
 	return fx >= 0.5 and fx <= g.nx + 0.5 and fy >= 0.5 and fy <= g.ny + 0.5
 end
 
--- The marking rules of planner/area.tl (markBox, markPoint, markLine, markCurve), repeated here so this file has no
--- mod dependencies; tests/maplib_test.lua checks that both mark the same cells.
+-- The marking rules of Rail Router's planner/area.tl (markBox, markPoint, markLine, markCurve), repeated here so
+-- this file has no mod dependencies; Rail Router's tests/maplib_test.lua checks that both mark the same cells.
 local function markBox(g, x0, y0, x1, y1, cells)
 	local half = g.cell / 2
 	if x1 < g.x0 - half or y1 < g.y0 - half or x0 > g.x0 + (g.nx - 1) * g.cell + half
@@ -299,7 +304,8 @@ local function markCurve(g, p0, t0, p1, t1, cells)
 end
 maplib.markBox, maplib.markPoint, maplib.markLine, maplib.markCurve = markBox, markPoint, markLine, markCurve
 
--- A grid of nx × ny cells of `cell` metres, cell (1, 1)'s centre at (x0, y0), filled by Rail Router's survey rules:
+-- A grid of nx × ny cells of `cell` metres, cell (1, 1)'s centre at (x0, y0), filled by Rail Router's survey rules
+-- (opts.buffer: the margin round object boxes, default BUILDING_BUFFER):
 --   * a cell centre off the map (the nearest grid point's flag is "X") is blocked, height 0, dry;
 --   * otherwise its height is interpolated between the grid points, and it's water if the nearest point is;
 --   * every object with a box blocks the cells nearest its box grown by BUILDING_BUFFER, and those between;

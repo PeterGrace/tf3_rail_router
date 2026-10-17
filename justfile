@@ -27,9 +27,13 @@ fetch-tl:
 check:
     tools/check.sh
 
-# Run the unit tests
+# Run the unit tests (and the quick regression routes on the kit's test map, ../maps/)
 test:
     lua tools/test.lua
+
+# Run the unit tests and every regression route (the kit's 54-town map too; about 4 s)
+regress:
+    RAIL_ROUTER_REGRESS=full lua tools/test.lua
 
 # Pre-upload checks (names, encoding, metadata, images, _content.json)
 release-check:
@@ -91,7 +95,7 @@ bump:
     git diff --stat -- {{mod_json}}
 
 # Everything to run before uploading from Mod Hub: revision check plus verify
-release: check-revision verify
+release: check-revision verify regress
     @echo "Ready: upload from Mod Hub > My Mods, then run: just mark-uploaded"
 
 # After a successful upload: tag HEAD as rev-<revision> and push the tag

@@ -69,20 +69,35 @@ end
 -- Pieces for points whose corner tangents (t) fit, tightening any that overlap between fixed points. Also returns,
 -- for each arc (by piece index), the point whose corner it rounds; the result has it as the input point's index
 -- (src).
+-- Where two arcs' tangents overlap on a segment, each first gets its share up to the floor radius (`floor`, 0 for
+-- none), and only the rest of the segment is shared in proportion to what each asks beyond that. Shared in proportion
+-- to the whole tangents, an arc already tightened to the floor next to a wide one on a short segment was squeezed far
+-- below it (an 8 m curve beside a 3 km one on the 54-town map). Only where the floor shares alone don't fit are both
+-- below it.
 local function build(pts : {Pt}, src : {integer}, theta : {number}, t : {number}, removed : integer,
-		guarded : integer) : Result, {integer : integer}
+		guarded : integer, floor : number) : Result, {integer : integer}
 	local n = #pts
 	local fit : {number} = {}
+	local base : {number} = {}
 	for i = 1, n do
 		fit[i] = t[i]
+		base[i] = math.min(t[i], floor * math.tan(theta[i] / 2))
 	end
 	for i = 1, n - 1 do
 		local len = geo.dist(pts[i], pts[i + 1])
 		local sum = t[i] + t[i + 1]
 		if sum > len and sum > 0 then
-			local k = len / sum
-			fit[i] = math.min(fit[i], t[i] * k)
-			fit[i + 1] = math.min(fit[i + 1], t[i + 1] * k)
+			local bi, bj = base[i], base[i + 1]
+			local ai, aj : number, number
+			if bi + bj >= len then
+				local k = len / math.max(bi + bj, 1e-12)
+				ai, aj = bi * k, bj * k
+			else
+				local k = (len - bi - bj) / (sum - bi - bj)
+				ai, aj = bi + (t[i] - bi) * k, bj + (t[i + 1] - bj) * k
+			end
+			fit[i] = math.min(fit[i], ai)
+			fit[i + 1] = math.min(fit[i + 1], aj)
 		end
 	end
 	local pieces : {Piece} = {}
@@ -218,7 +233,7 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 			guarded = guarded + 1
 		end
 	end
-	local result, corners = build(pts, src, theta, t, removed, guarded)
+	local result, corners = build(pts, src, theta, t, removed, guarded, floor)
 	if guard == nil then
 		return result
 	end
@@ -243,7 +258,7 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 		if not changed then
 			return result
 		end
-		result, corners = build(pts, src, theta, t, removed, guarded)
+		result, corners = build(pts, src, theta, t, removed, guarded, floor)
 	end
 end
 

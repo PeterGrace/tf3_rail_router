@@ -255,3 +255,37 @@ t.test("smooth: each arc names the input point whose corner it rounds", function
 	t.eq(corners[1], 4, "first corner")
 	t.eq(corners[2], 5, "second corner")
 end)
+
+t.test("smooth: an arc held at the guard's floor isn't squeezed below it by a wide neighbour on a short segment", function()
+	-- Rail Router on the 54-town map, Fastest at 3 km: the guard tightened a sharp corner's arc to the floor (55 m),
+	-- but the 224 m segment to the next corner was shared in proportion to what each arc asked for, and the next
+	-- corner (a gentle turn, left at 3 km) took nearly all of it: the sharp arc came out at 8 m.
+	-- Here the guard keeps the track within 20 m of the points' line, except beyond the third corner (free ground), so
+	-- corners 2 and 3 are tightened and corner 4's arc stays wide.
+	local pts = { P(0, 0), P(1000, 0), P(800, 300), P(1024, 330), P(2213, 1245) }
+	local function segDist(p, a, b)
+		local abx, aby = b.x - a.x, b.y - a.y
+		local f = math.max(0, math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / (abx * abx + aby * aby)))
+		return math.sqrt((p.x - a.x - abx * f) ^ 2 + (p.y - a.y - aby * f) ^ 2)
+	end
+	local guard = { step = 25, minRadius = 55, clear = function(p)
+		if p.y > 250 and p.x > 850 then
+			return true
+		end
+		for i = 1, #pts - 1 do
+			if segDist(p, pts[i], pts[i + 1]) <= 20 then
+				return true
+			end
+		end
+		return false
+	end }
+	local r = smooth.fillet(pts, 3000, { [2] = true, [3] = true, [4] = true }, guard)
+	t.ok(r.minRadius >= 55 - 1e-6, "no arc below the floor: " .. r.minRadius)
+	local arcs = 0
+	for __, piece in ipairs(r.pieces) do
+		if piece.kind == "arc" then
+			arcs = arcs + 1
+		end
+	end
+	t.eq(arcs, 3, "three arcs")
+end)
