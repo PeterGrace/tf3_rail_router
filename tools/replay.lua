@@ -138,9 +138,9 @@ if not plan.ok then
 	os.exit(1)
 end
 local sum = plan.summary
-print(("  length %.0f m, estimate %.0f, bridges %d (%.0f m), tunnels %d (%.0f m), max grade %.3f, min radius %.0f, tight %d, blocked samples %d, guarded %d"):format(
+print(("  length %.0f m, estimate %.0f, bridges %d (%.0f m), tunnels %d (%.0f m), max grade %.3f, min radius %.0f, tight %d (%.1f s lost), blocked samples %d, guarded %d"):format(
 	sum.length, sum.estimate, sum.bridges, sum.bridgeLength, sum.tunnels, sum.tunnelLength, sum.maxGrade,
-	sum.minRadius, sum.tightCurves, sum.blockedSamples, sum.guarded))
+	sum.minRadius, sum.tightCurves, sum.timeLost or 0, sum.blockedSamples, sum.guarded))
 for i, st in ipairs(plan.stations) do
 	print(("  station %s: (%.0f, %.0f) dir (%.2f, %.2f), %.0f m from centre"):format(st.town.name, st.site.centre.x,
 		st.site.centre.y, st.site.dir.x, st.site.dir.y, st.site.distance))
@@ -152,8 +152,8 @@ for i, leg in ipairs(plan.legs) do
 			table.insert(arcs, ("%.0f@(%.0f,%.0f)"):format(piece.radius, piece.a.x, piece.a.y))
 		end
 	end
-	print(("  leg %d: %.0f m, sweep %.0f°, search radius %.0f (%d expansions), grid path %d points, pieces %d, tight %d, blocked %d, guarded %d%s"):format(i,
-		leg.length, lib.sweep(plan)[i], leg.searchRadius, leg.searchExpansions, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves,
+	print(("  leg %d: %.0f m, sweep %.0f°, search radius %.0f (%d expansions), grid path %d points, pieces %d, tight %d (%.1f s lost), blocked %d, guarded %d%s"):format(i,
+		leg.length, lib.sweep(plan)[i], leg.searchRadius, leg.searchExpansions, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves, leg.timeLost or 0,
 		leg.blockedSamples, leg.guarded,
 		#arcs > 0 and (", tight arcs " .. table.concat(arcs, " ")) or ""))
 	for __, span in ipairs(leg.spans) do

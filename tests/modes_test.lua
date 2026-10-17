@@ -58,6 +58,11 @@ t.test("modes: fastest is flatter and wider", function()
 	t.ok(w.bridgeFactor < c.bridgeFactor, "bridges cost less, relatively")
 	t.eq(w.bridgeRoads, true, "fastest bridges roads")
 	t.eq(c.bridgeRoads, false, "cheapest crosses roads level")
+	-- The speed model: planned for the speed the radius allows, at most the track's; time priced in Fastest only.
+	t.near(w.topSpeed, 44.4, 1e-6, "top speed: the track's")
+	t.near(modes.weights("fastest", TYPES[3]).topSpeed, math.sqrt(2 * 3000), 1e-6, "top speed: what 3 km allows")
+	t.ok(w.timeCost > 0, "fastest prices time")
+	t.eq(c.timeCost, 0, "cheapest doesn't")
 end)
 
 t.test("modes: cheapest falls back to the cheapest type when only fast ones are available", function()

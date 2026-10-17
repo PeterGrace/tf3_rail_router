@@ -3,6 +3,7 @@ local grid = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/gri
 local stations = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/stations.tl" as PgraceRailRouterStations
 local smooth = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/smooth.tl" as PgraceRailRouterSmooth
 local profile = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/profile.tl" as PgraceRailRouterProfile
+local speed = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/speed.tl" as PgraceRailRouterSpeed
 
 local route : PgraceRailRouterRoute = {}
 
@@ -152,9 +153,9 @@ end
 -- 45° turn (minRadius × tan 22.5°); otherwise it is one 22.5° step, so minRadius × tan 11.25°. The longer room cost
 -- Fastest dear on the captures: with stations facing the line, 1.24 km straights at R = 3000 m pushed the legs'
 -- ends past their turns, into a ridge (a 300 m tunnel) and loops (estimate 23.2–23.5 M against 19.6 M).
-local function extensionLength(input : Input) : number
-	local r = input.weights.minRadius
-	if minStraight(input) <= input.grid.cell + 1e-6 then
+local function extensionLength(input : Input, radius : number) : number
+	local r = radius or input.weights.minRadius
+	if 2 * r * math.tan(math.pi / 16) <= input.grid.cell + 1e-6 then
 		return r * math.tan(math.pi / 8)
 	end
 	return r * math.tan(math.pi / 16)
@@ -173,7 +174,7 @@ end
 -- other stations' platforms (`taken`). Where it's pulled back, the curve beyond may be tighter than minRadius (and
 -- where that's below what can be built, fitLeg gives the extension up).
 local function stationEnds(input : Input, station : Station, forward : boolean, taken : {integer : boolean},
-		other : Station) : Pt, Pt, Pt
+		other : Station, radius ?: number) : Pt, Pt, Pt
 	local g = input.grid
 	local sign = forward and 1 or -1
 	local half = input.platformLength / 2
@@ -181,7 +182,7 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 	local platformEnd = geo.add(c, geo.scale(d, sign * half))
 	local approach = geo.add(c, geo.scale(d, sign * (half + APPROACH)))
 	local own = platformCells(input, station)
-	local ext = extensionLength(input)
+	local ext = extensionLength(input, radius)
 	if other ~= nil then
 		local ahead = sign * geo.dot(geo.sub(other.site.centre, c), d)
 		ext = math.min(ext, (ahead - 2 * (half + APPROACH)) / 4)
@@ -200,8 +201,8 @@ end
 -- Where a leg's search starts or ends at a station (its extension point), and its room to turn: how far the
 -- extension reaches beyond the approach (grid.startSearch's startRoom and goalRoom).
 local function legEnd(input : Input, station : Station, forward : boolean, taken : {integer : boolean},
-		other : Station) : Pt, number
-	local __, approach, extension = stationEnds(input, station, forward, taken, other)
+		other : Station, radius ?: number) : Pt, number
+	local __, approach, extension = stationEnds(input, station, forward, taken, other, radius)
 	return extension, geo.dist(approach, extension)
 end
 
@@ -306,6 +307,11 @@ local function apartEnough(input : Input, a : PgraceRailRouterStations.Site, b :
 	local apart = geo.sub(b.centre, a.centre)
 	return geo.len(apart) >= input.platformLength + 2 * APPROACH and geo.dot(apart, a.dir) > 0
 		and geo.dot(apart, b.dir) > 0
+end
+
+-- Whether the weights price travel time (Fastest): then a leg's search radii are weighed by it.
+local function timePriced(w : PgraceRailRouterModes.Weights) : boolean
+	return w.timeCost ~= nil and w.timeCost > 0 and w.topSpeed ~= nil and w.lateralAccel ~= nil
 end
 
 -- A leg's search, as grid.startSearch, or the same search finished before: re-siting a station searches its current
@@ -513,16 +519,18 @@ local function stepResite(job : Job, maxExpansions : integer)
 		return
 	end
 	local candidate : Station = { town = station.town, site = rs.site, z = station.z }
+	-- The legs are weighed by their fallback-radius searches, with rooms to turn sized for it (as the legs' own).
+	local radius = w.minSearchRadius or w.minRadius
 	if rs.search == nil then
 		local from, to, fromDir, toDir : Pt, Pt, Pt, Pt
 		local fromRoom, toRoom : number, number
 		if rs.stage == "in" then
-			from, fromRoom = legEnd(input, prev, true, rs.others, candidate)
-			to, toRoom = legEnd(input, candidate, false, rs.others, prev)
+			from, fromRoom = legEnd(input, prev, true, rs.others, candidate, radius)
+			to, toRoom = legEnd(input, candidate, false, rs.others, prev, radius)
 			fromDir, toDir = prev.site.dir, rs.site.dir
 		else
-			from, fromRoom = legEnd(input, candidate, true, rs.others, next)
-			to, toRoom = legEnd(input, next, false, rs.others, candidate)
+			from, fromRoom = legEnd(input, candidate, true, rs.others, next, radius)
+			to, toRoom = legEnd(input, next, false, rs.others, candidate, radius)
 			fromDir, toDir = rs.site.dir, next.site.dir
 		end
 		-- Only as dear as could still win: a candidate must beat the best so far by RESITE_GAIN, and its two legs
@@ -534,16 +542,15 @@ local function stepResite(job : Job, maxExpansions : integer)
 				maxCost = maxCost - rs.inCost
 			elseif next ~= nil then
 				-- The leg out costs at least its ends' distance apart (no step costs less than its length).
-				local outFrom = legEnd(input, candidate, true, rs.others, next)
-				local outTo = legEnd(input, next, false, rs.others, candidate)
+				local outFrom = legEnd(input, candidate, true, rs.others, next, radius)
+				local outTo = legEnd(input, next, false, rs.others, candidate, radius)
 				maxCost = maxCost - geo.dist(outFrom, outTo)
 			end
 		end
 		if rs.avoid == nil then
 			rs.avoid = footprints(input, plan, i, candidate)
 		end
-		rs.search = searchFor(job, from, to, fromDir, toDir, w.minSearchRadius or w.minRadius, maxCost, nil, fromRoom,
-			toRoom, rs.avoid)
+		rs.search = searchFor(job, from, to, fromDir, toDir, radius, maxCost, nil, fromRoom, toRoom, rs.avoid)
 		return
 	end
 	if not grid.stepSearch(rs.search, searchBudget(rs.search, maxExpansions)) then
@@ -837,6 +844,18 @@ local function startHeights(input : Input, a : Station, b : Station, fitted : Pg
 	return { fitted = fitted, samples = samples, blockedSamples = blockedSamples, fit = fit }
 end
 
+-- Seconds a train stopping at both stations loses to a fitted leg's curves below the mode's radius (speed.tl), from
+-- station centre to station centre: half a platform either side of the pieces. 0 without the speed model's weights.
+local function legTimeLost(input : Input, fitted : PgraceRailRouterSmooth.Result) : number
+	local w = input.weights
+	if w.topSpeed == nil or w.lateralAccel == nil then
+		return 0
+	end
+	local half = input.platformLength / 2
+	local limits, length = speed.pieceLimits(fitted.pieces, half, w)
+	return speed.timeLost(length + 2 * half, limits, w.topSpeed)
+end
+
 -- The leg, once its heights are fitted.
 local function finishLeg(input : Input, heights : LegHeights) : Leg
 	local w = input.weights
@@ -853,15 +872,17 @@ local function finishLeg(input : Input, heights : LegHeights) : Leg
 	end
 	return { pieces = fitted.pieces, samples = samples, z = fit.z, spans = fit.spans, length = length,
 		minRadius = fitted.minRadius, maxGrade = fit.maxGrade, tightCurves = tight, steepEnds = not fit.feasible,
-		blockedSamples = heights.blockedSamples, guarded = fitted.guarded }
+		blockedSamples = heights.blockedSamples, guarded = fitted.guarded, timeLost = legTimeLost(input, fitted) }
 end
 
 local function summarise(input : Input, plan : Plan) : Summary
 	local w = input.weights
 	local sum : Summary = { length = 0, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, maxGrade = 0,
-		minRadius = math.huge, estimate = 0, tightCurves = 0, steepLegs = 0, blockedSamples = 0, guarded = 0 }
+		minRadius = math.huge, estimate = 0, tightCurves = 0, steepLegs = 0, blockedSamples = 0, guarded = 0,
+		timeLost = 0 }
 	for __, leg in ipairs(plan.legs) do
 		sum.length = sum.length + leg.length
+		sum.timeLost = sum.timeLost + leg.timeLost
 		sum.tightCurves = sum.tightCurves + leg.tightCurves
 		sum.blockedSamples = sum.blockedSamples + leg.blockedSamples
 		sum.guarded = sum.guarded + leg.guarded
@@ -889,6 +910,40 @@ local function summarise(input : Input, plan : Plan) : Summary
 	sum.length = sum.length + platforms
 	sum.estimate = sum.estimate + platforms * w.costPerMetre
 	return sum
+end
+
+-- After a leg's search try (weighing radii): on to the next radius, or, after the last, the best try taken as the
+-- leg (already simplified and filleted).
+local function nextTry(job : Job)
+	if job.tryIndex < #job.radii then
+		job.tryIndex = job.tryIndex + 1
+		return
+	end
+	local best = job.best
+	job.path, job.simplified, job.fitted = best.path, best.simplified, best.fitted
+	job.searchRadius, job.pathCost = best.radius, best.cost
+	job.radii, job.fallback, job.best, job.bestTotal = nil, nil, nil, nil
+end
+
+-- A fitted leg that loops, or hooks round into or out of a station, or has a curve the game can't build: perhaps a
+-- station faces the wrong way for it. Weigh other directions for one by their legs' costs: the one nearer the curve
+-- that can't be built, else the one the leg arrives at; each station once.
+local function checkLeg(job : Job, a : Station, b : Station)
+	local input = job.input
+	if belowBuild(input, job.fitted) == 0 and sweepOf(job.fitted) <= SWEEP_LIMIT then
+		return
+	end
+	local first, second = job.legIndex + 1, job.legIndex
+	local p = belowAt(input, job.fitted)
+	if p ~= nil and geo.dist(p, a.site.centre) < geo.dist(p, b.site.centre) then
+		first, second = job.legIndex, job.legIndex + 1
+	end
+	for __, i in ipairs({ first, second }) do
+		if not job.resited[i] then
+			startResite(job, i)
+			return
+		end
+	end
 end
 
 function route.start(input : Input) : Job
@@ -1028,23 +1083,21 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		end
 		if job.fitted == nil then
 			job.fitted = fitLeg(input, job.simplified)
-			local below = belowBuild(input, job.fitted)
-			if below > 0 or sweepOf(job.fitted) > SWEEP_LIMIT then
-				-- The leg loops, or hooks round into or out of a station, or has a curve the game can't build: perhaps a
-				-- station faces the wrong way for it. Weigh other directions for one by their legs' costs: the one
-				-- nearer the curve that can't be built, else the one the leg arrives at; each station once.
-				local first, second = job.legIndex + 1, job.legIndex
-				local p = belowAt(input, job.fitted)
-				if p ~= nil and geo.dist(p, a.site.centre) < geo.dist(p, b.site.centre) then
-					first, second = job.legIndex, job.legIndex + 1
+			if job.radii ~= nil then
+				-- One of several radii being weighed (time priced): its fitted curves tell what time it loses.
+				local t = job.pathCost + input.weights.timeCost * legTimeLost(input, job.fitted)
+				if job.best == nil or t < job.bestTotal then
+					job.best = { path = job.path, simplified = job.simplified, fitted = job.fitted, radius = job.searchRadius,
+						cost = job.pathCost }
+					job.bestTotal = t
 				end
-				for __, i in ipairs({ first, second }) do
-					if not job.resited[i] then
-						startResite(job, i)
-						return false
-					end
+				job.path, job.simplified, job.fitted = nil, nil, nil
+				nextTry(job)
+				if job.radii ~= nil then
+					return false
 				end
 			end
+			checkLeg(job, a, b)
 			return false
 		end
 		if job.heights == nil then
@@ -1068,20 +1121,29 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		return false
 	end
 	if job.search == nil then
-		local aExtension, aRoom = legEnd(input, a, true, job.taken, b)
-		local bExtension, bRoom = legEnd(input, b, false, job.taken, a)
 		if job.radii == nil then
 			job.radii, job.tryIndex, job.searchExpansions = searchRadii(input.weights), 1, 0
 		end
-		-- After the first try, only a path within reach of the fallback's cost will do.
+		local radius = job.radii[job.tryIndex]
+		-- Each try's ends have room for its own first turn, sized for its own radius: sized for the mode's (597 m at
+		-- 3 km), the ends of a leg of a kilometre or two sat so close together, or so far into the next obstacle,
+		-- that no wider radius found a way (Alliance → Aloha, Fastest: every leg fell back).
+		local aExtension, aRoom = legEnd(input, a, true, job.taken, b, radius)
+		local bExtension, bRoom = legEnd(input, b, false, job.taken, a, radius)
+		-- After the first try, only a path that could beat the best so far will do: priced with the time it loses, one
+		-- costing less than the best's total (no path loses less than nothing); otherwise one within reach of the
+		-- fallback's cost.
 		local maxCost : number = nil
 		if job.tryIndex > 1 then
-			maxCost = job.fallbackCost * (1 + MAX_RADIUS_EXTRA)
+			if timePriced(input.weights) then
+				maxCost = job.bestTotal
+			else
+				maxCost = job.fallbackCost * (1 + MAX_RADIUS_EXTRA)
+			end
 		end
 		-- Where turns are spaced, the lattice of reachable cells and headings is coarse, and a path rarely meets one
 		-- exact start and goal: let it leave a's axis, and join b's, anywhere along a run beyond the extension points
 		-- (the stations' straights just get longer), up to MAX_END_RUN and never past half way.
-		local radius = job.radii[job.tryIndex]
 		local run : number = nil
 		if 2 * radius * math.tan(math.pi / 16) > input.grid.cell + 1e-6 then
 			run = math.min(MAX_END_RUN, geo.dist(aExtension, bExtension) / 2)
@@ -1102,6 +1164,27 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	local function accept(p : {Pt}, radius : number, cost : number)
 		job.path, job.searchRadius, job.pathCost = p, radius, cost
 		job.radii, job.fallback = nil, nil
+	end
+	local weighing = timePriced(input.weights) and #job.radii > 1
+	if weighing then
+		-- Every radius is tried, and each path found is built (simplified and filleted, on the next steps) and weighed
+		-- by its cost and the time its curves lose; the least total is taken (see the fitted step).
+		if path ~= nil then
+			job.path, job.searchRadius, job.pathCost = path, job.radii[job.tryIndex], search.cost[0]
+		elseif job.tryIndex == 1 then
+			job.radii = nil
+			if search.enclosed then
+				return fail(job, "no_exit", { a.town.name })
+			end
+			return fail(job, "no_path", { a.town.name, b.town.name })
+		else
+			nextTry(job)
+			if job.radii == nil then
+				-- The last radius found nothing: the best so far is built already; it still has its curves checked.
+				checkLeg(job, a, b)
+			end
+		end
+		return false
 	end
 	if job.tryIndex == 1 then
 		if path == nil then
@@ -1152,6 +1235,9 @@ function route.progress(job : Job) : number
 		local tried = job.radii ~= nil and job.tryIndex - 1 or 0
 		if job.search ~= nil then
 			done = done + LEG_WEIGHT * SEARCH_SHARE * (tried + grid.progress(job.search)) / tries
+		elseif job.path ~= nil and job.radii ~= nil then
+			-- A try being built to be weighed.
+			done = done + LEG_WEIGHT * SEARCH_SHARE * (tried + 1) / tries
 		elseif job.path ~= nil then
 			done = done + LEG_WEIGHT * SEARCH_SHARE
 		else

@@ -51,6 +51,15 @@ function capture.load(path)
 	if c.weights.minSearchRadius == nil and c.weights.minBuildRadius ~= nil then
 		c.weights.minSearchRadius = 4 * c.weights.minBuildRadius
 	end
+	-- Captures from before the speed model (planner/speed.tl): as modes.weights sets it, with the top speed the
+	-- radius allows (the capture has no track speed; modes.weights derives the Fastest radius from it, so they agree
+	-- unless the radius was capped or floored), and Fastest (the mode that bridges roads) pricing time at its
+	-- FASTEST_TIME_COST.
+	if c.weights.lateralAccel == nil and c.weights.minRadius ~= nil then
+		c.weights.lateralAccel = 2.0
+		c.weights.topSpeed = math.sqrt(2.0 * c.weights.minRadius)
+		c.weights.timeCost = c.weights.bridgeRoads and 50.0 or 0
+	end
 	return c
 end
 
