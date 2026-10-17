@@ -171,3 +171,39 @@ t.test("stations: a run that only clips the corner of a building's cell is refus
 		t.ok(not g.blocked[grid.index(g, grid.cellOf(g, p))], "clear at " .. d)
 	end
 end)
+
+local function builtUp(radius)
+	local g = openGrid()
+	fill(g, "blocked", function(c) return math.sqrt(c.x * c.x + c.y * c.y) <= radius end)
+	return g
+end
+
+t.test("stations: a search stepped a little work at a time finds what find does", function()
+	local g = builtUp(800)
+	local whole = stations.find(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 1500)
+	t.ok(whole ~= nil, "found")
+	local finder = stations.startFind(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 1500)
+	local steps = 0
+	while not stations.stepFind(finder, 20) do
+		steps = steps + 1
+		assert(steps < 100000, "runaway")
+	end
+	t.ok(steps > 10, "spread over steps: " .. steps)
+	t.ok(finder.site ~= nil, "found stepped")
+	t.near(finder.site.centre.x, whole.centre.x, 1e-9, "x")
+	t.near(finder.site.centre.y, whole.centre.y, 1e-9, "y")
+	t.near(finder.site.dir.x, whole.dir.x, 1e-9, "dir x")
+	t.near(finder.site.distance, whole.distance, 1e-9, "distance")
+end)
+
+t.test("stations: a stepped search with nothing to find ends with no site", function()
+	local g = builtUp(5000)
+	local finder = stations.startFind(g, { x = 0, y = 0 }, { x = 1, y = 0 }, 360, 10, 600)
+	local steps = 0
+	while not stations.stepFind(finder, 50) do
+		steps = steps + 1
+		assert(steps < 100000, "runaway")
+	end
+	t.eq(finder.site, nil, "none")
+	t.ok(stations.stepFind(finder, 50), "stays done")
+end)

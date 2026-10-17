@@ -37,29 +37,56 @@ function corridor.candidates(a : Town, b : Town, towns : {Town}, budget : number
 	return result
 end
 
-function corridor.order(a : Town, b : Town, picked : {Town}) : {Town}
-	local middle : {Town} = {}
-	for __, town in ipairs(picked) do
+-- Cheapest insertion: from a straight to b, repeatedly puts in the town (of `towns`, a and b left out) whose best
+-- place in the line adds the least length, at that place, while the line stays at most maxLength long (nil: no
+-- limit). Returns the line, a to b. Ties go to the lower id, then the earlier place, so the result is repeatable.
+local function insertCheapest(a : Town, b : Town, towns : {Town}, maxLength : number) : {Town}
+	local stops : {Town} = { a, b }
+	local length = geo.dist(a.pos, b.pos)
+	local left : {Town} = {}
+	for __, town in ipairs(towns) do
 		if town.id ~= a.id and town.id ~= b.id then
-			table.insert(middle, town)
+			table.insert(left, town)
 		end
 	end
-	local alongById : {integer:number} = {}
-	for __, town in ipairs(middle) do
-		alongById[town.id] = along(a.pos, b.pos, town.pos)
-	end
-	table.sort(middle, function(x : Town, y : Town) : boolean
-		if alongById[x.id] ~= alongById[y.id] then
-			return alongById[x.id] < alongById[y.id]
+	while #left > 0 do
+		local best = math.huge
+		local bestTown, bestPlace = 0, 0
+		for k, town in ipairs(left) do
+			for place = 2, #stops do
+				local p, q = stops[place - 1].pos, stops[place].pos
+				local added = geo.dist(p, town.pos) + geo.dist(town.pos, q) - geo.dist(p, q)
+				if added < best - 1e-9
+					or (added < best + 1e-9 and town.id < left[bestTown].id) then
+					best, bestTown, bestPlace = added, k, place
+				end
+			end
 		end
-		return x.id < y.id
-	end)
-	local stops : {Town} = { a }
-	for __, town in ipairs(middle) do
-		table.insert(stops, town)
+		if maxLength ~= nil and length + best > maxLength + 1e-9 then
+			break
+		end
+		table.insert(stops, bestPlace, left[bestTown])
+		table.remove(left, bestTown)
+		length = length + best
 	end
-	table.insert(stops, b)
 	return stops
+end
+
+function corridor.select(a : Town, b : Town, candidates : {Candidate}, budget : number) : {Town}
+	local towns : {Town} = {}
+	for __, candidate in ipairs(candidates) do
+		table.insert(towns, candidate.town)
+	end
+	local stops = insertCheapest(a, b, towns, (1 + budget) * geo.dist(a.pos, b.pos))
+	local chosen : {Town} = {}
+	for k = 2, #stops - 1 do
+		table.insert(chosen, stops[k])
+	end
+	return chosen
+end
+
+function corridor.order(a : Town, b : Town, picked : {Town}) : {Town}
+	return insertCheapest(a, b, picked, nil)
 end
 
 return corridor

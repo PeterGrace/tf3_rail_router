@@ -30,7 +30,8 @@ local CELL = 100.0
 -- the work starts over with it doubled, up to MAX_RETRIES times (0.25, 0.5, 1.0).
 local SURVEY_MARGIN = 0.25
 local MAX_RETRIES = 2
--- Towns adding at most this share of the direct distance are offered as stops.
+-- Towns adding at most this share of the direct distance on their own are offered as stops; those ticked by default
+-- add at most this share together (corridor.select).
 local DETOUR_BUDGET = 0.15
 local PLATFORMS : {integer} = { 80, 120, 160, 240, 320 }
 
@@ -45,12 +46,13 @@ local record Settings
 	-- electrified variant available in the current year.
 	electrified : boolean
 	platform : integer
-	-- Candidate stops the player unticked, by town id.
-	skipped : {integer : boolean}
+	-- The player's ticks on candidate stops, by town id, over the default (corridor.select's towns ticked): true
+	-- ticked, false unticked, nil the default. Cleared when From or To changes.
+	ticked : {integer : boolean}
 end
 
 -- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
-local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, skipped = {} }
+local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, ticked = {} }
 
 local record GameData
 	towns : {Town}
@@ -274,7 +276,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local function setSettings(change : function(Settings))
 		settingsState:transform(function(current : Settings) : Settings
 			local copy : Settings = { from = current.from, to = current.to, mode = current.mode, track = current.track,
-				electrified = current.electrified, platform = current.platform, skipped = current.skipped }
+				electrified = current.electrified, platform = current.platform, ticked = current.ticked }
 			change(copy)
 			remembered = copy
 			return copy
@@ -298,6 +300,20 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	if fromTown ~= nil and toTown ~= nil and fromTown.id ~= toTown.id then
 		candidates = corridor.candidates(fromTown, toTown, data.towns, DETOUR_BUDGET)
 	end
+	-- Ticked by default: the towns that fit into the budget together.
+	local byDefault : {integer : boolean} = {}
+	if #candidates > 0 then
+		for __, town in ipairs(corridor.select(fromTown, toTown, candidates, DETOUR_BUDGET)) do
+			byDefault[town.id] = true
+		end
+	end
+	local function isTicked(id : integer) : boolean
+		local tick = settings.ticked[id]
+		if tick == nil then
+			return byDefault[id] == true
+		end
+		return tick
+	end
 
 	local function findRoute()
 		if fromTown == nil or toTown == nil or fromTown.id == toTown.id or track == nil then
@@ -305,7 +321,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		local picked : {Town} = {}
 		for __, candidate in ipairs(candidates) do
-			if not settings.skipped[candidate.town.id] then
+			if isTicked(candidate.town.id) then
 				table.insert(picked, candidate.town)
 			end
 		end
@@ -465,10 +481,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 	-- Combo values must match an item: a remembered town that isn't on this map shows "Choose a town".
 	table.insert(body, labelled(_("From"), townCombo(data.towns, fromTown ~= nil and fromTown.id or -1, function(id : integer)
-		update(function(s : Settings) s.from = id s.skipped = {} end)
+		update(function(s : Settings) s.from = id s.ticked = {} end)
 	end)))
 	table.insert(body, labelled(_("To"), townCombo(data.towns, toTown ~= nil and toTown.id or -1, function(id : integer)
-		update(function(s : Settings) s.to = id s.skipped = {} end)
+		update(function(s : Settings) s.to = id s.ticked = {} end)
 	end)))
 	table.insert(body, labelled(_("Mode"), builtin.ComboBox{
 		value = settings.mode,
@@ -547,15 +563,20 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			end
 			table.insert(body, builtin.CheckBox{
 				label = label,
-				value = settings.skipped[id] and 0 or 1,
+				value = isTicked(id) and 1 or 0,
 				onValueChange = function(v : integer)
 					update(function(s : Settings)
-						local skipped : {integer : boolean} = {}
-						for k, skip in pairs(s.skipped) do
-							skipped[k] = skip
+						local ticked : {integer : boolean} = {}
+						for k, tick in pairs(s.ticked) do
+							ticked[k] = tick
 						end
-						skipped[id] = v == 0 or nil
-						s.skipped = skipped
+						-- Back to the default: no override, so it follows the default if that changes.
+						if (v == 1) == (byDefault[id] == true) then
+							ticked[id] = nil
+						else
+							ticked[id] = v == 1
+						end
+						s.ticked = ticked
 					end)
 				end,
 			})

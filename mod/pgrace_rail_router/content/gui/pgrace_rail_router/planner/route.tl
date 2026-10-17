@@ -22,6 +22,9 @@ local APPROACH = 100.0
 local MAX_STATION_RELIEF = 10.0
 -- How far from a town's centre to look for room for its station (metres).
 local MAX_STATION_RADIUS = 1500.0
+-- Work a station's site search does per step (see stations.stepFind; about 1 µs a unit on desktop Lua, 0.6 ms at
+-- most for 500 even on steep ground). A whole search, in one step, took up to 41 ms in-game in a big town.
+local SITE_WORK_PER_STEP = 500
 -- Spacing of the height samples along the track (metres).
 local SAMPLE_STEP = 25.0
 -- Grid paths are simplified to within this share of a cell before the curves are fitted.
@@ -494,12 +497,19 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		local i = job.siteIndex
 		local town = input.stops[i]
 		local prev = plan.stations[i - 1]
-		if prev ~= nil then
-			-- Keep the next site off the earlier platforms.
-			takePlatforms(input, prev, job.taken)
+		if job.finder == nil then
+			if prev ~= nil then
+				-- Keep the next site off the earlier platforms.
+				takePlatforms(input, prev, job.taken)
+			end
+			job.finder = stations.startFind(input.grid, town.pos, stopDir(input.stops, i),
+				input.platformLength + 2 * APPROACH, MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken)
 		end
-		local site = stations.find(input.grid, town.pos, stopDir(input.stops, i),
-			input.platformLength + 2 * APPROACH, MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken)
+		if not stations.stepFind(job.finder, SITE_WORK_PER_STEP) then
+			return false
+		end
+		local site = job.finder.site
+		job.finder = nil
 		if site == nil then
 			return fail(job, "no_site", { town.name })
 		end
@@ -541,16 +551,25 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		-- nothing that leaves room to the stations either side.
 		local i = job.siteIndex
 		local station = plan.stations[i]
-		local dir = scoutDir(job, i)
-		if dir ~= nil then
-			local others : {integer : boolean} = {}
-			for j, other in ipairs(plan.stations) do
-				if j ~= i then
-					takePlatforms(input, other, others)
+		if job.finder == nil then
+			local dir = scoutDir(job, i)
+			if dir ~= nil then
+				job.others = {}
+				for j, other in ipairs(plan.stations) do
+					if j ~= i then
+						takePlatforms(input, other, job.others)
+					end
 				end
+				job.finder = stations.startFind(input.grid, station.town.pos, dir, input.platformLength + 2 * APPROACH,
+					MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + MAX_TURN_MOVE), job.others)
 			end
-			local site = stations.find(input.grid, station.town.pos, dir, input.platformLength + 2 * APPROACH,
-				MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + MAX_TURN_MOVE), others)
+		end
+		if job.finder ~= nil then
+			if not stations.stepFind(job.finder, SITE_WORK_PER_STEP) then
+				return false
+			end
+			local site, others = job.finder.site, job.others
+			job.finder, job.others = nil, nil
 			local prev, next = plan.stations[i - 1], plan.stations[i + 1]
 			-- Nor where buildings cut its room to turn shorter than the first site's, on a side a leg leaves from:
 			-- the leg there would have to turn sharply at the approach, in the town.

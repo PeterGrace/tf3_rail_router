@@ -1,5 +1,7 @@
 -- Replays a route plan offline from a capture (the "CAPTURE" lines the window's probe writes to the game log), and
--- draws it. usage: lua tools/replay.lua <capture file> [out.ppm] [key=value weight overrides...]
+-- draws it. usage: lua tools/replay.lua <capture file> [out.ppm] [key=value weight overrides...] [reselect=true]
+-- reselect=true picks the stops again as the window would by default: the capture's first and last stops are the ends,
+-- the ones between are the towns (corridor.candidates, select, order with the window's 15% budget).
 -- Prints the plan's summary and per-leg figures; with out.ppm, draws the map (20 m per pixel): terrain shaded by
 -- height, water blue, blocked cells red, roads grey, track black, the grid path yellow, the planned track green
 -- (ground), blue (bridge) or orange (tunnel), and samples over blocked cells magenta.
@@ -30,6 +32,9 @@ end
 
 local grid = ug_require(modId .. "::/gui/pgrace_rail_router/planner/grid.tl")
 local route = ug_require(modId .. "::/gui/pgrace_rail_router/planner/route.tl")
+local corridor = ug_require(modId .. "::/gui/pgrace_rail_router/planner/corridor.tl")
+-- As the window's DETOUR_BUDGET.
+local DETOUR_BUDGET = 0.15
 
 local capPath, outPath = arg[1], arg[2]
 assert(capPath, "usage: lua tools/replay.lua <capture> [out.ppm] [key=value...]")
@@ -86,6 +91,18 @@ end
 if weights.minSearchRadius == nil and weights.minBuildRadius ~= nil then
 	weights.minSearchRadius = 4 * weights.minBuildRadius
 end
+local reselect = overrides.reselect == "true"
+overrides.reselect = nil
+if reselect and #stops > 2 then
+	local a, b = stops[1], stops[#stops]
+	local candidates = corridor.candidates(a, b, stops, DETOUR_BUDGET)
+	stops = corridor.order(a, b, corridor.select(a, b, candidates, DETOUR_BUDGET))
+	local list = {}
+	for __, town in ipairs(stops) do
+		table.insert(list, town.name)
+	end
+	print(("reselected %d of %d candidates: %s"):format(#stops - 2, #candidates, table.concat(list, ", ")))
+end
 for k, v in pairs(overrides) do
 	if v == "true" or v == "false" then
 		weights[k] = v == "true"
@@ -97,13 +114,23 @@ end
 local clock = os.clock()
 local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform })
 local paths = {}
-while not route.step(job, 1000000) do
+-- The slowest single step per phase (ms), as the window logs it in-game (where Lua runs about 4 times slower).
+local slowest = {}
+while true do
+	local phase = job.phase
+	local before = os.clock()
+	local done = route.step(job, 1000000)
+	slowest[phase] = math.max(slowest[phase] or 0, (os.clock() - before) * 1000)
+	if done then
+		break
+	end
 	if job.path ~= nil and paths[job.legIndex] == nil then
 		paths[job.legIndex] = job.path
 	end
 end
 local plan = route.plan(job)
 print(("replay %s: %.0f ms, %s"):format(capPath, (os.clock() - clock) * 1000, plan.ok and "ok" or plan.failure))
+print(("  slowest step: sites %.2f ms, turn %.2f ms"):format(slowest.sites or 0, slowest.turn or 0))
 if not plan.ok then
 	print("  towns: " .. table.concat(plan.failureTowns, ", "))
 	os.exit(1)

@@ -668,3 +668,27 @@ t.test("route: a station turned to face the line keeps its room to turn", functi
 		d.y))
 	t.eq(plan.summary.blockedSamples, 0, "nothing in the way")
 end)
+
+t.test("route: a station site far from a built-up centre is searched over several steps", function()
+	-- y from -2500 to 2500: A's centre is built up for 900 m around, so its site lies past it.
+	local g = grid.new(-3000, -2500, 100, 101, 51)
+	for iy = 1, g.ny do
+		for ix = 1, g.nx do
+			local c = grid.centre(g, ix, iy)
+			if math.sqrt(c.x * c.x + c.y * c.y) <= 900 then
+				g.blocked[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 6000, 0) }, weights = W,
+		platformLength = 160 })
+	local siteSteps = 0
+	while job.phase == "sites" do
+		route.step(job, 500)
+		siteSteps = siteSteps + 1
+	end
+	t.ok(siteSteps > 3, "spread over steps: " .. siteSteps)
+	local plan = route.plan(job)
+	t.ok(#plan.stations == 2, "both sited")
+	t.ok(plan.stations[1].site.distance > 800, "A's site past the built-up centre: " .. plan.stations[1].site.distance)
+end)
