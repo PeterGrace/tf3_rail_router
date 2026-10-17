@@ -234,3 +234,44 @@ t.test("replay --map plans a route on a synthetic map", function()
 	t.ok(out:find("cheapest on Standard Tracks"), "the default Cheapest track for 1950:\n" .. out)
 	t.ok(listed:find("town 1 West Town") and listed:find("East Town"), "listed:\n" .. listed)
 end)
+
+t.test("compare_capture finds no differences against the map's own grid, and reports a changed cell", function()
+	local mapPath, capPath = os.tmpname(), os.tmpname()
+	local spec = { x0 = -2000, y0 = -2000, x1 = 2000, y1 = 2000,
+		heightFn = function(x, y) return 30 + 0.005 * x end,
+		flagFn = function(x, y) return x < -1500 and "W" or "L" end,
+		objects = { { id = 1, kind = "station", boxSource = "own", min = v(100, 100), max = v(300, 140),
+			construction = -1, town = -1 } },
+		edges = { { id = 2, kind = "s", edgeType = "n", node0 = 1, node1 = 2, p0 = v(-1800, 0), p1 = v(1800, 50) } } }
+	synth.write(mapPath, synth.lines(spec))
+	local map = maplib.load(mapPath)
+	local x0, y0, cell, nx, ny = -1900, -1900, 100, 30, 30
+	local g = maplib.rasterise(map, x0, y0, cell, nx, ny)
+	-- As the window's captureProbe writes it.
+	local function writeCapture(changed)
+		local lines = { ("CAPTURE begin %.3f %.3f %.3f %d %d"):format(x0, y0, cell, nx, ny) }
+		for iy = 1, ny do
+			local hs, fs = {}, {}
+			for ix = 1, nx do
+				local i = (iy - 1) * nx + ix
+				hs[ix] = ("%.1f"):format(g.height[i])
+				local f = (g.blocked[i] and 1 or 0) + (g.water[i] and 2 or 0) + (g.road[i] and 4 or 0) + (g.track[i] and 8 or 0)
+				if changed == i then f = f ~ 1 end
+				fs[ix] = ("%x"):format(f)
+			end
+			lines[#lines + 1] = ("CAPTURE row %d %s %s"):format(iy, table.concat(hs, ","), table.concat(fs))
+		end
+		lines[#lines + 1] = "CAPTURE end"
+		synth.write(capPath, lines)
+		local p = io.popen(('lua "%s/tools/compare_capture.lua" "%s" "%s" 2>&1'):format(root, mapPath, capPath))
+		local out = p:read("a")
+		p:close()
+		return out
+	end
+	local same = writeCapture(nil)
+	local differs = writeCapture(5)
+	os.remove(mapPath)
+	os.remove(capPath)
+	t.ok(same:find("0 mismatching cells"), "same:\n" .. same)
+	t.ok(differs:find("blocked%s+map only%s+0, capture only%s+1"), "differs:\n" .. differs)
+end)

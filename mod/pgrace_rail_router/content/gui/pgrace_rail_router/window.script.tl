@@ -8,6 +8,7 @@ local corridor = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner
 local route = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/route.tl" as PgraceRailRouterRoute
 local survey = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/survey.tl" as PgraceRailRouterSurvey
 local preview = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/preview.tl" as PgraceRailRouterPreview
+local mapcapture = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/mapcapture.tl" as PgraceRailRouterMapCapture
 
 local type Town = PgraceRailRouterCorridor.Town
 local type Candidate = PgraceRailRouterCorridor.Candidate
@@ -76,6 +77,12 @@ local record Work
 	slowestStepUs : {string : integer}
 	planUs : integer
 	planFrames : integer
+end
+
+-- PROBE (remove before release): a whole-map capture in progress; job is nil until the first join starts it (its
+-- engine reads belong on the main thread, not in the click handler).
+local record CaptureWork
+	job : PgraceRailRouterMapCapture.Job
 end
 
 local record Progress
@@ -268,6 +275,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local progressState : ReactStateT<Progress> = react.useState(nil)
 	local errorState = react.useState(false) as ReactStateT<boolean>
 	local workRef : ReactRefT<Work> = react.useRef(nil)
+	local captureRef : ReactRefT<CaptureWork> = react.useRef(nil) -- PROBE (remove before release)
+	-- PROBE (remove before release): the capture's percentage while it runs, and its outcome once it's over.
+	local capturePercentState : ReactStateT<integer> = react.useState(nil)
+	local captureResultState : ReactStateT<string> = react.useState(nil)
 	-- A join is queued and hasn't run yet; at most one at a time.
 	local joinQueuedRef : ReactRefT<boolean> = react.useRef(false)
 
@@ -316,6 +327,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 
 	local function findRoute()
+		-- Not while the map capture runs (PROBE): one piece of long work at a time.
+		if captureRef:get() ~= nil then
+			return
+		end
 		if fromTown == nil or toTown == nil or fromTown.id == toTown.id or track == nil then
 			return
 		end
@@ -451,8 +466,66 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 	end
 
+	-- PROBE (remove before release): writes the whole map to the log (mapcapture), BUDGET_US per frame.
+	local function startCapture()
+		if workRef:get() ~= nil or captureRef:get() ~= nil then
+			return
+		end
+		captureRef:set({})
+		capturePercentState:set(0)
+		captureResultState:set(nil)
+	end
+
+	local function advanceCapture(capture : CaptureWork)
+		if capture.job == nil then
+			local tracks : {{string : any}} = {}
+			for __, t in ipairs(data.tracks) do
+				table.insert(tracks, t as any as {string : any})
+			end
+			capture.job = mapcapture.start({ tracks = tracks, meta = { mod = "pgrace_rail_router" } })
+			if capture.job == nil then
+				error("map capture: no extent")
+			end
+			return
+		end
+		if mapcapture.step(capture.job, BUDGET_US) then
+			captureRef:set(nil)
+			capturePercentState:set(nil)
+			captureResultState:set("done")
+		else
+			local percent = math.floor(100 * mapcapture.progress(capture.job))
+			if capturePercentState:old() ~= percent then
+				capturePercentState:set(percent)
+			end
+		end
+	end
+
 	react.onStep(function()
-		if workRef:get() == nil or joinQueuedRef:get() then
+		if joinQueuedRef:get() then
+			return
+		end
+		if workRef:get() == nil and captureRef:get() ~= nil then
+			joinQueuedRef:set(true)
+			safeJoin(function()
+				joinQueuedRef:set(false)
+				local capture = captureRef:get()
+				if capture == nil then
+					return
+				end
+				local ok, err = pcall(function() : boolean
+					advanceCapture(capture)
+					return true
+				end)
+				if not ok then
+					debugPrint(LOG_PREFIX .. "map capture error: " .. tostring(err))
+					captureRef:set(nil)
+					capturePercentState:set(nil)
+					captureResultState:set("failed")
+				end
+			end, "PgraceRailRouterCapture")
+			return
+		end
+		if workRef:get() == nil then
 			return
 		end
 		joinQueuedRef:set(true)
@@ -604,6 +677,19 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 	if errorState:old() then
 		table.insert(body, textRow(_("Planning failed (see log)"), "font-scale-body"))
+	end
+	-- PROBE (remove before release): not translated.
+	table.insert(body, builtin.Button{
+		content = builtin.TextView{ text = "Capture whole map (probe)" },
+		onClick = startCapture,
+	})
+	local capturePercent = capturePercentState:old()
+	if capturePercent ~= nil then
+		table.insert(body, textRow("Capturing map… " .. tostring(capturePercent) .. "%", "font-scale-annotation"))
+	elseif captureResultState:old() == "done" then
+		table.insert(body, textRow("Map captured (see log)", "font-scale-annotation"))
+	elseif captureResultState:old() == "failed" then
+		table.insert(body, textRow("Map capture failed (see log)", "font-scale-annotation"))
 	end
 	local plan = planState:old()
 	if plan ~= nil then
