@@ -710,3 +710,65 @@ t.test("route: close stations' rooms to turn don't overlap, so the leg between t
 	t.ok(leg.minRadius >= 500, "B to C swings across: min radius " .. leg.minRadius)
 	t.ok(leg.length < 1300, "and doesn't loop: " .. leg.length .. " m")
 end)
+
+-- Blocks a ring of cells from r0 to r1 round (cx, cy).
+local function ring(g, cx, cy, r0, r1)
+	for iy = 1, g.ny do
+		for ix = 1, g.nx do
+			local c = grid.centre(g, ix, iy)
+			local r = math.sqrt((c.x - cx) ^ 2 + (c.y - cy) ^ 2)
+			if r >= r0 and r <= r1 then
+				g.blocked[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+end
+
+t.test("route: a station isn't put in a clear spot that buildings wall in", function()
+	-- A's centre is open, inside a ring of buildings 600 to 900 m out: the site must be outside it.
+	local g = grid.new(-3000, -2500, 100, 111, 51)
+	ring(g, 0, 0, 600, 900)
+	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 6000, 0) })
+	t.ok(plan.ok, "plans: " .. tostring(plan.failure))
+	t.ok(plan.stations[1].site.distance >= 900, "A's site outside the ring: " .. plan.stations[1].site.distance)
+end)
+
+t.test("route: a town whose every clear spot is walled in fails no_exit, not no_path", function()
+	-- A ring 1.6 to 1.9 km out: every spot within the site search's 1.5 km is inside it.
+	local g = grid.new(-3000, -3000, 100, 111, 61)
+	ring(g, 0, 0, 1600, 1900)
+	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 6000, 0) })
+	t.ok(not plan.ok, "fails")
+	t.eq(plan.failure, "no_exit", "reason")
+	t.eq(plan.failureTowns[1], "A", "town")
+	t.eq(#plan.legs, 0, "no leg searched")
+end)
+
+t.test("route: a leg whose start is walled in, beyond the site's reach, fails no_exit for that town", function()
+	-- A wall round A's half of the grid, 2.5 to 2.8 km out (beyond what the site check looks at): the leg's search
+	-- finds its region closed off inside the grid, so a wider area can't help.
+	local g = grid.new(-4000, -4000, 100, 141, 81)
+	ring(g, 0, 0, 2500, 2800)
+	local plan = run(g, { town(1, "A", 0, 0), town(2, "B", 6000, 0) })
+	t.ok(not plan.ok, "fails")
+	t.eq(plan.failure, "no_exit", "reason")
+	t.eq(plan.failureTowns[1], "A", "town")
+end)
+
+t.test("route: the turning phase's steps stay within the site search's work budget", function()
+	local g = grid.new(-3000, -2500, 100, 111, 51)
+	ring(g, 0, 0, 600, 900)
+	ring(g, 3000, 0, 500, 800)
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) },
+		weights = W, platformLength = 160 })
+	local turnSteps, most = 0, 0
+	while not route.step(job, 500) do
+		if job.phase == "turn" and job.finder ~= nil then
+			turnSteps = turnSteps + 1
+			most = math.max(most, job.finder.work)
+		end
+	end
+	t.ok(route.plan(job).ok, "plans")
+	t.ok(turnSteps > 0, "turning searched")
+	t.ok(most <= 500 + 5 * 9 + 2, "most work in a turning step " .. most)
+end)

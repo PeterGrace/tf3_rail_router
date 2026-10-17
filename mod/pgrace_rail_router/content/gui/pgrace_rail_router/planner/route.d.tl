@@ -83,11 +83,12 @@ global record PgraceRailRouterRoute
 
 	record Plan
 		ok : boolean
-		-- Why the plan failed: "no_stops", "no_site", "too_close" (two consecutive stations' platforms, with their
-		-- approaches, don't fit between them, or the second isn't ahead of the first along both stations'
-		-- directions) or "no_path"; nil when ok.
+		-- Why the plan failed: "no_stops", "no_site", "no_exit" (the town has clear spots for a station, but buildings
+		-- wall every one in, or a leg's search found its start closed off inside the area: a wider area can't help),
+		-- "too_close" (two consecutive stations' platforms, with their approaches, don't fit between them, or the
+		-- second isn't ahead of the first along both stations' directions) or "no_path"; nil when ok.
 		failure : string
-		-- The town for no_site; the two towns for too_close and no_path.
+		-- The town for no_site and no_exit; the two towns for too_close and no_path.
 		failureTowns : {string}
 		platformLength : number
 		stations : {Station}
@@ -112,6 +113,11 @@ global record PgraceRailRouterRoute
 		siteIndex : integer
 		finder : PgraceRailRouterStations.Finder
 		others : {integer : boolean}
+		-- Each stop's exit check (by stop index), shared by its site searches.
+		exits : {integer : PgraceRailRouterStations.Exit}
+		-- Turning: the search has ended with this site (nil: none), to weigh in the next step.
+		turnPending : boolean
+		turnSite : PgraceRailRouterStations.Site
 		-- Scouting: the round (1..), the leg being scouted, and the scouts' paths by leg (nil where none was found).
 		round : integer
 		scoutIndex : integer

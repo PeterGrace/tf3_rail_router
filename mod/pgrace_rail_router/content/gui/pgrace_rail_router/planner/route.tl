@@ -22,6 +22,11 @@ local APPROACH = 100.0
 local MAX_STATION_RELIEF = 10.0
 -- How far from a town's centre to look for room for its station (metres).
 local MAX_STATION_RADIUS = 1500.0
+-- A station site must connect to open country (stations.Exit): over unblocked cells to somewhere this far from its
+-- town's centre, farther than any site may be by a kilometre, so a pocket reaching just past the sites' radius
+-- doesn't count as a way out. In a big town the first check floods up to about 2,000 cells (spread over steps, and
+-- remembered for the town's later sites).
+local EXIT_RADIUS = MAX_STATION_RADIUS + 1000.0
 -- Work a station's site search does per step (see stations.stepFind; about 1 µs a unit on desktop Lua, 0.6 ms at
 -- most for 500 even on steep ground). A whole search, in one step, took up to 41 ms in-game in a big town.
 local SITE_WORK_PER_STEP = 500
@@ -100,6 +105,22 @@ local function straightClear(input : Input, a : Pt, b : Pt, taken : {integer : b
 	end)
 end
 
+-- Whether the leg's search can leave (or reach) an extension point, heading out of the station (`out`) within the
+-- 90° it may turn at once, other than back along the station (`back`: the far end of its run) and the straight from
+-- it: the point sits off its cell's centre, and the search's first (or last) segment from it must be clear.
+-- Between buildings it may have no such move where the approach point has one (Pottstown on the third save: the
+-- extension 28 m beyond the approach could only be reached across a building's corner, and the leg found no path).
+local function leavable(g : Grid, back : Pt, extension : Pt, out : Pt) : boolean
+	local straight : {integer : boolean} = {}
+	grid.cellsAlong(g, back, extension, function(i : integer) : boolean
+		straight[i] = true
+		return true
+	end)
+	local ix, iy = grid.cellOf(g, extension)
+	straight[grid.index(g, ix, iy)] = nil
+	return #grid.leaveCells(g, extension, out, straight) > 0
+end
+
 -- The minimum straight between turns for the full radius (grid.startSearch): 2 · minRadius · tan(11.25°).
 local function minStraight(input : Input) : number
 	return 2 * input.weights.minRadius * math.tan(math.pi / 16)
@@ -146,7 +167,8 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 	end
 	while ext > 0 do
 		local extension = geo.add(c, geo.scale(d, sign * (half + APPROACH + ext)))
-		if straightClear(input, approach, extension, taken, own) then
+		if straightClear(input, approach, extension, taken, own)
+				and leavable(g, geo.add(c, geo.scale(d, -sign * (half + APPROACH))), extension, geo.scale(d, sign)) then
 			return platformEnd, approach, extension
 		end
 		ext = ext - g.cell / 2
@@ -238,6 +260,33 @@ local function searchBudget(search : PgraceRailRouterGrid.Search, maxExpansions 
 		longest = math.max(longest, steps)
 	end
 	return math.max(1, math.floor(maxExpansions / longest))
+end
+
+-- The exit check for stop i's town, shared by all its site searches.
+local function exitFor(job : Job, i : integer) : PgraceRailRouterStations.Exit
+	if job.exits[i] == nil then
+		-- A leg arrives at every station but the first, and leaves every one but the last.
+		job.exits[i] = { radius = EXIT_RADIUS, known = {}, backward = i > 1, forward = i < #job.input.stops }
+	end
+	return job.exits[i]
+end
+
+-- Moves the turning phase on to the next station, or on to the next round or the legs after the last.
+local function nextTurn(job : Job)
+	local input, plan = job.input, job.result
+	job.siteIndex = job.siteIndex + 1
+	if job.siteIndex > #plan.stations then
+		if job.round < SCOUT_ROUNDS then
+			job.phase, job.round, job.scoutIndex, job.scouts = "scout", job.round + 1, 1, {}
+		else
+			-- The legs keep off every platform (each station's ends less its own).
+			job.taken = {}
+			for __, other in ipairs(plan.stations) do
+				takePlatforms(input, other, job.taken)
+			end
+			job.phase = "legs"
+		end
+	end
 end
 
 local function fail(job : Job, failure : string, towns : {string}) : boolean
@@ -493,6 +542,7 @@ end
 
 function route.start(input : Input) : Job
 	local job : Job = { input = input, phase = "sites", siteIndex = 1, legIndex = 1, taken = {}, searchExpansions = 0,
+		exits = {}, turnPending = false,
 		result = { ok = true, failureTowns = {}, platformLength = input.platformLength, stations = {}, legs = {} } }
 	if #input.stops < 2 then
 		fail(job, "no_stops", {})
@@ -515,14 +565,19 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 				takePlatforms(input, prev, job.taken)
 			end
 			job.finder = stations.startFind(input.grid, town.pos, stopDir(input.stops, i),
-				input.platformLength + 2 * APPROACH, MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken)
+				input.platformLength + 2 * APPROACH, MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken, exitFor(job, i))
 		end
 		if not stations.stepFind(job.finder, SITE_WORK_PER_STEP) then
 			return false
 		end
-		local site = job.finder.site
+		local site, pocketed = job.finder.site, job.finder.pocketed
 		job.finder = nil
 		if site == nil then
+			-- Clear spots there were, but buildings wall every one in: say so, rather than search legs that can't
+			-- leave it (and widen the area, which can't help).
+			if pocketed > 0 then
+				return fail(job, "no_exit", { town.name })
+			end
 			return fail(job, "no_site", { town.name })
 		end
 		if prev ~= nil and not apartEnough(input, prev.site, site) then
@@ -560,28 +615,13 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	end
 	if job.phase == "turn" then
 		-- Find station i's site again, facing along the scouted line; keep the old one where that finds nothing, or
-		-- nothing that leaves room to the stations either side.
+		-- nothing that leaves room to the stations either side. The search is stepped like the first one, and the
+		-- found site is weighed in a step of its own.
 		local i = job.siteIndex
 		local station = plan.stations[i]
-		if job.finder == nil then
-			local dir = scoutDir(job, i)
-			if dir ~= nil then
-				job.others = {}
-				for j, other in ipairs(plan.stations) do
-					if j ~= i then
-						takePlatforms(input, other, job.others)
-					end
-				end
-				job.finder = stations.startFind(input.grid, station.town.pos, dir, input.platformLength + 2 * APPROACH,
-					MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + MAX_TURN_MOVE), job.others)
-			end
-		end
-		if job.finder ~= nil then
-			if not stations.stepFind(job.finder, SITE_WORK_PER_STEP) then
-				return false
-			end
-			local site, others = job.finder.site, job.others
-			job.finder, job.others = nil, nil
+		if job.turnPending then
+			local site, others = job.turnSite, job.others
+			job.turnPending, job.turnSite, job.others = false, nil, nil
 			local prev, next = plan.stations[i - 1], plan.stations[i + 1]
 			-- Nor where buildings cut its room to turn shorter than the first site's, on a side a leg leaves from:
 			-- the leg there would have to turn sharply at the approach, in the town.
@@ -600,19 +640,28 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 				and (next == nil or apartEnough(input, site, next.site)) then
 				station.site, station.z = site, grid.heightAt(input.grid, site.centre)
 			end
+			nextTurn(job)
+			return false
 		end
-		job.siteIndex = i + 1
-		if job.siteIndex > #plan.stations then
-			if job.round < SCOUT_ROUNDS then
-				job.phase, job.round, job.scoutIndex, job.scouts = "scout", job.round + 1, 1, {}
-			else
-				-- The legs keep off every platform (each station's ends less its own).
-				job.taken = {}
-				for __, other in ipairs(plan.stations) do
-					takePlatforms(input, other, job.taken)
-				end
-				job.phase = "legs"
+		if job.finder == nil then
+			local dir = scoutDir(job, i)
+			if dir == nil then
+				nextTurn(job)
+				return false
 			end
+			job.others = {}
+			for j, other in ipairs(plan.stations) do
+				if j ~= i then
+					takePlatforms(input, other, job.others)
+				end
+			end
+			job.finder = stations.startFind(input.grid, station.town.pos, dir, input.platformLength + 2 * APPROACH,
+				MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + MAX_TURN_MOVE), job.others,
+				exitFor(job, i))
+			return false
+		end
+		if stations.stepFind(job.finder, SITE_WORK_PER_STEP) then
+			job.turnSite, job.turnPending, job.finder = job.finder.site, true, nil
 		end
 		return false
 	end
@@ -679,6 +728,10 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		if path == nil then
 			-- The fallback radius turns most freely: no wider one finds a way either.
 			job.radii = nil
+			if search.enclosed then
+				-- Walled in inside the area (past what the site check looks at): a wider area can't help.
+				return fail(job, "no_exit", { a.town.name })
+			end
 			return fail(job, "no_path", { a.town.name, b.town.name })
 		end
 		if #job.radii == 1 then

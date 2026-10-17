@@ -14,6 +14,7 @@ local DIRS : {{integer}} = {
 	{ 1, 0 }, { 2, 1 }, { 1, 1 }, { 1, 2 }, { 0, 1 }, { -1, 2 }, { -1, 1 }, { -2, 1 },
 	{ -1, 0 }, { -2, -1 }, { -1, -1 }, { -1, -2 }, { 0, -1 }, { 1, -2 }, { 1, -1 }, { 2, -1 },
 }
+grid.DIRS = DIRS
 -- A single move may turn at most this many 22.5° steps (90°), where the radius leaves room to turn on every move.
 local MAX_TURN_STEPS = 4
 -- A step from one road cell to another costs this many times its length: entering a road is paid once
@@ -250,6 +251,31 @@ local function turnSteps(a : integer, b : integer) : integer
 	return t
 end
 
+function grid.leaveCells(g : Grid, p : Pt, out : Pt, skip : {integer : boolean}) : {integer}
+	local nx, ny, blocked = g.nx, g.ny, g.blocked
+	local ax, ay = grid.cellOf(g, p)
+	local k0 = nearestDir(out)
+	local cells : {integer} = {}
+	for k, d in ipairs(DIRS) do
+		local dx, dy = d[1], d[2]
+		local bx, by = ax + dx, ay + dy
+		if (k0 == 0 or turnSteps(k0, k) <= MAX_TURN_STEPS) and bx >= 1 and bx <= nx and by >= 1 and by <= ny then
+			local b = grid.index(g, bx, by)
+			local open = not blocked[b] and not skip[b]
+			if open and dx * dx + dy * dy == 5 then
+				open = not blocked[grid.index(g, ax + math.floor(dx / 2), ay + math.floor(dy / 2))]
+					and not blocked[grid.index(g, ax + math.ceil(dx / 2), ay + math.ceil(dy / 2))]
+			end
+			if open and grid.cellsAlong(g, p, grid.centre(g, bx, by), function(i : integer) : boolean
+					return not blocked[i]
+				end) then
+				table.insert(cells, b)
+			end
+		end
+	end
+	return cells
+end
+
 -- The least turn penalty still to pay from a state arriving in direction k: the turns from k round to the goal
 -- direction add up to at least turnSteps(k, goalDir) steps, and a turn of n steps costs n² ≥ n. Each move's own turn
 -- pays for any drop in this, so with the distance it stays a consistent heuristic.
@@ -322,6 +348,9 @@ local function fillStep(s : Search, budget : integer) : integer
 		budget = budget - 1
 		local ax = (a - 1) % nx + 1
 		local ay = math.floor((a - 1) / nx) + 1
+		if ax == 1 or ax == nx or ay == 1 or ay == ny then
+			s.fillEdge = true
+		end
 		for k = 1, NDIRS do
 			local d = DIRS[k]
 			local dx, dy = d[1], d[2]
@@ -350,9 +379,11 @@ local function fillStep(s : Search, budget : integer) : integer
 	end
 	s.fillHead = head
 	if head > tail then
-		-- Nothing left to fill and the goal not met: unreachable.
+		-- Nothing left to fill and the goal not met: unreachable. Closed off inside the grid unless the fill reached its
+		-- edge (then a wider grid might have a way round).
 		s.filling, s.fillSeen, s.fillQueue = false, nil, nil
 		s.done = true
+		s.enclosed = not s.fillEdge
 	end
 	return budget
 end
@@ -420,7 +451,7 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 		goalDir = nearestDir(goalDir), radius = radius or w.minRadius, maxCost = maxCost or math.huge, done = false,
 		found = false, expansions = 0, h0 = 0, bestH = 0, heap = {}, heapF = {}, cost = {}, parent = {},
 		origin = {}, finishDir = 0, finishSteps = 0, finishGoal = 1, filling = true, fillQueue = {}, fillHead = 1,
-		fillSeen = {} }
+		fillSeen = {}, fillEdge = false, enclosed = false }
 	turnModel(s, g.cell, s.radius)
 	local start = grid.index(g, sx, sy)
 	s.start = start
