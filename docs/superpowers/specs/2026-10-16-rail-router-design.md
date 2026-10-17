@@ -153,18 +153,44 @@ the plan's summary counts these, and the log shows it.
 
 ### Height profile (`profile.tl`)
 
-Fits the track's height to the terrain under the grade limit, smoothing forwards and backwards. Where the track is
-more than 8 m above the ground it becomes a bridge, and more than 12 m below a tunnel. These thresholds are starting
-values, tuned in-game.
+Fits the track's height to the terrain under the grade limit, as cheaply as it can. Where the track is more than 8 m
+above the ground it becomes a bridge, and more than 12 m below a tunnel. These thresholds are starting values, tuned
+in-game.
 
 **Crossings:** samples over existing track, and over roads in Fastest mode (`Weights.bridgeRoads`), are bridges and
 are never merged away. The track there is lifted to at least 7 m above the ground, ramping up and down within the
 grade limit; the station heights pinned at a leg's ends win if a crossing is too close to them. In Cheapest mode
 roads are crossed on the level.
 
-The grade clamp runs both ways (start first, and end first) from the same target and the two results are averaged, so
-a ridge or valley is cut symmetrically instead of leaning towards one end; the average keeps the grade limit, the pins
-and the crossing floors.
+**Cheapest heights:** a dynamic programme (Viterbi) over evenly spaced nodes along the leg (at most 25 m apart) and
+heights on a grid: per node and height, the cheapest way there from the start within the grade limit. The grid step
+is the grade's rise between nodes split into whole steps of at most 0.5 m (0.3125 m at Fastest's 2.5%, 0.425 m at
+8.5%), so the steepest climb is exactly a whole number of steps. A metre of track costs (in metres of plain track):
+
+- on the ground (within 8 m above or 12 m below it): 1, plus 0.05 per metre of cut or fill. The game charges nothing
+  for earthworks; the term keeps the track at the ground where leaving it saves nothing (else it could ride anywhere
+  in the band for free), and makes big embankments and cuttings pay their way (8 m of fill is 1.4, still far below a
+  bridge);
+- a bridge (above that, over water, or over a crossing): `bridgeCostFactor` (5), and a tunnel `tunnelCostFactor` (8),
+  each plus 0.002 per metre of height, so a deck keeps low, a tunnel shallow, and over water the deck near the line
+  between the banks.
+
+Each node tries only a band of heights: between the lowest the ground allows at the grade limit and the highest the
+ground and the crossings' floors need (a cheapest track never leaves those envelopes: clipping it to them only
+brings it nearer the ground), and within the pins' reach. The grid track is then interpolated to the samples, each
+sample moved up to a grid step towards the ground (so a track that can follow the ground does so exactly), clamped to
+the grade and the pins, and lifted back to the crossings' floors. When the pins are too far apart in height, the
+search aims for the nearest height the start can reach and the end's pin is put back at the last sample (that grade
+breaks the limit, and the leg is flagged). Runs shorter than 75 m are merged into their neighbours afterwards, which
+the search doesn't know about.
+
+This replaced a grade clamp run both ways and averaged, which lifted the track over flat ground on its way into a
+ridge it tunnelled through anyway (NewGame2, Cornelius → Perth Amboy, Fastest: a 301 m bridge over flat ground before
+a 766 m tunnel). On the regression routes Fastest estimates fell by up to 27% (5% over the set), and none rose.
+
+**Work:** about a height × predecessor pair per unit, 32 units a microsecond on desktop Lua. A leg's fit is spread
+over `route.step`s of 20,000 units (0.6 ms desktop, about 2.5 ms in-game); the regression legs took one or two, a
+10 km leg over 80 m hills (about 250,000 units, 7 ms) 13.
 
 ### Stations (`stations.tl`)
 
@@ -284,8 +310,9 @@ don't keep engine components across a `sendCommand`.
 - `grid`: a straight line on flat ground; going round a lake when that's cheaper than a bridge; a bridge when going
   round is too long; impassable buildings; Fastest choosing a straighter path than Cheapest on the same map.
 - `smooth`: every arc is at least the minimum radius, and the end directions are kept.
-- `profile`: grades stay under the limit; a valley becomes a bridge, a ridge a tunnel; a crossing a bridge with 7 m
-  of clearance.
+- `profile`: grades stay under the limit (also on rough random ground and unevenly spaced samples); a valley becomes
+  one bridge, a ridge one tunnel, a hill within the grade neither; a crossing a bridge with 7 m of clearance; flat
+  ground before a ridge that's tunnelled isn't bridged; a fit spread over steps gives the same heights.
 - `stations`: the chosen spot is clear (of buildings, water, roads and track) and as near the centre as possible;
   a clear spot walled in by buildings, or whose leaving end is a dead end, is refused for the next one out.
 - `corridor`: the detour budget includes and excludes the right towns; the default stops fit the budget together and
