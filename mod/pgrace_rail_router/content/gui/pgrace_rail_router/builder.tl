@@ -197,6 +197,7 @@ function builder.levelCrossings(messages : {string}, collisions : {Collision}) :
 		end
 		return n
 	end
+	-- A node joins the pieces that end at it (it is its own key: entity ids of nodes and pieces don't clash).
 	for i, c in ipairs(collisions) do
 		if c.what == "street" then
 			local ra, rb = root(c.node0 or -i), root(c.node1 or -i)
@@ -208,8 +209,14 @@ function builder.levelCrossings(messages : {string}, collisions : {Collision}) :
 	local roads : {integer : boolean} = {}
 	local count = 0
 	for i, c in ipairs(collisions) do
+		local key : integer = nil
 		if c.what == "street" then
-			local r = root(c.node0 or -i)
+			key = c.node0 or -i
+		elseif c.what == "node" then
+			key = c.entity
+		end
+		if key ~= nil then
+			local r = root(key)
 			if not roads[r] then
 				roads[r] = true
 				count = count + 1
@@ -232,6 +239,13 @@ local function whatIs(entity : integer) : string
 		return "street"
 	elseif has(entity, ct.BASE_EDGE) then
 		return "track"
+	elseif has(entity, ct.BASE_NODE) then
+		local segments = 0
+		pcall(function() : boolean
+			segments = #api.engine.system.streetSystem.getNodeSegments(entity)
+			return true
+		end)
+		return segments >= 3 and "junction" or "node"
 	elseif has(entity, ct.TOWN_BUILDING) then
 		return "building"
 	elseif has(entity, ct.CONSTRUCTION) then
@@ -396,7 +410,7 @@ function builder.step(check : Check) : boolean
 			crossings = builder.levelCrossings(messages, collisions)
 			local others = 0
 			for __, c in ipairs(collisions) do
-				if c.what ~= "street" then
+				if c.what ~= "street" and c.what ~= "node" then
 					others = others + 1
 				end
 			end

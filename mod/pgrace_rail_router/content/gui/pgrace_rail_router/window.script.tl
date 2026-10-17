@@ -276,6 +276,10 @@ local function collidedWith(what : string) : string
 		return _("a street")
 	elseif what == "track" then
 		return _("track")
+	elseif what == "node" then
+		return _("a street")
+	elseif what == "junction" then
+		return _("a road junction")
 	elseif what == "building" then
 		return _("a building")
 	elseif what == "construction" then
@@ -293,7 +297,7 @@ local function problemRow(check : PgraceRailRouterBuilder.Check, outcome : Pgrac
 	local target : PgraceRailRouterBuilder.Collision = nil
 	for __, c in ipairs(outcome.collisions or {}) do
 		-- Streets are level crossings there, counted on their own line.
-		if outcome.crossings > 0 and c.what == "street" then
+		if outcome.crossings > 0 and (c.what == "street" or c.what == "node") then
 			-- skip
 		elseif not named[c.what] then
 			named[c.what] = true

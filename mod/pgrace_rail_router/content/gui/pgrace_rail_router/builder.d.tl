@@ -11,7 +11,8 @@ global record PgraceRailRouterBuilder
 	-- Something a dry run's track or station ran into, as the game lists it.
 	record Collision
 		entity : integer
-		-- "street", "track", "building" (a town building), "construction" or "other".
+		-- "street", "track", "node" (where pieces of street or track join), "junction" (a node joining three or more),
+		-- "building" (a town building), "construction" or "other".
 		what : string
 		-- Where it is (its bounding box's centre, or an edge's middle); nil where it can't be read.
 		x : number
@@ -98,7 +99,8 @@ global record PgraceRailRouterBuilder
 	-- leading "::"; nil if neither is found.
 	resolveModule : function(name : string) : string
 	-- How many level crossings a dry run's collisions make: the streets, pieces joined end to end counting once (a
-	-- crossing at a joint hits both), where every message is a collision; 0 otherwise. Pure.
+	-- crossing at a joint hits both, and may hit the node joining them too), where every message is a collision; 0
+	-- otherwise. A junction is never part of one. Pure.
 	levelCrossings : function(messages : {string}, collisions : {Collision}) : integer
 	-- The entities a dry run collided with, each once, with what each is and where. Empty when there are none or
 	-- they can't be read.
