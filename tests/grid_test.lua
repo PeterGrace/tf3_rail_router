@@ -413,21 +413,142 @@ local function clutteredGrid()
 	return g
 end
 
-t.test("grid: a radius whose minimum straight fits in a cell turns as before the curve-aware search", function()
-	-- The path, cost and work from the one-step search (recorded again when knight moves started counting the ground
-	-- they pass over); a radius whose minimum straight is one cell or less must give exactly this.
-	local before = "0,9 1,8 2,7 3,7 4,8 5,7 7,6 8,5 10,6 11,7 12,6 13,5 14,5 15,5 17,4 18,4 19,5 20,6 21,7 22,7 23,8 "
-		.. "24,9 25,10 26,11 27,11 28,10 29,9"
-	for __, radius in ipairs({ 220, 250 }) do
-		local path, s = run(clutteredGrid(), { x = 0, y = 900 }, { x = 2900, y = 900 }, with({ minRadius = radius }))
+t.test("grid: a radius whose minimum straight fits in a cell prices each corner by its curve's room", function()
+	-- The path, cost and work, recorded when corners started being priced (before that: 10192.07 and 2931
+	-- expansions for both radii, the path through 3,7 4,8 5,7 7,6 8,5 10,6): every move may still turn, but a corner
+	-- costs the straight its curve at the search's radius would lack, so the wider radius costs more.
+	local expected = "0,9 1,8 2,7 2,6 3,5 4,5 5,5 6,5 8,6 10,7 11,7 12,6 13,5 14,5 15,5 17,4 18,4 19,5 20,6 21,7 22,7 "
+		.. "23,8 24,9 25,10 26,11 27,11 28,10 29,9"
+	for __, case in ipairs({ { 220, 11006.0843625812777, 2825 }, { 250, 11254.6125000051343, 2862 } }) do
+		local radius = case[1]
+		local path, s = run(clutteredGrid(), { x = 0, y = 900 }, { x = 2900, y = 900 },
+			with({ minRadius = radius, minBuildRadius = 55 }))
 		local cells = {}
 		for __, p in ipairs(path) do
 			table.insert(cells, ("%d,%d"):format(p.x / 100, p.y / 100))
 		end
-		t.eq(table.concat(cells, " "), before, radius .. ": path")
-		t.near(s.cost[0], 10192.0728255635149, 1e-9, radius .. ": cost")
-		t.eq(s.expansions, 2931, radius .. ": expansions")
+		t.eq(table.concat(cells, " "), expected, radius .. ": path")
+		t.near(s.cost[0], case[2], 1e-6, radius .. ": cost")
+		t.eq(s.expansions, case[3], radius .. ": expansions")
 	end
+end)
+
+-- tan(θ / 2) of the turn at path[i], and the lengths of the segments either side.
+local function corner(path, i)
+	local a = segment(path, i - 1)
+	local b = segment(path, i)
+	local la, lb = math.sqrt(a.x * a.x + a.y * a.y), math.sqrt(b.x * b.x + b.y * b.y)
+	return math.tan(angleBetween(a, b) / 2), la, lb
+end
+
+-- Whether every corner between two cell centres has room for its curve at radius r in half of each segment beside it
+-- (the other half is the next corner's).
+local function cornersFit(path, r)
+	for i = 3, #path - 2 do
+		local tanHalf, la, lb = corner(path, i)
+		if r * tanHalf > math.min(la, lb) / 2 + 1e-6 then
+			return false, ("corner %d at (%.0f, %.0f): %.1f m of curve, %.1f m of straight"):format(i, path[i].x,
+				path[i].y, r * tanHalf, math.min(la, lb) / 2)
+		end
+	end
+	return true
+end
+
+t.test("grid: corners are spaced for curves of the build minimum", function()
+	-- Random cluttered grids: whatever the path does, no corner is closer to the next than the curves at the build
+	-- minimum need. (A 90° turn between two straight moves needs 55 m of straight either side: more than half a cell,
+	-- so it takes a diagonal or a knight move on one side, or two 45° turns.)
+	for seed = 1, 20 do
+		local rnd = (function()
+			local x = seed * 7919
+			return function()
+				x = (x * 1103515245 + 12345) % 2147483648
+				return x / 2147483648
+			end
+		end)()
+		local g = grid.new(0, 0, 100, 30, 20)
+		for i = 1, 30 * 20 do
+			g.blocked[i] = rnd() < 0.25
+		end
+		g.blocked[grid.index(g, 1, 10)] = false
+		g.blocked[grid.index(g, 30, 10)] = false
+		for __, build in ipairs({ 55, 70 }) do
+			local path = run(g, { x = 0, y = 900 }, { x = 2900, y = 900 }, with({ minBuildRadius = build }), 1000,
+				EAST, { x = 0, y = 0 })
+			if path ~= nil then
+				local ok, why = cornersFit(path, build)
+				t.ok(ok, ("seed %d, build minimum %d: %s"):format(seed, build, tostring(why)))
+			end
+		end
+	end
+end)
+
+t.test("grid: a curve at a start or goal point needs the station's straight behind it", function()
+	-- The goal 500 m due north of the start, which heads east; the goal is to be entered heading north. With no
+	-- straight behind the start point or beyond the goal point (no room, no approach), neither may turn: the path
+	-- leaves heading east and arrives heading north. With a 100 m approach behind each, the curves there may use it.
+	local g = grid.new(0, 0, 100, 21, 21)
+	local north = { x = 0, y = 1 }
+	local from, to = { x = 1000, y = 1000 }, { x = 1000, y = 1500 }
+	local function search(approach)
+		local s = grid.startSearch(g, from, to, EAST, north, with({ minBuildRadius = 55 }), nil, nil, nil, nil, 0, 0,
+			approach)
+		while not grid.stepSearch(s, 1000) do end
+		return grid.path(s), s
+	end
+	local straight = search(0)
+	t.ok(straight ~= nil, "found")
+	t.near(angleBetween(segment(straight, 1), EAST), 0, 1e-6, "leaves heading east")
+	t.near(angleBetween(segment(straight, #straight - 1), north), 0, 1e-6, "arrives heading north")
+	local turning = search(100)
+	t.ok(turning ~= nil, "found")
+	t.ok(angleBetween(segment(turning, 1), EAST) > 1e-6, "turns at once")
+end)
+
+t.test("grid: a U-turn too tight for the build minimum is no path, not a hook", function()
+	-- A corridor two cells wide (y = 500 and 600) running east to a dead end at x = 1500: arriving at (1000, 500)
+	-- heading west means turning round at the dead end, between track centres 100 m apart, a 50 m radius at most.
+	local g = grid.new(0, 0, 100, 21, 12)
+	for iy = 1, 12 do
+		for ix = 1, 21 do
+			local c = grid.centre(g, ix, iy)
+			g.blocked[grid.index(g, ix, iy)] = not ((c.y == 500 or c.y == 600) and c.x <= 1500)
+		end
+	end
+	local west = { x = -1, y = 0 }
+	local hook = run(g, { x = 100, y = 500 }, { x = 1000, y = 500 }, W, 1000, EAST, west)
+	t.ok(hook ~= nil, "turning freely, the old search hooked round in the corridor")
+	local path, s = run(g, { x = 100, y = 500 }, { x = 1000, y = 500 }, with({ minBuildRadius = 55 }), 1000, EAST, west)
+	t.eq(path, nil, "no path")
+	t.ok(s.done, "finished")
+end)
+
+t.test("grid: a loop round to a goal behind pays for its tight curves", function()
+	-- Arriving heading south at a goal due north: the path loops round. Its corners fit the build minimum, and its
+	-- cost is more than its length and turn penalties: the straight its curves at 220 m lack is charged.
+	local g = grid.new(0, 0, 100, 21, 21)
+	local south = { x = 0, y = -1 }
+	local path, s = run(g, { x = 1000, y = 1000 }, { x = 1000, y = 1800 }, with({ minBuildRadius = 55 }), 1000, EAST,
+		south)
+	t.ok(path ~= nil, "found")
+	local ok, why = cornersFit(path, 55)
+	t.ok(ok, tostring(why))
+	local length, penalties = 0, 0
+	for i = 1, #path - 1 do
+		local d = segment(path, i)
+		length = length + math.sqrt(d.x * d.x + d.y * d.y)
+	end
+	local headings = { EAST }
+	for i = 1, #path - 1 do
+		table.insert(headings, segment(path, i))
+	end
+	table.insert(headings, south)
+	for i = 1, #headings - 1 do
+		local n = math.floor(angleBetween(headings[i], headings[i + 1]) / (math.pi / 8) + 0.5)
+		penalties = penalties + W.turnPenalty * n * n
+	end
+	t.ok(s.cost[0] > length + penalties + 100, ("cost %.0f, length %.0f, turn penalties %.0f"):format(s.cost[0],
+		length, penalties))
 end)
 
 t.test("grid: the radius can be given apart from the weights", function()
@@ -436,7 +557,7 @@ t.test("grid: the radius can be given apart from the weights", function()
 	local s = grid.startSearch(clutteredGrid(), { x = 0, y = 900 }, { x = 2900, y = 900 }, EAST, EAST, wide, 220)
 	while not grid.stepSearch(s, 1000) do end
 	t.eq(s.radius, 220, "radius")
-	t.near(s.cost[0], 10192.0728255635149, 1e-9, "as with the Cheapest radius")
+	t.near(s.cost[0], 11006.0843625812777, 1e-6, "as with the Cheapest radius")
 	t.ok(a == nil or sa.cost[0] >= s.cost[0] - 1e-9, "the wide radius never finds a cheaper path")
 end)
 

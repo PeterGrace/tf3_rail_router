@@ -142,6 +142,35 @@ local function pieceClear(piece : Piece, guard : Guard, from : integer, to : int
 	return true
 end
 
+-- Whether the corners either side of point v, without it, still fit their curves at the floor radius on their
+-- segments: dropping a point on a tight loop over open ground would otherwise fold the loop into one sharp corner
+-- (a 145° turn with a 13 m curve, where the grid path had room for every curve at the build minimum).
+local function fitsWithout(pts : {Pt}, theta : {number}, v : integer, floor : number) : boolean
+	local n = #pts
+	local function angle(i : integer, prev : integer, next : integer) : number
+		if i <= 1 or i >= n then
+			return 0
+		end
+		return geo.turnAngle(geo.sub(pts[i], pts[prev]), geo.sub(pts[next], pts[i]))
+	end
+	local function tf(th : number) : number
+		return floor * math.tan(th / 2)
+	end
+	local before, after = v - 1, v + 1
+	local tb = tf(angle(before, before - 1, after))
+	local ta = tf(angle(after, before, after + 1))
+	if tb + ta > geo.dist(pts[before], pts[after]) + 1e-6 then
+		return false
+	end
+	if before > 1 and tf(theta[before - 1]) + tb > geo.dist(pts[before - 1], pts[before]) + 1e-6 then
+		return false
+	end
+	if after < n and tf(theta[after + 1]) + ta > geo.dist(pts[after], pts[after + 1]) + 1e-6 then
+		return false
+	end
+	return true
+end
+
 function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard ?: Guard) : Result
 	if #points < 2 then
 		return { pieces = {}, minRadius = math.huge, removed = 0, guarded = 0, corners = {} }
@@ -210,7 +239,7 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 		if guard ~= nil then
 			local a, b = pts[victim - 1], pts[victim + 1]
 			dropOk = pieceClear({ kind = "straight", a = a, b = b, length = geo.dist(a, b) }, guard, src[victim - 1],
-				src[victim + 1])
+				src[victim + 1]) and fitsWithout(pts, theta, victim, floor)
 			if not dropOk then
 				-- Kept, it may only squeeze the curves on its two segments down to the floor: a curve the game can't
 				-- build is worse than one that cuts a corner, so if they don't fit even at the floor it goes anyway.

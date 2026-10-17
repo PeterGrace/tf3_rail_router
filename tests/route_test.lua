@@ -478,12 +478,16 @@ local function walledStart(top, extra)
 				first[k] = station.site
 			end
 		elseif job.phase == "legs" and first ~= nil then
-			job.taken = {}
+			job.taken, job.footprint = {}, {}
 			for k, station in ipairs(job.result.stations) do
 				station.site = first[k]
 				local c, d = station.site.centre, station.site.dir
 				for o = -80, 80, 50 do
 					job.taken[grid.index(g, grid.cellOf(g, { x = c.x + d.x * o, y = c.y + d.y * o }))] = true
+				end
+				-- The legs keep off the platforms and approaches (80 + 100 m either side of the centre).
+				for o = -180, 180, 25 do
+					job.footprint[grid.index(g, grid.cellOf(g, { x = c.x + d.x * o, y = c.y + d.y * o }))] = true
 				end
 			end
 			first = nil
@@ -512,10 +516,12 @@ t.test("route: a sharp turn just past a short extension gives the extension up r
 	t.ok(first.length > 0, "straight " .. first.length)
 end)
 
-t.test("route: a turn with no room at the floor even without the extension keeps it, counted as tight", function()
-	-- A second wall across the cells round (100..300, 200) turns the line back west 100 m past A's extension: a 140°
-	-- turn there. Without the extension it would start at the approach point, and 140° at the build minimum needs
-	-- more than the 100 m of approach behind it, so the extension stays, with its tight curve.
+t.test("route: a turn with no room at the floor where the extension ends is made where it fits", function()
+	-- A second wall across the cells round (100..300, 200) would turn the line back west 100 m past A's extension: a
+	-- 140° turn there, which at the build minimum needs more than the 100 m of approach behind it (the search used to
+	-- take it, and the curve came out below the build minimum). The search prices its corners by the room their curves
+	-- have, so it goes where they fit: here round the station's far end, clear of its platforms and approaches, with
+	-- curves tighter than the mode's radius but buildable.
 	local plan = walledStart(20, function(g)
 		for ix = 12, 14 do
 			g.blocked[grid.index(g, ix, 18)] = true
@@ -523,12 +529,24 @@ t.test("route: a turn with no room at the floor even without the extension keeps
 	end)
 	t.ok(plan.ok, "ok")
 	local leg = plan.legs[1]
-	t.ok(leg.minRadius < W.minBuildRadius, "tight: " .. leg.minRadius)
+	t.ok(leg.minRadius >= W.minBuildRadius - 1e-6, "buildable: " .. leg.minRadius)
 	t.ok(leg.tightCurves >= 1, "counted")
 	t.eq(leg.blockedSamples, 0, "off the walls")
+	-- Going round, the track keeps off A's platforms and approaches (within 180 m of its centre along the line and
+	-- 50 m across it), past the first few hundred metres where it leaves them.
+	for __, sample in ipairs(leg.samples) do
+		if sample.s > 400 then
+			t.ok(not (math.abs(sample.p.x) <= 180 and math.abs(sample.p.y) <= 50),
+				("over the station at (%.0f, %.0f), %.0f m along"):format(sample.p.x, sample.p.y, sample.s))
+		end
+	end
+	-- The platforms stay straight: the curve starts at their end at the earliest.
 	local first = leg.pieces[1]
-	t.eq(first.kind, "straight", "leaves straight")
-	t.ok(first.length >= 100 - 1e-6, "the whole approach is straight: " .. first.length)
+	t.near(first.a.x, 80, 1e-6, "from the platform end")
+	t.near(first.a.y, 0, 1e-6, "from the platform end")
+	if first.kind == "arc" then
+		t.near(first.a.x - first.centre.x, 0, 1e-6, "the curve leaves along the platforms")
+	end
 end)
 
 t.test("route: a passage too narrow for the full radius falls back to a smaller one rather than fail", function()
