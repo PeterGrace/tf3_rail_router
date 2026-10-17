@@ -26,9 +26,12 @@ local function v3(p : Pt3) : Vec3f
 	return api.type.Vec3f.new(p.x, p.y, p.z)
 end
 
-local function newContext() : Context
+function builder.newContext(cleanup ?: boolean) : Context
 	local context = api.type.Context.new()
 	context.player = api.engine.util.getPlayer()
+	if cleanup then
+		context.cleanupStreetGraph = true
+	end
 	return context
 end
 
@@ -78,6 +81,10 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 	local nodeIds : {integer : integer} = {}
 	local nodes : {Proposal.NodeAndEntity} = {}
 	local function node(index : integer) : integer
+		local p = net.nodes[index]
+		if p.entity ~= nil then
+			return p.entity
+		end
 		if nodeIds[index] == nil then
 			local n = api.type.NodeAndEntity.new()
 			n.entity = -(edgeCount + #nodes + 1)
@@ -302,11 +309,12 @@ function builder.collisions(data : ProposalData) : {Collision}
 	return result
 end
 
-function builder.dryRun(proposal : SimpleProposal) : boolean, integer, {string}, integer, ProposalData
+function builder.dryRun(proposal : SimpleProposal, context ?: Context) : boolean, integer, {string}, integer,
+		ProposalData
 	local clock = api.type.Clock.new()
 	-- makeProposalData takes a SimpleProposal, despite the tealdef (AGENTS.md).
 	local ok, data = pcall(function() : ProposalData
-		return api.engine.util.proposal.makeProposalData(proposal as any as Proposal, newContext())
+		return api.engine.util.proposal.makeProposalData(proposal as any as Proposal, context or builder.newContext())
 	end)
 	local us = math.floor(clock:getTime())
 	if not ok or data == nil then

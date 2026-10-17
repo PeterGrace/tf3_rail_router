@@ -88,7 +88,7 @@ global record PgraceRailRouterBuilder
 	step : function(check : Check) : boolean
 	progress : function(check : Check) : number
 	-- The SimpleProposal for edges first .. last of the network (new nodes for every end, so each chunk's dry run
-	-- stands alone), or nil and why it can't be made (the track template not found, a bridge or tunnel with no type).
+	-- stands alone, except nodes with an entity, which it joins), or nil and why it can't be made (the track template not found, a bridge or tunnel with no type).
 	chunkProposal : function(net : PgraceRailRouterNetwork.Network, first : integer, last : integer,
 		settings : Settings) : SimpleProposal, string
 	-- The SimpleProposal for one of the plan's stations, or nil and why it can't be made (the station or a module
@@ -108,7 +108,10 @@ global record PgraceRailRouterBuilder
 	-- The game's price for a metre of double track (settings.track, on the ground) at `at`: a 100 m straight along
 	-- `dir` dry-run there (its price whatever it collides with). nil if the dry run fails or prices it at nothing.
 	pricePerMetre : function(settings : Settings, at : PgraceRailRouterNetwork.Pt3, dir : PgraceRailRouterGeo.Pt) : number
+	-- A proposal context for the player; cleanup sets cleanupStreetGraph (the game simplifies the edge and node
+	-- graph: probe P9 tries it for level crossings).
+	newContext : function(cleanup ?: boolean) : Context
 	-- A dry run: whether it's clean, the price, the error messages, its wall time in µs, and the raw ProposalData
 	-- (nil if the dry run threw).
-	dryRun : function(proposal : SimpleProposal) : boolean, integer, {string}, integer, ProposalData
+	dryRun : function(proposal : SimpleProposal, context ?: Context) : boolean, integer, {string}, integer, ProposalData
 end

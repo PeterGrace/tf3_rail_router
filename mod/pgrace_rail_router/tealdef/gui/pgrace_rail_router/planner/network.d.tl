@@ -6,6 +6,9 @@ global record PgraceRailRouterNetwork
 		x : number
 		y : number
 		z : number
+		-- A node: the game's node entity already there (a station's track end, a chunk built before), which a proposal
+		-- joins instead of adding a node; nil for a new node.
+		entity : integer
 	end
 
 	record Edge

@@ -847,6 +847,12 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.dryRunCrossing(settings)
 			elseif work.name == "P8" then
 				work.tasks = probe.bridgeClearance(settings)
+			elseif work.name == "P9" then
+				work.tasks = probe.levelCrossing(settings)
+			elseif work.name == "P10" then
+				work.tasks = probe.buildStation(settings)
+			elseif work.name == "P11" then
+				work.tasks = probe.joinStation(settings)
 			else
 				work.tasks = probe.dryRunStation(settings, data.tracks)
 			end
@@ -1231,6 +1237,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P4", "Probe P4: dry-run across a street" },
 			{ "P8", "Probe P8: bridge clearance over track and street" },
 			{ "P6", "Probe P6: dry-run a station" },
+			{ "P9", "Probe P9: level crossing (builds; test map only)" },
+			{ "P10", "Probe P10: build a station (test map only)" },
+			{ "P11", "Probe P11: join track to the station (test map only)" },
 		}) do
 			table.insert(body, builtin.Button{
 				content = builtin.TextView{ text = p[2] },
