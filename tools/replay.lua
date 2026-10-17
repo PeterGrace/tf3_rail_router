@@ -131,8 +131,16 @@ end
 local g, plan, paths, slowest, ms, weights = r.grid, r.plan, r.paths, r.slowest, r.ms, r.weights
 
 print(("replay %s: %.0f ms, %s"):format(label, ms, plan.ok and "ok" or plan.failure))
-print(("  slowest step (%d expansions a step): %.2f ms; sites %.2f, scout %.2f, turn %.2f, legs %.2f"):format(
-	lib.STEP_EXPANSIONS, r.worstStep, slowest.sites or 0, slowest.scout or 0, slowest.turn or 0, slowest.legs or 0))
+local kinds = {}
+for _, kind in ipairs({ "sites", "scout", "turn", "search", "simplify", "fit", "heights", "resite" }) do
+	if slowest[kind] ~= nil then
+		table.insert(kinds, ("%s %.2f"):format(kind, slowest[kind]))
+	end
+end
+print(("  slowest step (%d expansions a step): %.2f ms (%s, %.0f KB); %s"):format(lib.STEP_EXPANSIONS, r.worstStep,
+	r.alloc.worstKind, r.alloc.worst, table.concat(kinds, ", ")))
+print(("  allocated %.1f MB, at most %.0f KB in one step (%s)"):format(r.alloc.total / 1024, r.alloc.max,
+	r.alloc.maxKind))
 if not plan.ok then
 	print("  towns: " .. table.concat(plan.failureTowns, ", "))
 	os.exit(1)

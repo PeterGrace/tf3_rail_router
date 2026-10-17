@@ -35,7 +35,7 @@ global record PgraceRailRouterSmooth
 	-- Keeps fillet's track on ground the caller accepts. `clear` is asked about points every `step` metres (or less)
 	-- along a piece of track, both ends included; `from` and `to` are the indices into fillet's `points` of the
 	-- stretch that piece replaces (for an arc, its corner's neighbours; for the straight left by dropping a point,
-	-- that point's neighbours).
+	-- that point's neighbours). `p` is reused between calls: clear must not keep it.
 	record Guard
 		step : number
 		-- Arcs are never tightened below this for the guard (nil: the step); the track type's buildable minimum.
@@ -60,6 +60,8 @@ global record PgraceRailRouterSmooth
 	fillet : function(points : {PgraceRailRouterGeo.Pt}, radius : number, fixed : {boolean}, guard ?: Guard) : Result
 	-- The point `d` metres along a piece.
 	pointAt : function(piece : Piece, d : number) : PgraceRailRouterGeo.Pt
+	-- The same point's coordinates, without making a point.
+	pointAtXY : function(piece : Piece, d : number) : number, number
 	-- Points every `step` metres or less along the pieces, both ends included.
 	sample : function(pieces : {Piece}, step : number) : {Sample}
 end

@@ -6,6 +6,7 @@ local type Pt = PgraceRailRouterGeo.Pt
 local type Grid = PgraceRailRouterGrid.Grid
 local type Search = PgraceRailRouterGrid.Search
 local type End = PgraceRailRouterGrid.End
+local type Store = PgraceRailRouterGrid.Store
 local type Weights = PgraceRailRouterModes.Weights
 
 -- The 16 move directions, counter-clockwise from +x, about 22.5° apart (the knight moves are 26.6° off the axes,
@@ -136,10 +137,12 @@ function grid.cellsAlong(g : Grid, a : Pt, b : Pt, fn : function(i : integer) : 
 	return true
 end
 
--- A binary min-heap on f, with duplicates allowed (stale entries are skipped when popped).
+-- A binary min-heap on f, with duplicates allowed (stale entries are skipped when popped). Its tables are the
+-- store's, reused by every search on the grid, so entries past heapN are left over, not cleared.
 local function push(s : Search, node : integer, f : number)
 	local heap, keys = s.heap, s.heapF
-	local i = #heap + 1
+	local i = s.heapN + 1
+	s.heapN = i
 	heap[i], keys[i] = node, f
 	while i > 1 do
 		local parent = math.floor(i / 2)
@@ -154,11 +157,11 @@ end
 
 local function pop(s : Search) : integer, number
 	local heap, keys = s.heap, s.heapF
-	local n = #heap
+	local n = s.heapN
 	local top, topKey = heap[1], keys[1]
 	heap[1], keys[1] = heap[n], keys[n]
-	heap[n], keys[n] = nil, nil
 	n = n - 1
+	s.heapN = n
 	local i = 1
 	while true do
 		local l, r = 2 * i, 2 * i + 1
@@ -208,6 +211,104 @@ end
 
 local function cellXY(g : Grid, cell : integer) : integer, integer
 	return (cell - 1) % g.nx + 1, math.floor((cell - 1) / g.nx) + 1
+end
+
+-- Cells along a row per page of the store: a page holds BLOCK × 16 states (a 16-cell stretch of a row, every
+-- arriving direction), so a search makes pages only where it goes, a few KB each.
+local BLOCK = 16
+
+-- The grid's store (see Store), made on its first search.
+local function storeOf(g : Grid) : Store
+	if g.store == nil then
+		g.store = { current = 0, nextId = 1, pageSize = BLOCK * NDIRS, blocksPerRow = math.ceil(g.nx / BLOCK),
+			stamp = {}, cost = {}, parent = {}, heap = {}, heapF = {}, fillStamp = {}, fillQueue = {} }
+	end
+	return g.store
+end
+
+-- The fill's stamps for grid row iy, made (none queued) if they aren't yet.
+local function fillRow(st : Store, nx : integer, iy : integer) : {integer}
+	local row = st.fillStamp[iy]
+	if row == nil then
+		row = {}
+		for i = 1, nx do
+			row[i] = 0
+		end
+		st.fillStamp[iy] = row
+	end
+	return row
+end
+
+-- The store's page p, made (every state unreached) if it isn't yet; its stamps.
+local function page(st : Store, p : integer) : {integer}
+	local stamp = st.stamp[p]
+	if stamp == nil then
+		local cost : {number} = {}
+		local parent : {integer} = {}
+		stamp = {}
+		for i = 1, st.pageSize do
+			stamp[i], cost[i], parent[i] = 0, 0, 0
+		end
+		st.stamp[p], st.cost[p], st.parent[p] = stamp, cost, parent
+	end
+	return stamp
+end
+
+-- Where the store keeps the state of cell (ix, iy) arriving in direction k: its page and the offset in it.
+local function slotXY(st : Store, ix : integer, iy : integer, k : integer) : integer, integer
+	local x0 = ix - 1
+	local b = math.floor(x0 / BLOCK)
+	return (iy - 1) * st.blocksPerRow + b + 1, (x0 - b * BLOCK) * NDIRS + k
+end
+
+local function slot(s : Search, node : integer) : integer, integer
+	local ix, iy = cellXY(s.g, cellOfNode(node))
+	return slotXY(s.store, ix, iy, dirOfNode(node))
+end
+
+-- A state's cost so far, or nil if the search hasn't reached it. States in the store (see slot); the finish,
+-- negative ids and a finished search's copy, in s.cost.
+local function costOf(s : Search, node : integer) : number
+	local st = s.store
+	if node <= 0 or st == nil then
+		return s.cost[node]
+	end
+	local p, o = slot(s, node)
+	local stamp = st.stamp[p]
+	if stamp == nil or stamp[o] ~= s.id then
+		return nil
+	end
+	return st.cost[p][o]
+end
+
+-- The state a state was reached from, or nil (a start state, or not reached).
+local function parentOf(s : Search, node : integer) : integer
+	local st = s.store
+	if node <= 0 or st == nil then
+		return s.parent[node]
+	end
+	local p, o = slot(s, node)
+	local stamp = st.stamp[p]
+	if stamp == nil or stamp[o] ~= s.id then
+		return nil
+	end
+	local par = st.parent[p][o]
+	if par == 0 then
+		return nil
+	end
+	return par
+end
+
+-- Records a state's cost and the state it was reached from (nil for a start state).
+local function setState(s : Search, node : integer, c : number, par : integer)
+	local st = s.store
+	if node <= 0 then
+		s.cost[node], s.parent[node] = c, par
+		return
+	end
+	local p, o = slot(s, node)
+	page(st, p)[o] = s.id
+	st.cost[p][o], st.parent[p][o] = c, par or 0
 end
 
 local SQRT2, SQRT5 = math.sqrt(2), math.sqrt(5)
@@ -356,8 +457,9 @@ end
 local function fillStep(s : Search, budget : integer) : integer
 	local g = s.g
 	local nx, ny, blocked, avoid = g.nx, g.ny, g.blocked, s.avoid
-	local seen, queue = s.fillSeen, s.fillQueue
-	local head, tail = s.fillHead, #queue
+	local st, queue, id = s.store, s.fillQueue, s.id
+	local seen = st.fillStamp
+	local head, tail = s.fillHead, s.fillTail
 	while budget > 0 and head <= tail do
 		local a = queue[head]
 		head = head + 1
@@ -373,7 +475,8 @@ local function fillStep(s : Search, budget : integer) : integer
 			local bx, by = ax + dx, ay + dy
 			if bx >= 1 and bx <= nx and by >= 1 and by <= ny then
 				local b = (by - 1) * nx + bx
-				if not seen[b] and not blocked[b] and not avoid[b] then
+				local row = seen[by] or fillRow(st, nx, by)
+				if row[bx] ~= id and not blocked[b] and not avoid[b] then
 					local open = true
 					-- A knight move passes between two cells: both must be passable.
 					if dx * dx + dy * dy == 5 then
@@ -383,10 +486,10 @@ local function fillStep(s : Search, budget : integer) : integer
 					end
 					if open then
 						if s.goalCells[b] ~= nil then
-							s.filling, s.fillSeen, s.fillQueue = false, nil, nil
+							s.filling = false
 							return budget
 						end
-						seen[b] = true
+						row[bx] = id
 						tail = tail + 1
 						queue[tail] = b
 					end
@@ -394,11 +497,11 @@ local function fillStep(s : Search, budget : integer) : integer
 			end
 		end
 	end
-	s.fillHead = head
+	s.fillHead, s.fillTail = head, tail
 	if head > tail then
 		-- Nothing left to fill and the goal not met: unreachable. Closed off inside the grid unless the fill reached its
 		-- edge (then a wider grid might have a way round).
-		s.filling, s.fillSeen, s.fillQueue = false, nil, nil
+		s.filling = false
 		s.done = true
 		s.enclosed = not s.fillEdge
 	end
@@ -528,10 +631,15 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 	local gx, gy = grid.cellOf(g, to)
 	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
 		goalDir = nearestDir(goalDir), radius = radius or w.minRadius, maxCost = maxCost or math.huge, done = false,
-		found = false, expansions = 0, h0 = 0, bestH = 0, heap = {}, heapF = {}, cost = {}, parent = {},
-		origin = {}, finishDir = 0, finishSteps = 0, finishGoal = 1, filling = true, fillQueue = {}, fillHead = 1,
-		fillSeen = {}, fillEdge = false, enclosed = false, buildRadius = w.minBuildRadius or 0,
+		found = false, expansions = 0, h0 = 0, bestH = 0, heapN = 0, cost = {}, parent = {},
+		origin = {}, finishDir = 0, finishSteps = 0, finishGoal = 1, filling = true, fillHead = 1, fillTail = 0,
+		fillEdge = false, enclosed = false, buildRadius = w.minBuildRadius or 0,
 		startRoom = startRoom or 0, goalRoom = goalRoom or 0, approach = approach or math.huge, avoid = {} }
+	-- The grid's store is this search's from now on.
+	local st = storeOf(g)
+	s.store, s.id = st, st.nextId
+	st.current, st.nextId = st.nextId, st.nextId + 1
+	s.heap, s.heapF, s.fillQueue = st.heap, st.heapF, st.fillQueue
 	if geo.len(startDir) > 1e-9 then
 		s.startVec = geo.norm(startDir)
 	end
@@ -582,21 +690,21 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 		if s.goalCells[e.cell] ~= nil then
 			s.filling = false
 		end
-		if not s.fillSeen[e.cell] then
-			s.fillSeen[e.cell] = true
-			table.insert(s.fillQueue, e.cell)
+		local row = fillRow(st, g.nx, e.y)
+		if row[e.x] ~= s.id then
+			row[e.x] = s.id
+			s.fillTail = s.fillTail + 1
+			s.fillQueue[s.fillTail] = e.cell
 		end
-	end
-	if not s.filling then
-		s.fillSeen, s.fillQueue = nil, nil
 	end
 	-- Without a start direction, every direction is a start state, so the first move may go any way, unpenalised.
 	for i, e in ipairs(s.starts) do
 		for k = 1, NDIRS do
 			if k0 == 0 or k == k0 then
 				local node = (e.cell - 1) * NDIRS + k
-				if s.cost[node] == nil then
-					s.cost[node], s.origin[node] = e.cost, i
+				if costOf(s, node) == nil then
+					setState(s, node, e.cost, nil)
+					s.origin[node] = i
 					push(s, node, e.cost + heuristic(s, e.x, e.y) + turnBound(s, k))
 				end
 			end
@@ -626,7 +734,7 @@ end
 
 -- Whether a state is a start state whose moves leave from its start point (not reached any cheaper way).
 local function fromStartPoint(s : Search, node : integer) : boolean
-	return node ~= nil and node > 0 and s.parent[node] == nil and s.origin[node] ~= nil
+	return node ~= nil and node > 0 and parentOf(s, node) == nil and s.origin[node] ~= nil
 end
 
 -- Where corners are priced, the state a start state's first move reaches is a state of its own (its node id
@@ -750,10 +858,18 @@ local function finishCharge(s : Search, node : integer, par : integer, prev : in
 	return best
 end
 
+-- A search whose store a newer search has taken over can't go on (its states are the newer one's now).
+local function checkCurrent(s : Search)
+	if s.store ~= nil and s.store.current ~= s.id then
+		error("grid: a newer search on this grid has taken over this one's store")
+	end
+end
+
 function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 	if s.done then
 		return true
 	end
+	checkCurrent(s)
 	local budget = maxExpansions
 	if s.filling then
 		budget = fillStep(s, budget)
@@ -763,10 +879,12 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 	end
 	local g, w = s.g, s.w
 	local cost = s.cost
+	local st, id = s.store, s.id
+	local stampPages, costPages, parentPages, blocksPerRow = st.stamp, st.cost, st.parent, st.blocksPerRow
 	-- A backstop for goals that only the turn limit cuts off: by then the search has gone far past any sensible path.
 	local maxTotal = math.max(20000, MAX_EXPANSIONS_PER_CELL * g.nx * g.ny)
 	while budget > 0 do
-		if #s.heap == 0 then
+		if s.heapN == 0 then
 			s.done = true
 			return true
 		end
@@ -784,7 +902,7 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 		else
 			local a = cellOfNode(node)
 			local prev = dirOfNode(node)
-			local base = cost[node]
+			local base = costOf(s, node)
 			local ax, ay = cellXY(g, a)
 			local h = heuristic(s, ax, ay)
 			-- An entry pushed before the state's cost last fell carries a higher f: skip it. With a consistent
@@ -808,7 +926,7 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 				-- Where corners are priced (s.free), those next to a start or goal point, off its cell's centre, are
 				-- priced as the path really runs there: a start's corner with the next one (startPair), once the state
 				-- after its first move (here: startAt) moves on, and the last ones when the path finishes.
-				local par = s.parent[node]
+				local par = parentOf(s, node)
 				local startAt = freshFrom(s, node)
 				local goalHere = s.goalCells[a]
 				if goalHere ~= nil then
@@ -891,9 +1009,23 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 						end
 						-- Gains below EPSILON are rounding (the same cost summed in another order): taking them would
 						-- expand a finished state again.
-						if cost[nb] == nil or nc < cost[nb] - EPSILON then
-							cost[nb], s.parent[nb] = nc, node
-							push(s, nb, nc + heuristic(s, bx, by) + turnBound(s, k))
+						if nb < 0 then
+							if cost[nb] == nil or nc < cost[nb] - EPSILON then
+								cost[nb], s.parent[nb] = nc, node
+								push(s, nb, nc + heuristic(s, bx, by) + turnBound(s, k))
+							end
+						else
+							-- In the store (slotXY).
+							local x0 = bx - 1
+							local blk = math.floor(x0 / BLOCK)
+							local p = (by - 1) * blocksPerRow + blk + 1
+							local o = (x0 - blk * BLOCK) * NDIRS + k
+							local stamp = stampPages[p] or page(st, p)
+							local costs = costPages[p]
+							if stamp[o] ~= id or nc < costs[o] - EPSILON then
+								stamp[o], costs[o], parentPages[p][o] = id, nc, node
+								push(s, nb, nc + heuristic(s, bx, by) + turnBound(s, k))
+							end
 						end
 					end
 				end
@@ -911,35 +1043,39 @@ function grid.progress(s : Search) : number
 end
 
 function grid.finished(s : Search) : Search
+	checkCurrent(s)
 	local parent : {integer : integer} = {}
 	local origin : {integer : integer} = {}
 	local node = s.parent[FINISH]
 	parent[FINISH] = node
 	while node ~= nil do
-		parent[node] = s.parent[node]
-		if s.parent[node] == nil then
+		local par = parentOf(s, node)
+		parent[node] = par
+		if par == nil then
 			origin[node] = s.origin[node]
 		end
-		node = s.parent[node]
+		node = par
 	end
 	return { g = s.g, w = s.w, startPt = s.startPt, goalPt = s.goalPt, start = s.start, starts = s.starts,
 		goals = s.goals, goalCells = s.goalCells, goal = s.goal, gx = s.gx, gy = s.gy, goalDir = s.goalDir,
 		radius = s.radius, maxTurn = s.maxTurn, straightSteps = s.straightSteps, maxCost = s.maxCost, done = true,
-		found = s.found, expansions = 0, h0 = s.h0, bestH = s.bestH, heap = {}, heapF = {}, cost = { [FINISH] = s.cost[FINISH] },
-		parent = parent, origin = origin, finishDir = s.finishDir, finishSteps = s.finishSteps,
-		finishGoal = s.finishGoal, filling = false, fillEdge = s.fillEdge, enclosed = s.enclosed }
+		found = s.found, expansions = 0, h0 = s.h0, bestH = s.bestH, heap = {}, heapF = {}, heapN = 0,
+		cost = { [FINISH] = s.cost[FINISH] }, parent = parent, origin = origin, finishDir = s.finishDir,
+		finishSteps = s.finishSteps, finishGoal = s.finishGoal, filling = false, fillEdge = s.fillEdge,
+		enclosed = s.enclosed }
 end
 
 function grid.path(s : Search) : {Pt}
 	if not s.found then
 		return nil
 	end
+	checkCurrent(s)
 	local g = s.g
 	local nodes : {integer} = {}
 	local node = s.parent[FINISH]
 	while node ~= nil do
 		table.insert(nodes, 1, node)
-		node = s.parent[node]
+		node = parentOf(s, node)
 	end
 	-- A move may be a turn and its straight, several cells long: fill in the cells along it, stepping in the
 	-- direction it arrived in.

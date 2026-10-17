@@ -53,6 +53,8 @@ global record PgraceRailRouterRoute
 		-- tries. For the log.
 		searchRadius : number
 		searchExpansions : integer
+		-- The search cost of the path taken (grid.Search cost[0]).
+		searchCost : number
 		-- Path points kept, and arcs tightened, so that the smoothed track keeps to the ground the grid path chose:
 		-- inside the grid, off blocked cells, over water only where the path is, and with ground within 4 m of a
 		-- uniform slope across the path (no hills or hollows it went round). Never below weights.minBuildRadius
@@ -108,6 +110,20 @@ global record PgraceRailRouterRoute
 		guard : PgraceRailRouterSmooth.Guard
 	end
 
+	-- A leg's curves being fitted (spread over steps, a fillet each): the stage next, the leg as fitted so far, which
+	-- ends had an arc below the build minimum (tight), which gave up their extension points (freed), and the samples
+	-- on blocked cells in each half. Internal.
+	record Fitting
+		stage : integer
+		fitted : PgraceRailRouterSmooth.Result
+		tightA : boolean
+		tightB : boolean
+		freedA : boolean
+		freedB : boolean
+		blockedA : integer
+		blockedB : integer
+	end
+
 	-- A leg's heights being fitted (spread over steps): its samples, and what finishing it needs. Internal.
 	record LegHeights
 		fitted : PgraceRailRouterSmooth.Result
@@ -126,6 +142,17 @@ global record PgraceRailRouterRoute
 		cost : number
 	end
 
+	-- A re-siting candidate's leg being built to weigh the time it loses (with time priced): its path and search
+	-- cost, the platforms it keeps off (the candidate's in place), and its curves as simplified and being fitted.
+	-- Internal.
+	record ResiteLeg
+		path : {PgraceRailRouterGeo.Pt}
+		cost : number
+		taken : {integer : boolean}
+		simplified : Simplified
+		fitting : Fitting
+	end
+
 	-- Re-siting a station whose arriving leg loops, hooks round into it, or has a curve below the build minimum: the
 	-- station (index), the directions to try, the candidate (0: the current site, then index into dirs), what is being
 	-- done for it ("site": its site search; "in", "out": the searches for the legs arriving and leaving), the best so
@@ -138,10 +165,22 @@ global record PgraceRailRouterRoute
 		stage : string
 		finder : PgraceRailRouterStations.Finder
 		search : PgraceRailRouterGrid.Search
+		-- The leg found for the candidate being built (nil: none), and the candidate's leg in as weighed: its search's
+		-- cost, plus with time priced timeCost × the time it loses.
+		leg : ResiteLeg
+		-- With time priced, the radius try (index into route's searchRadii) of the leg being weighed, and its best
+		-- try so far (cost plus timeCost × the time it loses; nil before one is found).
+		try : integer
+		legBest : number
+		legBestTime : number
 		inCost : number
+		-- The seconds the candidate's leg in loses (with time priced), and the current site's two legs.
+		inTime : number
+		baseTime : number
 		others : {integer : boolean}
 		-- The stations' footprints with the candidate site in place (route.tl's footprints), for its legs' searches.
 		avoid : {integer : boolean}
+		-- The best candidate so far, and its legs' cost (weighed as inCost).
 		best : PgraceRailRouterStations.Site
 		bestCost : number
 		keep : LegTry
@@ -189,6 +228,7 @@ global record PgraceRailRouterRoute
 		resite : Resite
 		resited : {integer : boolean}
 		simplified : Simplified
+		fitting : Fitting
 		fitted : PgraceRailRouterSmooth.Result
 		heights : LegHeights
 		-- Finished searches with no cost limit, by their inputs (see searchFor), so a search asked for again isn't
@@ -219,6 +259,9 @@ global record PgraceRailRouterRoute
 	-- lose (speed.tl, estimated from the path's corners) is least is taken; without, the first path that costs at most
 	-- 10% more than the fallback's, else the fallback's.
 	step : function(job : Job, maxExpansions : integer) : boolean
+	-- What the next step does, for timing it: "sites", "scout", "turn" or "done" (the phase), or in the legs phase
+	-- "search" (a leg's search), "simplify", "fit" (its curves), "heights" or "resite" (re-siting a station).
+	stepKind : function(job : Job) : string
 	-- Share of the work done, 0 to 1, never falling (where re-siting builds legs again, it holds until the work
 	-- catches up).
 	progress : function(job : Job) : number

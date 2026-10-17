@@ -8,15 +8,18 @@ local type Sample = PgraceRailRouterSmooth.Sample
 local type Result = PgraceRailRouterSmooth.Result
 local type Guard = PgraceRailRouterSmooth.Guard
 
--- Distance from p to the segment a–b (not the infinite line through it, so overshoots count).
+-- Distance from p to the segment a–b (not the infinite line through it, so overshoots count). Plain arithmetic, as
+-- in the other inner loops here: geo allocates a table per call.
 local function perpDist(p : Pt, a : Pt, b : Pt) : number
-	local ab = geo.sub(b, a)
-	local l2 = geo.dot(ab, ab)
+	local abx, aby = b.x - a.x, b.y - a.y
+	local apx, apy = p.x - a.x, p.y - a.y
+	local l2 = abx * abx + aby * aby
 	if l2 < 1e-18 then
-		return geo.dist(p, a)
+		return math.sqrt(apx * apx + apy * apy)
 	end
-	local f = math.max(0, math.min(1, geo.dot(geo.sub(p, a), ab) / l2))
-	return geo.dist(p, geo.add(a, geo.scale(ab, f)))
+	local f = math.max(0, math.min(1, (apx * abx + apy * aby) / l2))
+	local dx, dy = p.x - (a.x + abx * f), p.y - (a.y + aby * f)
+	return math.sqrt(dx * dx + dy * dy)
 end
 
 function smooth.simplify(points : {Pt}, tolerance : number, clear ?: function(i : integer, j : integer) : boolean)
@@ -131,11 +134,15 @@ end
 -- Points closer than this to the one before are merged into it.
 local SAME = 1e-6
 
+-- The point pieceClear asks the guard about, reused (the guard doesn't keep it).
+local probe : Pt = { x = 0, y = 0 }
+
 -- Whether the points every `step` (or less) along a piece, both ends included, pass the guard.
 local function pieceClear(piece : Piece, guard : Guard, from : integer, to : integer) : boolean
 	local m = math.max(1, math.ceil(piece.length / guard.step))
 	for k = 0, m do
-		if not guard.clear(smooth.pointAt(piece, piece.length * k / m), from, to) then
+		probe.x, probe.y = smooth.pointAtXY(piece, piece.length * k / m)
+		if not guard.clear(probe, from, to) then
 			return false
 		end
 	end
@@ -271,11 +278,25 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 	-- worse than one that cuts a corner). Tightening one arc can give its neighbours room to widen again, so every
 	-- arc is checked each round.
 	local tightened : {boolean} = {}
+	-- Each corner's arc last found clear: an arc the same as then (its neighbours tightened, not it) is clear still,
+	-- and isn't checked again (the checks are most of fillet's work).
+	local clearArc : {integer : Piece} = {}
+	local function sameArc(p : Piece, q : Piece) : boolean
+		return q ~= nil and p.radius == q.radius and p.a.x == q.a.x and p.a.y == q.a.y and p.b.x == q.b.x
+			and p.b.y == q.b.y
+	end
 	while true do
 		local changed = false
 		for k, piece in ipairs(result.pieces) do
 			local i = corners[k]
-			if i ~= nil and piece.radius > floor + 1e-6 and not pieceClear(piece, guard, src[i - 1], src[i + 1]) then
+			local clear = true
+			if i ~= nil and piece.radius > floor + 1e-6 and not sameArc(piece, clearArc[i]) then
+				clear = pieceClear(piece, guard, src[i - 1], src[i + 1])
+				if clear then
+					clearArc[i] = piece
+				end
+			end
+			if not clear then
 				t[i] = math.max(piece.radius / 2, floor) * math.tan(theta[i] / 2)
 				if not tightened[i] then
 					tightened[i] = true
@@ -291,13 +312,23 @@ function smooth.fillet(points : {Pt}, radius : number, fixed : {boolean}, guard 
 	end
 end
 
-function smooth.pointAt(piece : Piece, d : number) : Pt
-	if piece.kind == "arc" then
-		local f = piece.length > 0 and d / piece.length or 0
-		return geo.add(piece.centre, geo.rotate(geo.sub(piece.a, piece.centre), piece.turn * f))
-	end
+function smooth.pointAtXY(piece : Piece, d : number) : number, number
 	local f = piece.length > 0 and d / piece.length or 0
-	return geo.add(piece.a, geo.scale(geo.sub(piece.b, piece.a), f))
+	local a = piece.a
+	if piece.kind == "arc" then
+		local c = piece.centre
+		local angle = piece.turn * f
+		local cs, sn = math.cos(angle), math.sin(angle)
+		local rx, ry = a.x - c.x, a.y - c.y
+		return c.x + (rx * cs - ry * sn), c.y + (rx * sn + ry * cs)
+	end
+	local b = piece.b
+	return a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f
+end
+
+function smooth.pointAt(piece : Piece, d : number) : Pt
+	local x, y = smooth.pointAtXY(piece, d)
+	return { x = x, y = y }
 end
 
 function smooth.sample(pieces : {Piece}, step : number) : {Sample}

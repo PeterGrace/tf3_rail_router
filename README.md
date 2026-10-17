@@ -31,7 +31,7 @@ tests/                                # unit tests for pure modules
 ```bash
 just check      # type-check against the game's API definitions
 just test       # unit tests, plus the quick regression routes
-just regress    # unit tests plus every regression route (about 13 s)
+just regress    # unit tests plus every regression route (about 30 s)
 just verify     # check + test + release-check
 just install    # symlink into TF3's staging area (just install-copy to copy)
 ```
@@ -43,9 +43,10 @@ Restart TF3 after code changes. The log is
 
 A temporary **Capture whole map (probe)** button in the window writes the whole map to the log as `MAP` records
 (format: `docs/map-capture-format.md`); **Find route** writes its own input as `CAPTURE` records. Shared maps live in
-the kit's `../maps/` folder (`../maps/README.md`); `tests/regression_test.lua` plans fixed routes on them and checks
-invariants (no curve below the build minimum, nothing on blocked cells, step time) and figures against a baseline
-(how to re-record is at its top). It skips with a message if `../maps/` isn't there. Offline:
+the kit's `../maps/` folder (`../maps/README.md`); `tests/regression_test.lua` plans fixed routes on them (and
+in-game route captures as captured, where the save has changed since its map) and checks invariants (no curve below
+the build minimum, nothing on blocked cells, step time and what a step allocates) and figures against a baseline (how
+to re-record is at its top). It skips with a message if `../maps/` isn't there. Offline:
 
 ```bash
 python3 tools/extract_captures.py                     # complete MAP / CAPTURE blocks from stdout.txt into captures/

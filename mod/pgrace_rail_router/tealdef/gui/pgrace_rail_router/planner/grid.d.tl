@@ -16,6 +16,34 @@ global record PgraceRailRouterGrid
 		blocked : {boolean}
 		road : {boolean}
 		track : {boolean}
+		-- What its searches keep their states in (see Store); made by the first search. Internal.
+		store : Store
+	end
+
+	-- The tables a grid's searches keep their states in, one search at a time (the latest started; an older one can't
+	-- be stepped once a newer one has started, nor its path taken). Made once per grid and reused, so a search
+	-- allocates almost nothing: kept in tables of its own, its states' tables doubled as it grew, a step at a time,
+	-- each doubling allocating megabytes at once (up to 1.5 MB in one step on desktop Lua; the game's Lua 5.2 pays a
+	-- step's garbage collection debt, as much work as it allocated, at its next allocation). In pages of 16 cells
+	-- along a row (made when a search first reaches one of their states): for each of a page's states (cell, then
+	-- arriving direction), the id of the search that last reached it (stamp), and that search's cost and parent
+	-- there (0: none). Internal.
+	record Store
+		-- Ids of the latest search and the next one.
+		current : integer
+		nextId : integer
+		-- States per page (16 cells × 16 directions), and pages per grid row.
+		pageSize : integer
+		blocksPerRow : integer
+		stamp : {{integer}}
+		cost : {{number}}
+		parent : {{integer}}
+		heap : {integer}
+		heapF : {number}
+		-- The flood fill's: per grid row (made when first reached) and cell, the id of the search whose fill has
+		-- queued it; and its queue.
+		fillStamp : {{integer}}
+		fillQueue : {integer}
 	end
 
 	-- One of a search's possible ends: a point on a station's axis, its cell (index, column, row), and the cost of the
@@ -83,9 +111,16 @@ global record PgraceRailRouterGrid
 		-- state (for progress).
 		h0 : number
 		bestH : number
+		-- Its id in the grid's store (see Store), and the store: nil for a finished search's copy (grid.finished),
+		-- which keeps its path's states in parent and origin.
+		id : integer
+		store : Store
+		-- The open states' heap (the store's tables), and how many entries it has.
 		heap : {integer}
 		heapF : {number}
-		-- Keyed by node id. cost[0] is the finished path's cost.
+		heapN : integer
+		-- Keyed by node id: the finish (0), and the states a start state's first move reaches (negative ids). The
+		-- other states are in the store. cost[0] is the finished path's cost.
 		cost : {integer : number}
 		parent : {integer : integer}
 		-- The start states, by node id, to their index in starts.
@@ -96,12 +131,12 @@ global record PgraceRailRouterGrid
 		finishSteps : integer
 		-- The goal (index into goals) the finish reaches.
 		finishGoal : integer
-		-- The reachability flood fill over cells that runs first: true while it runs; its queue of cell indices,
-		-- the next one to take, and the cells queued so far (queue and seen are dropped once it ends).
+		-- The reachability flood fill over cells that runs first: true while it runs; its queue of cell indices (the
+		-- store's), the next one to take, and the last one queued.
 		filling : boolean
 		fillQueue : {integer}
 		fillHead : integer
-		fillSeen : {integer : boolean}
+		fillTail : integer
 		-- The fill reached a cell on the grid's edge.
 		fillEdge : boolean
 		-- Set by route.tl: the key a finished search is kept under (see route's searchFor); nil if it isn't kept.
