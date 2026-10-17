@@ -274,8 +274,9 @@ above the ground it becomes a bridge, and more than 12 m below a tunnel. These t
 in-game.
 
 **Crossings:** samples over existing track, and over roads in Fastest mode (`Weights.bridgeRoads`), are bridges and
-are never merged away. The track there is lifted to at least 7 m above the ground, ramping up and down within the
-grade limit; the station heights pinned at a leg's ends win if a crossing is too close to them. In Cheapest mode
+are never merged away. The track there is lifted to at least 9 m above the ground, ramping up and down within the
+grade limit (probe P8: a double-track bridge square across existing track collided with it 7 m above, rail to rail,
+and was clean from 8 m; over a street 6 m was clean); the station heights pinned at a leg's ends win if a crossing is too close to them. In Cheapest mode
 roads are crossed on the level.
 
 **Cheapest heights:** a dynamic programme (Viterbi) over evenly spaced nodes along the leg (at most 25 m apart) and
@@ -422,7 +423,10 @@ States:
    - length, the game's cost, bridges and tunnels (count and length), maximum grade, minimum radius, and each
      station's distance from its town centre;
    - **Show on map**;
-   - **Build**, enabled only after a clean dry run; otherwise the game's error messages are listed.
+   - **Check with the game** (milestone 2): dry-runs the stations and the track, one proposal per frame, and shows
+     the game's price (track and stations), the level crossings, and each problem with what it ran into and a
+     **Show** button that moves the camera there;
+   - **Build** (milestone 3), enabled only after a clean check.
 
 The window is built like Jam Session's (`tool_react_util.registerToolWithWindow`, a `ToolButton` on
 `::MainModButtonAreaExtension`), docked at the left edge by a mod stylesheet keyed on its class, and sized to its
@@ -436,12 +440,55 @@ station's platforms in the direction of travel. They're drawn through a map acti
 `setActiveOwnerOverride`, as in Jam Session, with `accessNotificationCacheFn` left nil). When the preview is turned
 on, the camera moves to the route once, showing as much of it as the maximum zoom-out allows.
 
+## Network (`network.tl`)
+
+The track a plan builds, as the game's edges (pure). Each leg becomes two tracks 2.5 m either side of its centre
+line, as cubic Hermite edges between nodes:
+
+- **Tangents:** an arc's tangent length is 4R·tan(θ/4) ("circle"; "arc", Rθ, is the alternative). The game's own
+  curves (probe P1) were within 1.3% of both on 17° edges, so either is fine at the planner's angles.
+- **Edges** end at every span boundary (ground, bridge, tunnel), are at most 250 m along the centre line, and are
+  split further wherever the cubic strays more than 0.25 m from the height profile or steeper than the grade; each
+  node's grade comes from the profile around it. None is shorter than 0.5 m.
+- **Chunks** of about 1 km of centre line (both tracks) are one dry run each, never splitting a bridge or tunnel.
+  Probe P2: a 1 km double-track piece took 12 ms to dry-run, 2 km about 49 ms.
+
+## Station layout (`stationlayout.tl`)
+
+The base modular station (`::/stations/rail/modular_station/modular_station.con`) as module slots (pure): two tracks
+(`8400000 + 1000 i + 10 j`) between two platforms (`7400000 + 1000 i + 10 j`), 40 m modules along the platform length,
+the era's platform and track modules (era B from 1950, C from 1990), optionally the main building, stairs and roofs.
+The construction is placed at the site's centre turned to its direction; its track ends are at the platform ends.
+Probe P6: every module resolves, a 160 m station dry-runs clean (4.43 million in 2020 with the building), and its
+bounding box is 180 m long, 10 m past each platform end, inside the 100 m approaches the planner keeps clear.
+
 ## Building (`builder.tl`)
 
-1. **Stations first:** one proposal per station (`::/stations/rail/modular_station/modular_station.con`, tracks = 2,
-   the chosen length), each dry-run clean before it's sent.
-2. **Then the track**, in chunks of about 2 km: two parallel edges `trackDistance` (5 m) apart, joined to each other
-   and to the stations' end nodes. Each chunk is dry-run before it's sent, and its callback starts the next.
+**Milestone 2 (done): Check with the game.** One proposal per station, then one per network chunk, each dry-run on
+its own (`makeProposalData` with a `SimpleProposal`), one per frame from a join. Track edges are `SegmentAndEntity`
+with the track template, its lane configs and style, `type` NORMAL (typeIndex -1, as the game's own plain track,
+probe P1), BRIDGE or TUNNEL (typeIndex: the type `modes.structureFor` picks, as the track tool would); new entities
+are numbered edges −1…−E, then nodes. A proposal isn't made where a template, module or structure type is missing.
+
+What the probes found:
+- **Limits** (P2): the game allowed a 12% grade and refused 14%; allowed a 45 m radius and refused 38 m. The planner's
+  own limits are well inside both.
+- **Bridges and tunnels** (P3): 300 m of each, double track, dry-ran clean.
+- **Crossings** (P4, P8): track on the ground across a street collides with it (a level crossing has to split the
+  street: milestone 3), so in Cheapest a chunk whose only collisions are streets counts its level crossings instead
+  of an error (pieces of street sharing a node are one crossing). A bridge needs 8 m over track, 6 m over a street.
+- **Price** (P5): a built 200 m straight was charged exactly the dry run's price (99,408). The game charges more than
+  the templates list (about 248 a metre of standard track where 180 is listed: the save's inflation factor is 3), so
+  when a plan is done a 100 m straight is dry-run at its first station, plain and electrified, and our estimate is
+  scaled by that price.
+- **Timing:** Bangor → Imperial Beach (15 km, 5 stations, 16 chunks): 0.4 s of dry runs over 21 frames; stations
+  30 ms each but the first about 100 ms, chunks 3–40 ms.
+
+**Milestone 3: Build.**
+
+1. **Stations first:** each station's proposal, dry-run clean before it's sent.
+2. **Then the track**, chunk by chunk, joined to each other and to the stations' end nodes. Each chunk is dry-run
+   before it's sent, and its callback starts the next. Level crossings split the street they cross.
 3. **On a failed dry run**, stop. The window shows what was built and what failed, and offers **Retry from here**.
    Nothing already built is rolled back.
 4. Track type and electrification come from the settings. No signals, lines or vehicles.
@@ -449,11 +496,8 @@ on, the camera moves to the route once, showing as much of it as the maximum zoo
 Rules carried over from Bus Loops: never send a proposal that didn't dry-run clean; copy positions out of engine data;
 don't keep engine components across a `sendCommand`.
 
-**Probes before the builder is written:**
-
-- how a track `SegmentAndEntity` carries its track type and the bridge/tunnel flag (the tealdef shows no `trackEdge`);
-- the modular station's slots and modules for a 2-track passenger through station;
-- where the station's track end nodes are, so the main line can join them.
+**To probe for milestone 3 (P7):** where the station's track end nodes are and how the main line joins them; how a
+level crossing is made from a script.
 
 ## Testing
 
@@ -469,10 +513,13 @@ don't keep engine components across a `sendCommand`.
 - `grid`: a grid's searches share its store, one at a time, and find what they would alone; an older search can't
   be stepped or give its path once a newer one has started.
 - `profile`: grades stay under the limit (also on rough random ground and unevenly spaced samples); a valley becomes
-  one bridge, a ridge one tunnel, a hill within the grade neither; a crossing a bridge with 7 m of clearance; flat
+  one bridge, a ridge one tunnel, a hill within the grade neither; a crossing a bridge with 9 m of clearance; flat
   ground before a ridge that's tunnelled isn't bridged; a fit spread over steps gives the same heights.
 - `stations`: the chosen spot is clear (of buildings, water, roads and track) and as near the centre as possible;
   a clear spot walled in by buildings, or whose leaving end is a dead end, is refused for the next one out.
+- `network`, `stationlayout`, `builder`: edges split at spans, within the longest edge, following the heights and
+  grade; chunks never split a bridge; station slots and placement; level crossings counted from a dry run's
+  collisions.
 - `corridor`: the detour budget includes and excludes the right towns; the default stops fit the budget together and
   no town left out would; ticked towns are ordered by cheapest insertion, not projection.
 
@@ -484,7 +531,8 @@ save until the end.
 Each ends with one in-game test by the user.
 
 1. **Survey, plan and preview:** the window, the route on the map, our own cost estimate.
-2. **Probes:** track and station proposals, dry-run only; the game's real price in the window.
+2. **Probes:** track and station proposals, dry-run only; the game's real price in the window. Done 2026-10-17:
+   Bangor → Imperial Beach checks clean.
 3. **Build:** stations, then track chunks, with Retry.
 4. **Station styles and signals:** a "Station style" setting: Simple 2-track (the default) or **Halt 2+2**, the layout
    of the Express & Local Rail Stations mod (`express_local_stations_1`): platform, local, express, express, local,
@@ -554,6 +602,11 @@ Each ends with one in-game test by the user.
   only base type faster than concrete (280 km/h) is the tied arch (350), which isn't auto-selectable, so a 350 km/h
   line gets concrete bridges. The base tunnels set no speed limit at all; the tool's rule then takes the first in the
   menu (rock, `tunnel_a`), whatever the year.
+
+- **The first station's dry run takes about 100 ms** (the others about 30 ms), a hitch in that frame.
+- **Bridges and tunnels are priced at 5× and 8× plain track** in the planner (search and height fit), where the game
+  charged about 1.8× and 3× (P3, 300 m on flat ground). The estimate's scale comes from plain track only; tuning
+  these factors (milestone 5) would move the plans.
 
 ## Out of scope for version 1
 
