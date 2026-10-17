@@ -1,6 +1,8 @@
 {
     "archives": null,
     "files": [
+        "gui/pgrace_rail_router/builder.d.tl",
+        "gui/pgrace_rail_router/builder.tl",
         "gui/pgrace_rail_router/mapcapture.d.tl",
         "gui/pgrace_rail_router/mapcapture.tl",
         "gui/pgrace_rail_router/mapformat.d.tl",
