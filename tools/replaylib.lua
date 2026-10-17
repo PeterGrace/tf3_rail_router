@@ -235,6 +235,24 @@ return function(root)
 		return out
 	end
 
+	-- Each leg's sweep (degrees): how far its heading swings, the widest spread of the arcs' turns added up with their
+	-- signs (left positive) from the leg's start. A line that bends one way and back stays low; one that loops or
+	-- hooks round to enter a station the other way sweeps 270° or more.
+	function lib.sweep(plan)
+		local out = {}
+		for i, leg in ipairs(plan.legs or {}) do
+			local heading, lo, hi = 0, 0, 0
+			for _, piece in ipairs(leg.pieces) do
+				if piece.kind == "arc" then
+					heading = heading + piece.turn
+					lo, hi = math.min(lo, heading), math.max(hi, heading)
+				end
+			end
+			out[i] = math.deg(hi - lo)
+		end
+		return out
+	end
+
 	-- Samples over blocked cells, per leg: {{leg, p, s}}.
 	function lib.blockedSamples(r)
 		local out = {}

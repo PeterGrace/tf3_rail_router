@@ -152,8 +152,8 @@ for i, leg in ipairs(plan.legs) do
 			table.insert(arcs, ("%.0f@(%.0f,%.0f)"):format(piece.radius, piece.a.x, piece.a.y))
 		end
 	end
-	print(("  leg %d: %.0f m, search radius %.0f (%d expansions), grid path %d points, pieces %d, tight %d, blocked %d, guarded %d%s"):format(i,
-		leg.length, leg.searchRadius, leg.searchExpansions, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves,
+	print(("  leg %d: %.0f m, sweep %.0f°, search radius %.0f (%d expansions), grid path %d points, pieces %d, tight %d, blocked %d, guarded %d%s"):format(i,
+		leg.length, lib.sweep(plan)[i], leg.searchRadius, leg.searchExpansions, paths[i] and #paths[i] or 0, #leg.pieces, leg.tightCurves,
 		leg.blockedSamples, leg.guarded,
 		#arcs > 0 and (", tight arcs " .. table.concat(arcs, " ")) or ""))
 	for __, span in ipairs(leg.spans) do
