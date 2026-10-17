@@ -219,6 +219,9 @@ global record PgraceRailRouterRoute
 	-- lose (speed.tl, estimated from the path's corners) is least is taken; without, the first path that costs at most
 	-- 10% more than the fallback's, else the fallback's.
 	step : function(job : Job, maxExpansions : integer) : boolean
+	-- What the next step does, for timing it: "sites", "scout", "turn" or "done" (the phase), or in the legs phase
+	-- "search" (a leg's search), "simplify", "fit" (its curves), "heights" or "resite" (re-siting a station).
+	stepKind : function(job : Job) : string
 	-- Share of the work done, 0 to 1, never falling (where re-siting builds legs again, it holds until the work
 	-- catches up).
 	progress : function(job : Job) : number

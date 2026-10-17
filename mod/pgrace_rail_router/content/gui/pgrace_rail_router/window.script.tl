@@ -82,11 +82,15 @@ local record Work
 	surveyJob : PgraceRailRouterSurvey.Job
 	routeJob : PgraceRailRouterRoute.Job
 	-- Timing diagnostics for the planning part (after the survey) of the current attempt, logged when the plan is
-	-- done: the slowest single route.step per phase ("sites", "scout", "turn", "legs") and the total, microseconds, and the frames it
-	-- took. Reset on each retry.
+	-- done: the slowest single route.step per kind (route.stepKind: "sites", "scout", "turn", and in the legs phase
+	-- "search", "simplify", "fit", "heights", "resite") and in the legs phase as a whole ("legs"), and the total,
+	-- microseconds, and the frames it took; the most a single step allocated (KB, from collectgarbage) and its kind.
+	-- Reset on each retry.
 	slowestStepUs : {string : integer}
 	planUs : integer
 	planFrames : integer
+	maxStepKB : number
+	maxStepKind : string
 end
 
 -- PROBE (remove before release): a whole-map capture in progress; job is nil until the first join starts it (its
@@ -402,6 +406,17 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		debugPrint(tag .. "end")
 	end
 
+	-- The Lua heap's size (KB), for the log's step allocation figure; nil where collectgarbage isn't there.
+	local function heapKB() : number
+		local ok, kb = pcall(function() : number
+			return collectgarbage("count")
+		end)
+		if ok then
+			return kb as number
+		end
+		return nil
+	end
+
 	-- Engine reads (terrain, octree) and the planner run in joins on the main thread, BUDGET_US per frame, as Jam
 	-- Session's scan: the window stays responsive and the game doesn't freeze.
 	local function advance(work : Work)
@@ -431,11 +446,20 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		work.planFrames = work.planFrames + 1
 		repeat
 			local phase = work.routeJob.phase
+			local kind = route.stepKind(work.routeJob)
+			local kbBefore = heapKB()
 			local before = clock:getTime()
 			done = route.step(work.routeJob, EXPANSIONS_PER_CALL)
 			local took = clock:getTime() - before
-			if took > (work.slowestStepUs[phase] or 0) then
-				work.slowestStepUs[phase] = took
+			local kbAfter = heapKB()
+			for __, key in ipairs({ kind, phase }) do
+				if took > (work.slowestStepUs[key] or 0) then
+					work.slowestStepUs[key] = took
+				end
+			end
+			-- A collection during the step makes this less than it allocated (even negative): a lower bound.
+			if kbBefore ~= nil and kbAfter ~= nil and kbAfter - kbBefore > (work.maxStepKB or 0) then
+				work.maxStepKB, work.maxStepKind = kbAfter - kbBefore, kind
 			end
 			local used = clock:getTime()
 			-- A step inside a leg's search is bounded by EXPANSIONS_PER_CALL, but the others (a station site, starting a
@@ -458,7 +482,12 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				.. tostring(math.floor(work.planUs / 1000)) .. " ms over " .. tostring(work.planFrames)
 				.. " frames; slowest step sites " .. tostring(work.slowestStepUs.sites or 0) .. " us, scout "
 				.. tostring(work.slowestStepUs.scout or 0) .. " us, turn " .. tostring(work.slowestStepUs.turn or 0)
-				.. " us, legs " .. tostring(work.slowestStepUs.legs or 0) .. " us; length " .. tostring(math.floor(length))
+				.. " us, legs " .. tostring(work.slowestStepUs.legs or 0) .. " us (search "
+				.. tostring(work.slowestStepUs.search or 0) .. ", simplify " .. tostring(work.slowestStepUs.simplify or 0)
+				.. ", fit " .. tostring(work.slowestStepUs.fit or 0) .. ", heights " .. tostring(work.slowestStepUs.heights or 0)
+				.. ", resite " .. tostring(work.slowestStepUs.resite or 0) .. "); most allocated in a step "
+				.. tostring(math.floor(work.maxStepKB or 0)) .. " KB (" .. tostring(work.maxStepKind) .. "); length "
+				.. tostring(math.floor(length))
 				.. ", legs " .. tostring(plan.legs ~= nil and #plan.legs or 0) .. ", survey margin " .. tostring(work.margin)
 				.. ", retries " .. tostring(work.retries) .. ", guarded "
 				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0) .. ", leg searches (radius/expansions/time lost) "
@@ -473,6 +502,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.surveyJob = nil
 				work.routeJob = nil
 				work.slowestStepUs = {}
+				work.maxStepKB, work.maxStepKind = nil, nil
 				work.planUs = 0
 				work.planFrames = 0
 				setProgress(work, "survey", 0)

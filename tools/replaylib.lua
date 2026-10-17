@@ -4,7 +4,7 @@
 --
 --   local replaylib = dofile(root .. "/tools/replaylib.lua")(root)
 --   local r = replaylib.planOnMap(map, { from = "Ames", to = "Bridgeport", mode = "fastest", track = "High-Speed Tracks" })
---   -- r.plan, r.paths, r.slowest, r.ms, r.grid, r.stops, r.track, r.weights, r.year, r.candidates, r.areas
+--   -- r.plan, r.paths, r.slowest, r.worstStep, r.alloc, r.ms, r.grid, r.stops, r.track, r.weights, r.year, r.candidates, r.areas
 --
 -- root is the mod repo's folder (tools/ and .tools/tl.lua under it).
 return function(root)
@@ -66,28 +66,42 @@ return function(root)
 	end
 
 	-- Runs the planner to the end with `expansions` per step (default: as the window). Returns the plan, the grid paths
-	-- per leg, the slowest single route.step per phase (ms, garbage collection left out; in-game Lua runs about 4 times
-	-- slower), the slowest step overall (ms) and the total time (ms).
+	-- per leg, the slowest single route.step per kind (route.stepKind: "sites", "scout", "turn", and in the legs phase
+	-- "search", "simplify", "fit", "heights", "resite"; ms, garbage collection left out; in-game Lua runs about 4 times
+	-- slower), the slowest step overall (ms), the total time (ms), and `alloc`: what the steps allocated (KB), in all
+	-- (total), the most in one step (max, maxKind) and the slowest step's (worst, worstKind). Allocation is what in-game
+	-- costs most beyond the work itself: the game's Lua (5.2) collects incrementally, and pays a step's garbage
+	-- collection debt (as much work as bytes allocated) at its next allocation, so a step that allocates megabytes (a
+	-- search's tables doubling) makes a hitch there that the desktop, with the collector held off, never shows.
 	function lib.runPlan(g, stops, weights, platform, expansions)
 		expansions = expansions or lib.STEP_EXPANSIONS
 		local start = clock()
 		local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform })
 		local paths = {}
 		local slowest, worst = {}, 0
+		local alloc = { total = 0, max = 0, maxKind = nil, worst = 0, worstKind = nil }
 		while true do
-			local phase = job.phase
+			local kind = route.stepKind(job)
 			-- The collector is held off while a step is timed, and catches up between steps: a collection costs in
 			-- proportion to the whole heap, here the maps loaded (five in the regression test, hundreds of MB) and in
 			-- the game everything else, and lands on whichever step allocates past its threshold (one step "took"
 			-- 21 ms and 46 ms that way, 2 ms without).
 			collectgarbage("stop")
+			local kb = collectgarbage("count")
 			local before = clock()
 			local done = route.step(job, expansions)
 			local ms = (clock() - before) * 1000
+			kb = collectgarbage("count") - kb
 			collectgarbage("restart")
 			collectgarbage("step")
-			slowest[phase] = math.max(slowest[phase] or 0, ms)
-			worst = math.max(worst, ms)
+			slowest[kind] = math.max(slowest[kind] or 0, ms)
+			alloc.total = alloc.total + kb
+			if kb > alloc.max then
+				alloc.max, alloc.maxKind = kb, kind
+			end
+			if ms > worst then
+				worst, alloc.worst, alloc.worstKind = ms, kb, kind
+			end
 			if done then
 				break
 			end
@@ -97,7 +111,7 @@ return function(root)
 				paths[job.legIndex] = job.path
 			end
 		end
-		return route.plan(job), paths, slowest, worst, (clock() - start) * 1000
+		return route.plan(job), paths, slowest, worst, (clock() - start) * 1000, alloc
 	end
 
 	local function baseName(name)
@@ -191,7 +205,7 @@ return function(root)
 			local g, stats = lib.gridFor(map, box)
 			table.insert(r.areas, { box = box, margin = margin, stats = stats })
 			r.grid = g
-			r.plan, r.paths, r.slowest, r.worstStep, r.ms = lib.runPlan(g, stops, weights, platform, opts.expansions)
+			r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, platform, opts.expansions)
 			if r.plan.ok or r.plan.failure ~= "no_path" or retry == lib.MAX_RETRIES then
 				break
 			end
@@ -227,7 +241,7 @@ return function(root)
 		end
 		applyOverrides(weights, opts.overrides)
 		r.weights, r.stops = weights, stops
-		r.plan, r.paths, r.slowest, r.worstStep, r.ms = lib.runPlan(g, stops, weights, c.platform, opts.expansions)
+		r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, c.platform, opts.expansions)
 		return r
 	end
 

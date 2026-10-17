@@ -1233,6 +1233,24 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	return false
 end
 
+function route.stepKind(job : Job) : string
+	if job.phase ~= "legs" then
+		return job.phase
+	end
+	if job.resite ~= nil then
+		return "resite"
+	end
+	if job.path ~= nil then
+		if job.simplified == nil then
+			return "simplify"
+		elseif job.fitted == nil then
+			return "fit"
+		end
+		return "heights"
+	end
+	return "search"
+end
+
 function route.progress(job : Job) : number
 	if job.phase == "done" then
 		return 1
