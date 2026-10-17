@@ -17,7 +17,8 @@ global record PgraceRailRouterRoute
 		-- Faces along the scouted line through it: from 600 m (or the full radius's minimum straight, if longer)
 		-- before it to as far after it, along the scouts either side (one side at the line's ends). Where no site
 		-- within one cell farther from the town than the first faces that way (or one leaves no room to the
-		-- neighbouring stations), the first site, facing from town to town, is kept.
+		-- neighbouring stations, or less room to turn than the first site on a side a leg leaves from), the first
+		-- site, facing from town to town, is kept.
 		site : PgraceRailRouterStations.Site
 		-- Ground height at the station's centre.
 		z : number
@@ -94,6 +95,13 @@ global record PgraceRailRouterRoute
 		summary : Summary
 	end
 
+	-- A leg's path simplified, with the platform ends and approach points added, and the guard that holds the curves
+	-- to the path's ground. Internal.
+	record Simplified
+		pts : {PgraceRailRouterGeo.Pt}
+		guard : PgraceRailRouterSmooth.Guard
+	end
+
 	-- Work in progress. The fields are internal.
 	record Job
 		input : Input
@@ -116,8 +124,11 @@ global record PgraceRailRouterRoute
 		fallbackCost : number
 		searchRadius : number
 		searchExpansions : integer
-		-- A finished search's path, waiting for the next step to build its leg.
+		-- A finished search's path, waiting for the next steps to build its leg: simplify it, fillet it, then sample
+		-- its heights.
 		path : {PgraceRailRouterGeo.Pt}
+		simplified : Simplified
+		fitted : PgraceRailRouterSmooth.Result
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
 		-- is never changed.
 		taken : {integer : boolean}

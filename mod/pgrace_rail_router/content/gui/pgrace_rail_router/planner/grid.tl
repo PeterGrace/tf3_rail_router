@@ -5,6 +5,7 @@ local grid : PgraceRailRouterGrid = {}
 local type Pt = PgraceRailRouterGeo.Pt
 local type Grid = PgraceRailRouterGrid.Grid
 local type Search = PgraceRailRouterGrid.Search
+local type End = PgraceRailRouterGrid.End
 local type Weights = PgraceRailRouterModes.Weights
 
 -- The 16 move directions, counter-clockwise from +x, about 22.5° apart (the knight moves are 26.6° off the axes,
@@ -198,15 +199,31 @@ local SQRT2, SQRT5 = math.sqrt(2), math.sqrt(5)
 -- The length of the shortest path from a cell to the goal cell over empty, flat ground, in metres: the offset split
 -- between the two move directions either side of it. No step costs less than its length and turns only add, so
 -- this never overestimates; it is a distance, so it never drops by more than a step's cost either.
-local function heuristic(s : Search, ax : integer, ay : integer) : number
-	local dx, dy = math.abs(s.gx - ax), math.abs(s.gy - ay)
+local function octile(cell : number, dx : integer, dy : integer) : number
+	dx, dy = math.abs(dx), math.abs(dy)
 	local long, short = math.max(dx, dy), math.min(dx, dy)
 	if 2 * short <= long then
 		-- Straight moves and knight moves.
-		return s.g.cell * ((long - 2 * short) + short * SQRT5)
+		return cell * ((long - 2 * short) + short * SQRT5)
 	end
 	-- Knight moves and diagonals.
-	return s.g.cell * ((long - short) * SQRT5 + (2 * short - long) * SQRT2)
+	return cell * ((long - short) * SQRT5 + (2 * short - long) * SQRT2)
+end
+
+-- With several goal cells (a run along the arrival ray), the least of those distances: each is a lower bound for
+-- reaching its goal cell (and its run to the goal point only adds), and the least of consistent heuristics is
+-- consistent.
+local function heuristic(s : Search, ax : integer, ay : integer) : number
+	local goals = s.goals
+	local h = octile(s.g.cell, s.gx - ax, s.gy - ay)
+	for i = 2, #goals do
+		local e = goals[i]
+		local hi = octile(s.g.cell, e.x - ax, e.y - ay)
+		if hi < h then
+			h = hi
+		end
+	end
+	return h
 end
 
 local function nearestDir(d : Pt) : integer
@@ -319,7 +336,7 @@ local function fillStep(s : Search, budget : integer) : integer
 							and not blocked[(ay + math.ceil(dy / 2) - 1) * nx + ax + math.ceil(dx / 2)]
 					end
 					if open then
-						if b == s.goal then
+						if s.goalCells[b] ~= nil then
 							s.filling, s.fillSeen, s.fillQueue = false, nil, nil
 							return budget
 						end
@@ -362,34 +379,98 @@ local function turnModel(s : Search, cell : number, radius : number)
 	end
 end
 
+-- The points along a ray from p in direction dir (a unit vector), one cell apart, out to `run` metres: p itself, then
+-- each one whose straight from p stays inside the grid and off blocked, water, road and track cells (the first that
+-- doesn't ends the ray). Each costs the straight from p to it, as moves do (length, and the slope penalty over the
+-- grade between neighbouring points). One per cell, the nearest to p.
+local function ray(g : Grid, w : Weights, p : Pt, dir : Pt, run : number) : {End}
+	local ix, iy = grid.cellOf(g, p)
+	local ends : {End} = { { pt = p, cell = grid.index(g, ix, iy), x = ix, y = iy, cost = 0 } }
+	local seen : {integer : boolean} = { [ends[1].cell] = true }
+	local prev, cost, d = p, 0.0, g.cell
+	while d <= run + EPSILON do
+		local q = geo.add(p, geo.scale(dir, d))
+		if not grid.inside(g, q) or not grid.cellsAlong(g, prev, q, function(i : integer) : boolean
+				return not (g.blocked[i] or g.water[i] or g.road[i] or g.track[i])
+			end) then
+			break
+		end
+		local grade = math.abs(grid.heightAt(g, q) - grid.heightAt(g, prev)) / g.cell
+		local factor = 1.0
+		if grade > w.maxGrade then
+			factor = 1 + w.slopePenalty * (grade - w.maxGrade) / w.maxGrade
+		end
+		cost = cost + g.cell * factor
+		local qx, qy = grid.cellOf(g, q)
+		local cell = grid.index(g, qx, qy)
+		if not seen[cell] then
+			seen[cell] = true
+			table.insert(ends, { pt = q, cell = cell, x = qx, y = qy, cost = cost })
+		end
+		prev, d = q, d + g.cell
+	end
+	return ends
+end
+
 function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights,
-		radius ?: number, maxCost ?: number) : Search
+		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number) : Search
 	local sx, sy = grid.cellOf(g, from)
 	local gx, gy = grid.cellOf(g, to)
 	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
 		goalDir = nearestDir(goalDir), radius = radius or w.minRadius, maxCost = maxCost or math.huge, done = false,
-		found = false, expansions = 0, h0 = 0, bestH = 0, heap = {}, heapF = {}, cost = {}, parent = {}, finishDir = 0, finishSteps = 0,
-		filling = true, fillQueue = {}, fillHead = 1, fillSeen = {} }
+		found = false, expansions = 0, h0 = 0, bestH = 0, heap = {}, heapF = {}, cost = {}, parent = {},
+		origin = {}, finishDir = 0, finishSteps = 0, finishGoal = 1, filling = true, fillQueue = {}, fillHead = 1,
+		fillSeen = {} }
 	turnModel(s, g.cell, s.radius)
 	local start = grid.index(g, sx, sy)
 	s.start = start
-	s.fillQueue[1], s.fillSeen[start] = start, true
-	if start == s.goal then
-		s.filling, s.fillSeen, s.fillQueue = false, nil, nil
+	-- The ends may move out along the stations' axes: the start forward along startDir, the goal back against
+	-- goalDir (only with a direction to move along).
+	local k0 = nearestDir(startDir)
+	if k0 ~= 0 and startRun ~= nil and startRun > 0 then
+		s.starts = ray(g, w, from, geo.norm(startDir), startRun)
+	else
+		s.starts = { { pt = from, cell = start, x = sx, y = sy, cost = 0 } }
+	end
+	if s.goalDir ~= 0 and goalRun ~= nil and goalRun > 0 then
+		s.goals = ray(g, w, to, geo.scale(geo.norm(goalDir), -1), goalRun)
+	else
+		s.goals = { { pt = to, cell = s.goal, x = gx, y = gy, cost = 0 } }
+	end
+	s.goalCells = {}
+	for i, e in ipairs(s.goals) do
+		if not g.blocked[e.cell] then
+			s.goalCells[e.cell] = i
+		end
 	end
 	s.h0 = heuristic(s, sx, sy)
 	s.bestH = s.h0
-	if g.blocked[s.goal] then
+	if next(s.goalCells) == nil then
 		s.done = true
 		return s
 	end
+	for __, e in ipairs(s.starts) do
+		if s.goalCells[e.cell] ~= nil then
+			s.filling = false
+		end
+		if not s.fillSeen[e.cell] then
+			s.fillSeen[e.cell] = true
+			table.insert(s.fillQueue, e.cell)
+		end
+	end
+	if not s.filling then
+		s.fillSeen, s.fillQueue = nil, nil
+	end
 	-- Without a start direction, every direction is a start state, so the first move may go any way, unpenalised.
-	local k0 = nearestDir(startDir)
-	for k = 1, NDIRS do
-		if k0 == 0 or k == k0 then
-			local node = (start - 1) * NDIRS + k
-			s.cost[node] = 0
-			push(s, node, s.h0 + turnBound(s, k))
+	for i, e in ipairs(s.starts) do
+		for k = 1, NDIRS do
+			if k0 == 0 or k == k0 then
+				local node = (e.cell - 1) * NDIRS + k
+				if s.cost[node] == nil then
+					s.cost[node], s.origin[node] = e.cost, i
+					push(s, node, e.cost + heuristic(s, e.x, e.y) + turnBound(s, k))
+				end
+			end
 		end
 	end
 	return s
@@ -406,9 +487,10 @@ end
 
 -- Offers the finish at cost fc, reached from state `from` by `steps` more steps in direction k (0 steps: from a state
 -- at the goal cell itself).
-local function finish(s : Search, fc : number, from : integer, k : integer, steps : integer)
+local function finish(s : Search, fc : number, from : integer, k : integer, steps : integer, goal : integer)
+	fc = fc + s.goals[goal].cost
 	if s.cost[FINISH] == nil or fc < s.cost[FINISH] then
-		s.cost[FINISH], s.parent[FINISH], s.finishDir, s.finishSteps = fc, from, k, steps
+		s.cost[FINISH], s.parent[FINISH], s.finishDir, s.finishSteps, s.finishGoal = fc, from, k, steps, goal
 		push(s, FINISH, fc)
 	end
 end
@@ -463,7 +545,13 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 					s.bestH = h
 				end
 				local maxTurn = s.maxTurn
-				if a == s.goal then
+				-- A start state not reached any cheaper way: its first move runs from its start point.
+				local origin : Pt = nil
+				if s.parent[node] == nil and s.origin[node] ~= nil then
+					origin = s.starts[s.origin[node]].pt
+				end
+				local goalHere = s.goalCells[a]
+				if goalHere ~= nil then
 					-- The final turn onto the asked direction obeys the same limit as any other: this state is free to
 					-- turn, and the room beyond the goal (a station's extension) takes the far side of the curve.
 					local turn = 0
@@ -471,12 +559,12 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 						turn = turnSteps(prev, s.goalDir)
 					end
 					-- The last segment runs from the cell before (or the start point) to the goal point.
-					local before = s.startPt
-					if base > 0 then
+					local before = origin
+					if before == nil then
 						before = grid.centre(g, ax - DIRS[prev][1], ay - DIRS[prev][2])
 					end
-					if turn <= maxTurn and segmentClear(g, before, s.goalPt) then
-						finish(s, base + w.turnPenalty * turn * turn, node, prev, 0)
+					if turn <= maxTurn and segmentClear(g, before, s.goals[goalHere].pt) then
+						finish(s, base + w.turnPenalty * turn * turn, node, prev, 0, goalHere)
 					end
 				end
 				for turn = -maxTurn, maxTurn do
@@ -496,8 +584,8 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 							nc = nil
 							break
 						end
-						if j == 1 and base == 0 and a == s.start
-							and not segmentClear(g, s.startPt, grid.centre(g, bx + d[1], by + d[2])) then
+						if j == 1 and origin ~= nil
+							and not segmentClear(g, origin, grid.centre(g, bx + d[1], by + d[2])) then
 							nc = nil
 							break
 						end
@@ -506,9 +594,10 @@ function grid.stepSearch(s : Search, maxExpansions : integer) : boolean
 						nc = nc + c
 						-- Passing through the goal part-way along the straight finishes there, but only heading the
 						-- asked way: a turn here would come too soon after the last.
-						if j < steps and b == s.goal and (s.goalDir == 0 or k == s.goalDir)
-							and segmentClear(g, grid.centre(g, bx - d[1], by - d[2]), s.goalPt) then
-							finish(s, nc, node, k, j)
+						local goalThere = s.goalCells[b]
+						if j < steps and goalThere ~= nil and (s.goalDir == 0 or k == s.goalDir)
+							and segmentClear(g, grid.centre(g, bx - d[1], by - d[2]), s.goals[goalThere].pt) then
+							finish(s, nc, node, k, j, goalThere)
 						end
 					end
 					if nc ~= nil then
@@ -565,17 +654,20 @@ function grid.path(s : Search) : {Pt}
 		local k = nodes[i] - (c - 1) * NDIRS
 		walk(k, s.straightSteps[k], c)
 	end
-	walk(s.finishDir, s.finishSteps, s.goal)
+	local goal = s.goals[s.finishGoal]
+	walk(s.finishDir, s.finishSteps, goal.cell)
+	-- The ends are the points along the stations' axes the path left and reached them at.
+	local first, last = s.starts[s.origin[nodes[1]]].pt, goal.pt
 	if #cells < 2 then
-		return { s.startPt, s.goalPt }
+		return { first, last }
 	end
 	local pts : {Pt} = {}
 	for i, c in ipairs(cells) do
 		local ix, iy = cellXY(g, c)
 		pts[i] = grid.centre(g, ix, iy)
 	end
-	pts[1] = s.startPt
-	pts[#pts] = s.goalPt
+	pts[1] = first
+	pts[#pts] = last
 	return pts
 end
 

@@ -389,13 +389,13 @@ t.test("route: the curves go round the end of a steep hill, not through it", fun
 end)
 
 t.test("route: on flat open ground the guard changes nothing", function()
-	-- y from -1500 to 3500, so C's station fits. Pieces and lengths with the stations facing the scouted line (from
-	-- before the guard, with the stations facing town to town: 2854.558372 and 2009.573552 m at 220 m, 2881.384564
-	-- and 2023.974285 m at 1000 m).
+	-- y from -1500 to 3500, so C's station fits. Pieces and lengths with the stations facing the scouted line, and
+	-- (at 1000 m) the legs' ends free to move out along the stations' axes (from before the guard, with the stations
+	-- facing town to town: 2854.558372 and 2009.573552 m at 220 m, 2881.384564 and 2023.974285 m at 1000 m).
 	local g = grid.new(-1000, -1500, 100, 81, 51)
 	local stops = { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 4500, 1500) }
 	local before = { [220] = { { 5, 2869.190062 }, { 7, 2002.722075 } },
-		[1000] = { { 7, 2880.707083 }, { 7, 2012.128815 } } }
+		[1000] = { { 7, 2892.308693 }, { 5, 1997.910660 } } }
 	for radius, legs in pairs(before) do
 		local plan = run(g, stops, 160, withWeights({ minRadius = radius }))
 		t.ok(plan.ok, "ok")
@@ -403,7 +403,10 @@ t.test("route: on flat open ground the guard changes nothing", function()
 		for k, leg in ipairs(plan.legs) do
 			t.eq(#leg.pieces, legs[k][1], radius .. ": leg " .. k .. " pieces")
 			t.near(leg.length, legs[k][2], 1e-3, radius .. ": leg " .. k .. " length")
-			t.near(leg.minRadius, radius, 1e-6, radius .. ": leg " .. k .. " radius")
+			-- A leg's ends lie off their cells' centres, and a station may face between the 16 headings (B here faces
+			-- 22.5°), so the first turn off its axis can be a little more than a 22.5° step, and its curve a little
+			-- under the radius (977 m at 1000 m, leg 2).
+			t.ok(leg.minRadius >= 0.97 * radius - 1e-6, radius .. ": leg " .. k .. " radius " .. leg.minRadius)
 			t.eq(leg.guarded, 0, radius .. ": leg " .. k .. " guarded")
 		end
 	end
@@ -635,4 +638,33 @@ t.test("route: a middle station faces along the line through it", function()
 			seen[i] = k
 		end
 	end
+end)
+
+t.test("route: a station turned to face the line keeps its room to turn", function()
+	-- As above, a wall east of A that the line climbs round, and a building just beyond the approach on the axis A
+	-- would turn to (north-east), which would cut its room to turn to nothing.
+	local g = flatGrid()
+	for iy = 1, 31 do
+		for ix = 1, 81 do
+			local c = grid.centre(g, ix, iy)
+			if c.x >= 700 and c.x <= 900 and c.y <= 600 then
+				g.blocked[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+	g.blocked[grid.index(g, grid.cellOf(g, { x = 200, y = 100 }))] = true
+	local job = route.start({ grid = g, stops = { town(1, "A", 0, 0), town(2, "B", 5000, 0) }, weights = W,
+		platformLength = 160 })
+	local start = nil
+	while not route.step(job, 500) do
+		start = start or job.path and job.path[1]
+	end
+	local plan = route.plan(job)
+	t.ok(plan.ok, "ok")
+	local c, d = plan.stations[1].site.centre, plan.stations[1].site.dir
+	local along = (start.x - c.x) * d.x + (start.y - c.y) * d.y
+	-- The platform's half, the approach, and the full room to turn at 220 m (220 × tan 22.5°).
+	t.near(along, 80 + 100 + 220 * math.tan(math.pi / 8), 1e-6, ("A's room to turn, facing (%.2f, %.2f)"):format(d.x,
+		d.y))
+	t.eq(plan.summary.blockedSamples, 0, "nothing in the way")
 end)

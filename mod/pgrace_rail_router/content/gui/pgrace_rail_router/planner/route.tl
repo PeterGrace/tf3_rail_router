@@ -46,6 +46,11 @@ local SCOUT_ROUNDS = 1
 -- A turned station may be at most this much farther from its town's centre than its first site (metres): it should
 -- face the line, not leave the town for it. (On the captures no station moved farther than that anyway.)
 local MAX_TURN_MOVE = 100.0
+-- How far a leg's search may move its ends out along the stations' axes, beyond their extension points (metres;
+-- only where turns are spaced). It helps little: along a lattice heading the search could already run straight on,
+-- so it only matters for stations facing between the 16 headings. On the Fastest captures it took the tight curves
+-- from 11 to 10 on one and the estimate down 0.5% on the other; 2000 m was no better.
+local MAX_END_RUN = 1000.0
 -- Share of a leg's work that is its search; building it is the rest.
 local SEARCH_SHARE = 0.99
 -- A leg's search with its turns spaced for a wide radius is taken if its path costs at most this share more than the
@@ -115,7 +120,7 @@ end
 -- The leg's search starts or ends at the last, and the track runs straight to it, so it is pulled back (half a cell
 -- at a time, at most to the approach point) until that straight is inside the grid and clear of blocked cells and
 -- other stations' platforms (`taken`). Where it's pulled back, the curve beyond may be tighter than minRadius (and
--- where that's below what can be built, buildLeg gives the extension up).
+-- where that's below what can be built, fitLeg gives the extension up).
 local function stationEnds(input : Input, station : Station, forward : boolean, taken : {integer : boolean}) : Pt, Pt, Pt
 	local g = input.grid
 	local sign = forward and 1 or -1
@@ -133,6 +138,12 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 		ext = ext - g.cell / 2
 	end
 	return platformEnd, approach, approach
+end
+
+-- How far a station's room to turn reaches beyond its approach, on one side (metres; see stationEnds).
+local function turnRoom(input : Input, station : Station, forward : boolean, taken : {integer : boolean}) : number
+	local __, approach, extension = stationEnds(input, station, forward, taken)
+	return geo.dist(approach, extension)
 end
 
 -- Adds a station's platform cells (by grid index) to `taken`, so later sites keep off them.
@@ -295,7 +306,10 @@ local function pathGuard(g : Grid, path : {Pt}) : function(p : Pt, from : intege
 	end
 end
 
-local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, taken : {integer : boolean}) : Leg
+-- Building a leg takes three steps, so no frame takes them all (in-game one took 14.7 ms): simplifying the path
+-- (the guard's checks along each candidate straight are the dearest part), filleting it, and sampling its heights.
+local function simplifyLeg(input : Input, a : Station, b : Station, path : {Pt},
+		taken : {integer : boolean}) : PgraceRailRouterRoute.Simplified
 	local g, w = input.grid, input.weights
 	local aEnd, aApproach = stationEnds(input, a, true, taken)
 	local bEnd, bApproach = stationEnds(input, b, false, taken)
@@ -338,6 +352,12 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, ta
 		clear = function(p : Pt, from : integer, to : integer) : boolean
 			return clear(p, raw[from], raw[to])
 		end }
+	return { pts = pts, guard = guard }
+end
+
+local function fitLeg(input : Input, simplified : PgraceRailRouterRoute.Simplified) : PgraceRailRouterSmooth.Result
+	local w = input.weights
+	local pts, guard = simplified.pts, simplified.guard
 	-- freeA and freeB give up a's or b's extension point: fillet may then drop it like any other.
 	local function fit(freeA : boolean, freeB : boolean) : PgraceRailRouterSmooth.Result
 		local fixed : {boolean} = {}
@@ -372,6 +392,11 @@ local function buildLeg(input : Input, a : Station, b : Station, path : {Pt}, ta
 			fitted = fit(freeA, freeB)
 		end
 	end
+	return fitted
+end
+
+local function finishLeg(input : Input, a : Station, b : Station, fitted : PgraceRailRouterSmooth.Result) : Leg
+	local g, w = input.grid, input.weights
 	local tight = 0
 	for __, piece in ipairs(fitted.pieces) do
 		if piece.kind == "arc" and piece.radius < w.minRadius - 1e-6 then
@@ -517,7 +542,19 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			local site = stations.find(input.grid, station.town.pos, dir, input.platformLength + 2 * APPROACH,
 				MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + MAX_TURN_MOVE), others)
 			local prev, next = plan.stations[i - 1], plan.stations[i + 1]
-			if site ~= nil and (prev == nil or apartEnough(input, prev.site, site))
+			-- Nor where buildings cut its room to turn shorter than the first site's, on a side a leg leaves from:
+			-- the leg there would have to turn sharply at the approach, in the town.
+			local roomy = true
+			if site ~= nil then
+				local turned : Station = { town = station.town, site = site, z = station.z }
+				for __, forward in ipairs({ true, false }) do
+					if (forward and next ~= nil) or (not forward and prev ~= nil) then
+						roomy = roomy and turnRoom(input, turned, forward, others)
+							>= turnRoom(input, station, forward, others) - 1e-6
+					end
+				end
+			end
+			if site ~= nil and roomy and (prev == nil or apartEnough(input, prev.site, site))
 				and (next == nil or apartEnough(input, site, next.site)) then
 				station.site, station.z = site, grid.heightAt(input.grid, site.centre)
 			end
@@ -539,7 +576,16 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	end
 	local a, b = plan.stations[job.legIndex], plan.stations[job.legIndex + 1]
 	if job.path ~= nil then
-		local leg = buildLeg(input, a, b, job.path, job.taken)
+		if job.simplified == nil then
+			job.simplified = simplifyLeg(input, a, b, job.path, job.taken)
+			return false
+		end
+		if job.fitted == nil then
+			job.fitted = fitLeg(input, job.simplified)
+			return false
+		end
+		local leg = finishLeg(input, a, b, job.fitted)
+		job.simplified, job.fitted = nil, nil
 		leg.searchRadius, leg.searchExpansions = job.searchRadius, job.searchExpansions
 		table.insert(plan.legs, leg)
 		job.path = nil
@@ -563,8 +609,16 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		if job.tryIndex > 1 then
 			maxCost = job.fallbackCost * (1 + MAX_RADIUS_EXTRA)
 		end
+		-- Where turns are spaced, the lattice of reachable cells and headings is coarse, and a path rarely meets one
+		-- exact start and goal: let it leave a's axis, and join b's, anywhere along a run beyond the extension points
+		-- (the stations' straights just get longer), up to MAX_END_RUN and never past half way.
+		local radius = job.radii[job.tryIndex]
+		local run : number = nil
+		if 2 * radius * math.tan(math.pi / 16) > input.grid.cell + 1e-6 then
+			run = math.min(MAX_END_RUN, geo.dist(aExtension, bExtension) / 2)
+		end
 		job.search = grid.startSearch(input.grid, aExtension, bExtension, a.site.dir, b.site.dir, input.weights,
-			job.radii[job.tryIndex], maxCost)
+			radius, maxCost, run, run)
 		return false
 	end
 	if not grid.stepSearch(job.search, maxExpansions) then

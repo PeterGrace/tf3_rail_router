@@ -18,6 +18,16 @@ global record PgraceRailRouterGrid
 		track : {boolean}
 	end
 
+	-- One of a search's possible ends: a point on a station's axis, its cell (index, column, row), and the cost of the
+	-- straight between it and the asked end point.
+	record End
+		pt : PgraceRailRouterGeo.Pt
+		cell : integer
+		x : integer
+		y : integer
+		cost : number
+	end
+
 	-- A search in progress. The fields other than done, found and expansions are internal.
 	-- Its states are (cell, arriving direction): node id (cell - 1) * 16 + k, k = 1..16 the move direction that
 	-- entered the cell; node 0 is the virtual finish, past the goal cell.
@@ -28,6 +38,11 @@ global record PgraceRailRouterGrid
 		goalPt : PgraceRailRouterGeo.Pt
 		-- The start cell's index.
 		start : integer
+		-- Where the path may start and finish (the asked points first), and the goal cells, by cell index, to their
+		-- index in goals.
+		starts : {End}
+		goals : {End}
+		goalCells : {integer : integer}
 		-- The goal cell's index, and its column and row.
 		goal : integer
 		gx : integer
@@ -54,10 +69,14 @@ global record PgraceRailRouterGrid
 		-- Keyed by node id. cost[0] is the finished path's cost.
 		cost : {integer : number}
 		parent : {integer : integer}
+		-- The start states, by node id, to their index in starts.
+		origin : {integer : integer}
 		-- How the finish is reached from parent[0]: this many steps on in direction finishDir (0 steps when that
 		-- state is at the goal cell).
 		finishDir : integer
 		finishSteps : integer
+		-- The goal (index into goals) the finish reaches.
+		finishGoal : integer
 		-- The reachability flood fill over cells that runs first: true while it runs; its queue of cell indices,
 		-- the next one to take, and the cells queued so far (queue and seen are dropped once it ends).
 		filling : boolean
@@ -95,15 +114,19 @@ global record PgraceRailRouterGrid
 	-- straight in its new direction for ceil(L / step length) steps in all, each checked and costed as a move of
 	-- its own; passing through the goal cell part-way along, heading in goalDir, finishes there. The start state
 	-- (startDir) may turn at once (the station's extension gives room behind it), as may every state the search
-	-- reaches. The first segment, from `from` to the next cell's centre, and the last, into `to`, must be clear of
-	-- blocked cells too (off-centre ends can cut a blocked cell's corner). With maxCost, the search finishes, not found, once every path left would cost more. A blocked goal
-	-- cell finishes the search at once, not found. The first stepSearch calls flood-fill the cells from the start
+	-- reaches. With startRun (metres), the path may instead start at any point up to that far out along startDir from
+	-- `from`, one per cell, and with goalRun finish at any point up to that far back from `to` against goalDir: each
+	-- ray stops at the first blocked, water, road or track cell, and costs its straight (length and slope, as moves).
+	-- The path's first and last points are then those points. The first segment, from the start point to the next
+	-- cell's centre, and the last, into the goal point, must be clear of blocked cells too (off-centre ends can cut a
+	-- blocked cell's corner). With maxCost, the search finishes, not found, once every path left would cost more. A
+	-- goal with every cell blocked finishes the search at once, not found. The first stepSearch calls flood-fill the cells from the start
 	-- (about one cell per unit of budget, no expansions counted) and finish, not found, if the goal can't be reached
 	-- at all. Entering a road or track cell costs w.roadCrossing or w.trackCrossing; a step from road to road costs
 	-- 1.5 × its length, so the path doesn't run along roads.
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
 		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights,
-		radius ?: number, maxCost ?: number) : Search
+		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number) : Search
 	-- Expands up to maxExpansions states (or fills that many cells first); true once the search is finished (found
 	-- or not). Gives up, not found, after 12 expansions per cell (a goal cut off only by the turn limit).
 	stepSearch : function(s : Search, maxExpansions : integer) : boolean

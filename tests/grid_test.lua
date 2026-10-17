@@ -514,3 +514,36 @@ t.test("grid: a knight move doesn't hop over a ridge one cell wide", function()
 	end
 	t.ok(path[1].x > 0 and math.min(table.unpack((function() local xs = {} for __, p in ipairs(path) do xs[#xs + 1] = p.x end return xs end)())) <= 300, "went round the west end")
 end)
+
+t.test("grid: the ends may move out along the stations' axes, short of anything in the way", function()
+	-- An open field, both stations' axes 12° north of east (between the 16 headings), R = 2000 m, runs of 1000 m.
+	local g = grid.new(0, 0, 100, 81, 31)
+	local dir = { x = math.cos(math.rad(12)), y = math.sin(math.rad(12)) }
+	local from, to = { x = 500, y = 500 }, { x = 7000, y = 2000 }
+	-- A building on the start's axis 450 m out: the start may not move past it.
+	g.blocked[grid.index(g, grid.cellOf(g, { x = from.x + 450 * dir.x, y = from.y + 450 * dir.y }))] = true
+	local s = grid.startSearch(g, from, to, dir, dir, with({ minRadius = 2000 }), nil, nil, 1000, 1000)
+	while not grid.stepSearch(s, 1000) do end
+	local path = grid.path(s)
+	t.ok(path ~= nil, "found")
+	local function onAxis(p, o, sign, label)
+		local dx, dy = p.x - o.x, p.y - o.y
+		local along = sign * (dx * dir.x + dy * dir.y)
+		t.near(dx * dir.y - dy * dir.x, 0, 1e-6, label .. " on the axis")
+		t.ok(along >= -1e-6 and along <= 1000 + 1e-6, label .. " within the run: " .. along)
+		return along
+	end
+	t.ok(onAxis(path[1], from, 1, "start") < 350, "the start stops short of the building")
+	onAxis(path[#path], to, -1, "goal")
+	for i = 2, #path do
+		t.ok(grid.cellsAlong(g, path[i - 1], path[i], function(c)
+			return not g.blocked[c]
+		end), "segment " .. (i - 1) .. " clear")
+	end
+	-- Without runs, the path starts and ends at the asked points.
+	local fixed = grid.startSearch(g, from, to, dir, dir, with({ minRadius = 2000 }))
+	while not grid.stepSearch(fixed, 1000) do end
+	local p = grid.path(fixed)
+	t.ok(p == nil or (p[1] == from and p[#p] == to), "fixed ends")
+	t.ok(p == nil or fixed.cost[0] >= s.cost[0] - 1e-6, "runs never cost more")
+end)
