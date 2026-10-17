@@ -827,8 +827,6 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.dryRunCrossing(settings)
 			elseif work.name == "P8" then
 				work.tasks = probe.bridgeClearance(settings)
-			elseif work.name == "P5" then
-				work.tasks = probe.buildStraight(settings)
 			else
 				work.tasks = probe.dryRunStation(settings, data.tracks)
 			end
@@ -1119,7 +1117,6 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		{ "P4", "Probe P4: dry-run across a street" },
 		{ "P8", "Probe P8: bridge clearance over track and street" },
 		{ "P6", "Probe P6: dry-run a station" },
-		{ "P5", "Probe P5: build test straight (test map only)" },
 	}) do
 		table.insert(body, builtin.Button{
 			content = builtin.TextView{ text = p[2] },
