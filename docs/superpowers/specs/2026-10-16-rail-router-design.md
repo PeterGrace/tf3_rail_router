@@ -112,6 +112,14 @@ part-way along a turn's straight finishes there only heading the platform's way,
 last single-step turn onto it. The path's first and last segments run from and to the asked points, off their cells'
 centres, so they are checked for blocked cells on their own (a diagonal past a blocked cell's corner would cut it).
 
+**Ends along the stations' axes.** Where turns are spaced, a leg's search may start anywhere on the ray beyond station
+A's extension point along its direction, and finish anywhere on the ray before B's (one point per cell, up to 1 km and
+never past half way, stopping at blocked, water, road or track cells, each costing its straight); the station's
+straight is then just longer. It helps little: along one of the 16 headings the search could already run straight
+on, so it matters only for stations facing between them.
+
+A leg is built over three steps (simplify, fillet, heights), so no frame does all three.
+
 **Radius fallback.** A Fastest leg is searched first with turns spaced for the Cheapest radius (the fallback; if that
 finds nothing, the plan fails "no_path"), then for the mode's radius, halving while above the Cheapest one, until a
 path costs at most 10% more than the fallback's; if none does, the fallback's path is taken. A radius that doesn't fit
@@ -164,7 +172,8 @@ radius allows (with the mode's costs). Each station's direction is then taken fr
 it on the arriving scout to the point D after it on the leaving one (from or to its centre at the line's ends), with
 D = 600 m or the full radius's minimum straight if longer (1.19 km at 3 km: over a shorter stretch, a scout one cell
 off the axis turns the station 10° or more). Its site is found again facing that way, at most one cell farther from
-the town than the first; if there is none, or it leaves no room to the stations either side, the first site stays.
+the town than the first; if there is none, or it leaves no room to the stations either side, or buildings cut its
+room to turn (below) shorter than the first site's on a side a leg leaves from, the first site stays.
 One round; a second moved stations again without settling. Scouts are searches like the legs', stepped through
 `route.step`, and count towards the progress.
 
@@ -251,7 +260,14 @@ Each ends with one in-game test by the user.
 
 - **Curves near station ends can be tight.** The search spaces its turns for the radius, and the stations face the
   scouted line, so in open country and round lakes, hills and buildings the path leaves room for full-radius curves.
-  What's left on the captured Fastest map (R = 3000 m; 7 tight curves, the tightest 263 m):
+  On the second Fastest capture without Mercer Island (10 tight curves) two legs still fall back to the Cheapest
+  search radius: Bangor → Antelope has to swing round the end of a ridge in an S that a 3 km radius can't make in the
+  1.1 km between the stations' extension points, and Aloha's site is hemmed in by its town on the side the line
+  arrives from (47 m of room to turn, at its first site and turned alike), so the line turns in the town. Looking up
+  to 300 m further out for a site with full room (tried) fixed Aloha's leg (searched at 1500 m) but moved other
+  stations for the worse (6 tight curves instead of 4 on the other Fastest capture, and one leg 13% dearer).
+  What's left on the first captured Fastest map (R = 3000 m; 7 tight curves, the tightest 263 m; since then 4, the
+  station-room rule keeping Aloha's roomy first site):
   - a stop the line doubles back through (Bangor → Mercer Island → Antelope turns about 135° at Mercer Island): no
     direction suits both legs, and both fall back to the Cheapest search radius (263 m and 572 m at its ends);
   - two stations too close for their offset (Mercer Island and Antelope both face north, 1.7 km apart sideways and
