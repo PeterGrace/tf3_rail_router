@@ -378,7 +378,7 @@ function survey.start(stops : {Town}, cell : number, margin : number, bounds ?: 
 	local job : Job = { box = box, grid = grid.new(minX, minY, cell, nx, ny), tasks = {}, next = 1, seen = {},
 		reported = false, constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, trackEdges = 0,
 		tunnelsSkipped = 0, curveFallbacks = 0, invalidCells = 0, failures = 0, slowestRowUs = 0, slowestQueryUs = 0,
-		slowestMarkUs = 0, slowestTaskUs = 0, queries = 0, slices = 0, stepCalls = 0, totalUs = 0 }
+		slowestMarkUs = 0, slowestTaskUs = 0, slowestStepUs = 0, queries = 0, slices = 0, stepCalls = 0, totalUs = 0 }
 	for iy = 1, ny do
 		local nextCol = 1
 		table.insert(job.tasks, function(clock : Clock, budgetUs : number) : boolean
@@ -417,7 +417,8 @@ local function report(job : Job)
 	local g = job.grid
 	local n = g.nx * g.ny
 	debugPrint(LOG_PREFIX .. "survey done: " .. #job.tasks .. " tasks, " .. string.format("%.1f", job.totalUs / 1000)
-		.. " ms over " .. job.stepCalls .. " steps; " .. job.slices .. " slices, the slowest " .. job.slowestTaskUs
+		.. " ms over " .. job.stepCalls .. " steps, the slowest " .. job.slowestStepUs .. " µs; " .. job.slices
+		.. " slices, the slowest " .. job.slowestTaskUs
 		.. " µs (terrain " .. job.slowestRowUs .. " µs, octree lookup " .. job.slowestQueryUs .. " µs of "
 		.. job.queries .. ", marking " .. job.slowestMarkUs .. " µs); constructions " .. job.constructions .. ", town buildings " .. job.townBuildings
 		.. ", no box " .. job.noBox .. ", edges " .. job.edges .. " (streets " .. job.streetEdges .. ", track "
@@ -449,7 +450,9 @@ function survey.step(job : Job, budgetUs : integer) : boolean
 			job.next = job.next + 1
 		end
 	until clock:getTime() >= budgetUs
-	job.totalUs = job.totalUs + math.floor(clock:getTime())
+	local took = math.floor(clock:getTime())
+	job.totalUs = job.totalUs + took
+	job.slowestStepUs = math.max(job.slowestStepUs, took)
 	local done = job.next > #job.tasks
 	if done and not job.reported then
 		job.reported = true

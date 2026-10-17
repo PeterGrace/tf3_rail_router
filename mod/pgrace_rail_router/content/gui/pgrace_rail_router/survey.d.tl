@@ -39,6 +39,8 @@ global record PgraceRailRouterSurvey
 		slowestMarkUs : integer
 		slices : integer
 		queries : integer
+		-- The slowest whole step call (its budget plus the overrun of the slice it ended on), microseconds.
+		slowestStepUs : integer
 		-- step calls so far, and the time spent in them, microseconds.
 		stepCalls : integer
 		totalUs : integer
