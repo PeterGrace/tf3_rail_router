@@ -1,5 +1,6 @@
 local grid = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/grid.tl" as PgraceRailRouterGrid
 local modes = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/modes.tl" as PgraceRailRouterModes
+local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/area.tl" as PgraceRailRouterArea
 
 local survey : PgraceRailRouterSurvey = {}
 
@@ -11,13 +12,7 @@ local type Job = PgraceRailRouterSurvey.Job
 
 local LOG_PREFIX = "[rail_router] "
 -- Cells within this distance of a building or other construction are blocked (metres).
-local BUILDING_BUFFER = 30.0
--- At least this much room around the stops (metres).
-local MIN_MARGIN = 2000.0
--- Larger grids get coarser cells instead (memory and search time).
-local MAX_CELLS = 250000
--- Cells never get coarser than this while shrinking the grid (metres).
-local MAX_CELL = 5000.0
+local BUILDING_BUFFER = area.BUILDING_BUFFER
 -- Buildings and edges are looked up in tiles this wide, one tile per task: a single city-wide lookup took 60 ms in
 -- Jam Session.
 local TILE = 1000.0
@@ -28,10 +23,6 @@ local function logOnce(key : string, message : string)
 		logged[key] = true
 		debugPrint(LOG_PREFIX .. message)
 	end
-end
-
-local function isFinite(x : number) : boolean
-	return x == x and x ~= math.huge and x ~= -math.huge
 end
 
 local function boundingBox(entity : Engine.Entity) : Engine.Component.BoundingVolume
@@ -196,59 +187,6 @@ function survey.year() : integer
 	return result as integer
 end
 
--- Marks the cells whose centres are nearest to the box's corners and everything between (the box is world
--- coordinates). Boxes wholly outside the grid are skipped.
-local function markBox(g : Grid, x0 : number, y0 : number, x1 : number, y1 : number, cells : {boolean})
-	local half = g.cell / 2
-	if x1 < g.x0 - half or y1 < g.y0 - half or x0 > g.x0 + (g.nx - 1) * g.cell + half
-			or y0 > g.y0 + (g.ny - 1) * g.cell + half then
-		return
-	end
-	local ax, ay = grid.cellOf(g, { x = x0, y = y0 })
-	local bx, by = grid.cellOf(g, { x = x1, y = y1 })
-	for iy = ay, by do
-		for ix = ax, bx do
-			cells[grid.index(g, ix, iy)] = true
-		end
-	end
-end
-
-local function markPoint(g : Grid, p : Pt, cells : {boolean})
-	if grid.inside(g, p) then
-		local ix, iy = grid.cellOf(g, p)
-		cells[grid.index(g, ix, iy)] = true
-	end
-end
-
--- Marks the cells along the straight line from a to b.
-local function markLine(g : Grid, a : Pt, b : Pt, cells : {boolean})
-	local dx, dy = b.x - a.x, b.y - a.y
-	local length = math.sqrt(dx * dx + dy * dy)
-	local steps = math.max(1, math.ceil(length / (g.cell / 2)))
-	for k = 0, steps do
-		markPoint(g, { x = a.x + dx * k / steps, y = a.y + dy * k / steps }, cells)
-	end
-end
-
--- Marks the cells along the cubic Hermite curve from p0 (tangent t0) to p1 (tangent t1), sampled at most half a
--- cell apart.
-local function markCurve(g : Grid, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt, cells : {boolean})
-	local chord = math.sqrt((p1.x - p0.x) ^ 2 + (p1.y - p0.y) ^ 2)
-	-- The tangents' lengths are about the curve's length; take the longest so a bent edge is sampled finely enough.
-	local length = math.max(chord, math.sqrt(t0.x * t0.x + t0.y * t0.y), math.sqrt(t1.x * t1.x + t1.y * t1.y))
-	local steps = math.max(1, math.ceil(length / (g.cell / 2)))
-	for k = 0, steps do
-		local t = k / steps
-		local t2, t3 = t * t, t * t * t
-		local h00 = 2 * t3 - 3 * t2 + 1
-		local h10 = t3 - 2 * t2 + t
-		local h01 = -2 * t3 + 3 * t2
-		local h11 = t3 - t2
-		markPoint(g, { x = h00 * p0.x + h10 * t0.x + h01 * p1.x + h11 * t1.x,
-			y = h00 * p0.y + h10 * t0.y + h01 * p1.y + h11 * t1.y }, cells)
-	end
-end
-
 local function surveyRow(job : Job, iy : integer)
 	local g = job.grid
 	local terrain = api.engine.terrain
@@ -276,7 +214,7 @@ local function markConstruction(job : Job, entity : Engine.Entity)
 		end
 	end
 	if bv ~= nil then
-		markBox(job.grid, bv.bbox.min.x - BUILDING_BUFFER, bv.bbox.min.y - BUILDING_BUFFER,
+		area.markBox(job.grid, bv.bbox.min.x - BUILDING_BUFFER, bv.bbox.min.y - BUILDING_BUFFER,
 			bv.bbox.max.x + BUILDING_BUFFER, bv.bbox.max.y + BUILDING_BUFFER, job.grid.blocked)
 	else
 		job.noBox = job.noBox + 1
@@ -312,7 +250,7 @@ local function markEdge(job : Job, entity : Engine.Entity)
 		return true
 	end)
 	if read and p0 ~= nil and p1 ~= nil and t0 ~= nil and t1 ~= nil and not (isZero(p0) and isZero(p1)) then
-		markCurve(job.grid, { x = p0.x, y = p0.y }, { x = t0.x, y = t0.y }, { x = p1.x, y = p1.y },
+		area.markCurve(job.grid, { x = p0.x, y = p0.y }, { x = t0.x, y = t0.y }, { x = p1.x, y = p1.y },
 			{ x = t1.x, y = t1.y }, cells)
 		return
 	end
@@ -322,7 +260,7 @@ local function markEdge(job : Job, entity : Engine.Entity)
 	if n0 == nil or n1 == nil then
 		return
 	end
-	markLine(job.grid, { x = n0.position.x, y = n0.position.y }, { x = n1.position.x, y = n1.position.y }, cells)
+	area.markLine(job.grid, { x = n0.position.x, y = n0.position.y }, { x = n1.position.x, y = n1.position.y }, cells)
 end
 
 local function surveyTile(job : Job, cx : number, cy : number)
@@ -366,27 +304,16 @@ local function surveyTile(job : Job, cx : number, cy : number)
 end
 
 function survey.start(stops : {Town}, cell : number, margin : number) : Job
-	if #stops == 0 then
+	local box = area.box(stops, cell, margin)
+	if box == nil then
+		if #stops > 0 then
+			logOnce("bounds", "survey: stops have no finite bounds")
+		end
 		return nil
 	end
-	local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
-	for __, stop in ipairs(stops) do
-		minX, maxX = math.min(minX, stop.pos.x), math.max(maxX, stop.pos.x)
-		minY, maxY = math.min(minY, stop.pos.y), math.max(maxY, stop.pos.y)
-	end
-	if not (isFinite(minX) and isFinite(maxX) and isFinite(minY) and isFinite(maxY)) then
-		logOnce("bounds", "survey: stops have no finite bounds")
-		return nil
-	end
-	local pad = math.max(MIN_MARGIN, margin * math.max(maxX - minX, maxY - minY))
-	minX, maxX, minY, maxY = minX - pad, maxX + pad, minY - pad, maxY + pad
-	local nx = math.floor((maxX - minX) / cell) + 1
-	local ny = math.floor((maxY - minY) / cell) + 1
-	while nx * ny > MAX_CELLS and cell < MAX_CELL do
-		cell = cell * 1.25
-		nx = math.floor((maxX - minX) / cell) + 1
-		ny = math.floor((maxY - minY) / cell) + 1
-	end
+	local minX, minY, maxX, maxY = box.minX, box.minY, box.maxX, box.maxY
+	local nx, ny = box.nx, box.ny
+	cell = box.cell
 	local job : Job = { grid = grid.new(minX, minY, cell, nx, ny), tasks = {}, next = 1, seen = {}, reported = false,
 		constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, trackEdges = 0,
 		tunnelsSkipped = 0, curveFallbacks = 0, invalidCells = 0, failures = 0, slowestRowUs = 0, slowestTileUs = 0,
