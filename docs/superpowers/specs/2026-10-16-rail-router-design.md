@@ -477,10 +477,11 @@ What the probes found:
 - **Crossings** (P4, P8): track on the ground across a street collides with it (a level crossing has to split the
   street: milestone 3), so in Cheapest a chunk whose only collisions are streets counts its level crossings instead
   of an error (pieces of street sharing a node are one crossing). A bridge needs 8 m over track, 6 m over a street.
-- **Price** (P5): a built 200 m straight was charged exactly the dry run's price (99,408). The game charges more than
-  the templates list (about 248 a metre of standard track where 180 is listed: the save's inflation factor is 3), so
-  when a plan is done a 100 m straight is dry-run at its first station, plain and electrified, and our estimate is
-  scaled by that price.
+- **Price** (P5): a built 200 m straight was charged exactly the dry run's price (99,408). Plain track costs its
+  listed price per metre; electrified 1.3× that, though its template lists the same. So when a plan is done a 100 m
+  straight is dry-run at its first station, plain and electrified, and our estimate is scaled by that price. The
+  estimate leaves out the platforms' track (the stations' price has it): on Bangor → Imperial Beach it then came
+  within about 1.5% of the game's track price.
 - **Timing:** Bangor → Imperial Beach (15 km, 5 stations, 16 chunks): 0.4 s of dry runs over 21 frames; stations
   30 ms each but the first about 100 ms, chunks 3–40 ms.
 

@@ -825,7 +825,7 @@ local function summarise(input : Input, plan : Plan) : Summary
 	end
 	local platforms = #plan.stations * input.platformLength
 	sum.length = sum.length + platforms
-	sum.estimate = sum.estimate + platforms * w.costPerMetre
+	-- The platforms' track is the stations' (priced with them), so not in the estimate.
 	return sum
 end
 
