@@ -690,7 +690,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		local toggleLabel = expanded and _("Show fewer") or fill(_("Show all {count} towns"), { count = tostring(#candidates) })
 		table.insert(body, builtin.Button{
 			content = builtin.BoxLayout{
-				orientation = "HORIZONTAL",
+				orientation = builtin.type.Orientation.Horizontal,
 				children = {
 					builtin.ImageView{ path = expanded and "::/gui/builtin/combobox/arrow_down.tga"
 						or "::/gui/builtin/combobox/arrow_right.tga" },
