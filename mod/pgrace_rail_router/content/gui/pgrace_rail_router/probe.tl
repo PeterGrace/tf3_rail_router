@@ -1292,6 +1292,23 @@ local function p15Junction(settings : Settings)
 	add(5, 6, second)
 	add(6, 7, { p0 = nodes[6], p1 = nodes[7], t0 = dir(nodes[7].x - nodes[6].x), t1 = dir(nodes[7].x - nodes[6].x) })
 	local net : PgraceRailRouterNetwork.Network = { nodes = nodes, edges = edges, chunks = {} }
+	-- Which part the game refuses: the merge alone (edges 1-2), the crossing track alone (3-5), its first half alone
+	-- (the switch at x=180 to the crossing node), then everything.
+	for __, part in ipairs({ { "merge only", 1, 2 }, { "crossing track only", 3, 5 }, { "switch to crossing node only", 3, 3 },
+			{ "crossing node onwards only", 4, 5 } }) do
+		local pr, whyNot = builder.chunkProposal(net, part[2] as integer, part[3] as integer, settings)
+		if pr == nil then
+			log("P15", ("%s: no proposal: %s"):format(part[1], tostring(whyNot)))
+		else
+			local okP, costP, messagesP, ___, dataP = builder.dryRun(pr)
+			local hits : {string} = {}
+			for __, h in ipairs(builder.collisions(dataP)) do
+				table.insert(hits, ("%s %d"):format(h.what, h.entity))
+			end
+			log("P15", ("%s dry run: %s, %d %s"):format(part[1], okP and "clean" or table.concat(messagesP, "; "), costP,
+				table.concat(hits, ", ")))
+		end
+	end
 	local proposal, why = builder.chunkProposal(net, 1, #edges, settings)
 	if proposal == nil then
 		log("P15", "no junction proposal: " .. tostring(why))
