@@ -532,3 +532,30 @@ t.test("network: Halt 2+2 signals face their tracks' trains: right-hand running"
 	t.ok(forward == backward, "as many each way")
 	t.ok(forward >= 3 + 2, "starters, home and block signals (6 km, 2 km apart)")
 end)
+
+t.test("network: every track edge is in exactly one chunk, each track's in order, also when the tracks are cut differently", function()
+	for __, o in ipairs({ network.defaults(), halt() }) do
+		o.fan = o.fan and network.turnoutLength(600) or nil
+		local net = network.build(plan({ leg({ straight(0, 0, 2060, 0) }), leg({ straight(0, 0, 2756, 0) }) }), o)
+		local seen = {}
+		for __, c in ipairs(net.chunks) do
+			for i = c.first, c.last do
+				t.ok(not seen[i], "edge " .. i .. " in one chunk")
+				seen[i] = true
+			end
+		end
+		-- Each leg's tracks reach from 0 to its end with no gap, in the order they're built.
+		for li, total in ipairs({ 2060, 2756 }) do
+			for k = 1, 2 do
+				local at = 0
+				for __, e in ipairs(net.edges) do
+					if e.leg == li and e.track == k then
+						t.near(e.s0, at, 1e-6, ("leg %d track %d continues at %.0f"):format(li, k, at))
+						at = e.s1
+					end
+				end
+				t.near(at, total, 1e-6, ("leg %d track %d reaches the end"):format(li, k))
+			end
+		end
+	end
+end)

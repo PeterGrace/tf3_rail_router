@@ -714,6 +714,10 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 		-- Chunk cut points: after chunkLength of centre line, at the next edge end that isn't inside a bridge or tunnel.
 		local left, right = tracks[1], tracks[2]
 		local k, startS = 1, 0.0
+		-- The right track's next edge for a chunk. Its edges are taken by distance along the centre line, not by index:
+		-- a switch's window keeps a stretch of one track whole only, so the two tracks can have different numbers of
+		-- edges (Halt 2+2 on high-speed track: pairing by index left the right track's last 130 m of a leg out).
+		local r = 1
 		while k <= #left do
 			local j = k
 			while j < #left and (left[j].s1 - startS < options.chunkLength or left[j + 1].kind ~= "ground"
@@ -726,10 +730,11 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				table.insert(net.edges, left[m])
 				length = length + (left[m].s1 - left[m].s0)
 			end
-			-- The right track's edges over the same stretch (the two tracks are cut at the same places).
-			for m = k, j do
-				table.insert(net.edges, right[m])
-				length = length + (right[m].s1 - right[m].s0)
+			-- The right track's edges ending by the same point (all that are left, with the leg's last chunk).
+			while r <= #right and (right[r].s1 <= left[j].s1 + 1e-6 or j == #left) do
+				table.insert(net.edges, right[r])
+				length = length + (right[r].s1 - right[r].s0)
+				r = r + 1
 			end
 			-- The crossovers and fans that end by this cut (their nodes are in this chunk or one before).
 			for m, x in ipairs(crossovers) do
