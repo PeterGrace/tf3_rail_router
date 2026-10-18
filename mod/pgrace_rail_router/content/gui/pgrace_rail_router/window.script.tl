@@ -72,6 +72,17 @@ local EXTRA_STOPS = 5
 -- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
 local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, ticked = {} }
 
+-- The plan shown, its check with the game and its build, kept the same way: closing the window mid-build and opening
+-- it again carries on with the same plan. Planning again wouldn't: the new plan avoids the track already built.
+local record Kept
+	plan : Plan
+	prices : {string : number}
+	generation : integer
+	check : PgraceRailRouterBuilder.Check
+	build : PgraceRailRouterBuild.Build
+end
+local kept : Kept = { prices = {}, generation = 0 }
+
 local record GameData
 	towns : {Town}
 	tracks : {TrackType}
@@ -487,11 +498,11 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local data = dataState:old()
 	local settingsState = react.useState(remembered) as ReactStateT<Settings>
 	local settings = settingsState:old()
-	local planState : ReactStateT<Plan> = react.useState(nil)
+	local planState : ReactStateT<Plan> = react.useState(kept.plan)
 	-- The game's price for a metre of double track, by track template (plain and electrified), dry-run at the plan's
 	-- first station when it's done; the estimate is scaled by it.
-	local priceState : ReactStateT<{string : number}> = react.useState({})
-	local generationState = react.useState(0) as ReactStateT<integer>
+	local priceState : ReactStateT<{string : number}> = react.useState(kept.prices)
+	local generationState = react.useState(kept.generation) as ReactStateT<integer>
 	local showAllState = react.useState(rememberedShowAll) as ReactStateT<boolean>
 	local stationsState = react.useState(rememberedStations) as ReactStateT<boolean>
 	local probesState = react.useState(rememberedProbes) as ReactStateT<boolean> -- PROBE (remove before release)
@@ -507,7 +518,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- that it failed.
 	local checkRef : ReactRefT<CheckWork> = react.useRef(nil)
 	local checkDoneState : ReactStateT<integer> = react.useState(nil)
-	local checkState : ReactStateT<PgraceRailRouterBuilder.Check> = react.useState(nil)
+	local checkState : ReactStateT<PgraceRailRouterBuilder.Check> = react.useState(kept.check)
 	local checkErrorState = react.useState(false) as ReactStateT<boolean>
 	-- PROBE (remove before release): the probe running (nil when none), and the last one's outcome for the window.
 	local probeRef : ReactRefT<ProbeWork> = react.useRef(nil)
@@ -516,7 +527,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local joinQueuedRef : ReactRefT<boolean> = react.useRef(false)
 	-- Build (milestone 3): the build of the checked plan (nil before Build is clicked), and what the window last
 	-- showed of it ("phase:done"), set each step so the window redraws as it goes.
-	local buildRef : ReactRefT<PgraceRailRouterBuild.Build> = react.useRef(nil)
+	local buildRef : ReactRefT<PgraceRailRouterBuild.Build> = react.useRef(kept.build)
 	local buildViewState : ReactStateT<string> = react.useState(nil)
 
 	-- Copies from the latest state, not this render's `settings`, so two changes in one frame both stick: transform
@@ -550,7 +561,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				onClick = function()
 					if buildRef:get() == nil and workRef:get() == nil and probeRef:get() == nil
 							and captureRef:get() == nil then
-						buildRef:set(build.start(checked))
+						kept.build = build.start(checked)
+						buildRef:set(kept.build)
 						buildViewState:set("start")
 					end
 				end,
@@ -602,6 +614,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 
 	local function resetCheck()
+		kept.check, kept.build = nil, nil
 		buildRef:set(nil)
 		buildViewState:set(nil)
 		checkRef:set(nil)
@@ -638,6 +651,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				end
 			end
 		end
+		kept.prices = prices
 		priceState:set(prices)
 	end
 
@@ -648,6 +662,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		setSettings(change)
 		resetCheck()
+		kept.plan = nil
 		planState:set(nil)
 		showState:set(false)
 		workRef:set(nil)
@@ -696,6 +711,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			platform = settings.platform, margin = SURVEY_MARGIN, retries = 0, slowestStepUs = {},
 			planUs = 0, planFrames = 0 })
 		resetCheck()
+		kept.plan = nil
 		planState:set(nil)
 		showState:set(false)
 		errorState:set(false)
@@ -851,6 +867,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			nextGeneration = nextGeneration + 1
 			generationState:set(nextGeneration)
 			resetCheck()
+			kept.plan, kept.generation = plan, nextGeneration
 			planState:set(plan)
 			pricesFor(work.track, plan)
 			workRef:set(nil)
@@ -909,6 +926,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		if work.check.done then
 			checkRef:set(nil)
 			checkDoneState:set(nil)
+			kept.check = work.check
 			checkState:set(work.check)
 		end
 	end
@@ -1132,6 +1150,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		label = _("Electrified"),
 		value = electrified and 1 or 0,
 		onValueChange = function(v : integer)
+			if building() then
+				return
+			end
 			setSettings(function(s : Settings) s.electrified = v == 1 end)
 			-- A check with the game was for the other track.
 			resetCheck()
