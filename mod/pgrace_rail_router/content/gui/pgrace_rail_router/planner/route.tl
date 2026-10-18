@@ -60,6 +60,12 @@ local SIMPLIFY_SHARE = 0.6
 -- (metres; see pathGuard): more, and it has climbed a hill or dropped into a hollow the search went round, where it
 -- would need a tunnel, a bridge or a cutting the search didn't pay for. A starting value, tuned in-game.
 local MAX_GROUND_DIFF = 4.0
+-- How far smoothed track may run along track cells the grid path didn't use (metres; see pathGuard): two cells, and at
+-- least MAX_ALONG. Less is a crossing, bridged like any; more runs along an existing line, which the profile would
+-- bridge lengthwise (a 1.1 km bridge where fitting 1500 m curves dropped a leg's jog round one). Barring any such
+-- cells cost two Fastest regression routes two tight curves each.
+local MAX_ALONG_CELLS = 2
+local MAX_ALONG = 200.0
 -- For progress: a station site counts as 1 unit of work, a leg as this many, and a scout (per round) as this many.
 local LEG_WEIGHT = 10
 local SCOUT_WEIGHT = 2
@@ -606,7 +612,8 @@ end
 
 -- Whether track at a point stays on the kind of ground the grid path had, so that smoothing doesn't take it where
 -- the search chose not to go. clear(p, from, to) takes q, the point of the path line path[from..to] nearest to p,
--- and is true when p is inside the grid and off blocked cells, over water only where q is, and its ground is within
+-- and is true when p is inside the grid and off blocked cells, over water only where q is, off track cells q isn't on
+-- for more than a short crossing, and its ground is within
 -- MAX_GROUND_DIFF of the uniform slope across the path at q. That slope comes from the mirror image of p, q' = 2q − p:
 -- on any plane the rise from q to p equals the rise from q' to q, so h(p) − 2h(q) + h(q') is zero on a tilted plane
 -- (bilinear heights are exact there) and measures only the bend in the ground across the path, at the scale of the
@@ -614,7 +621,8 @@ end
 -- offset on a plain incline.
 -- Track also keeps off the stations' platforms and approaches (`footprint`), except next to the leg's ends (within
 -- END_POINTS path points of them), where it runs into its own stations.
-local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean}) : function(p : Pt, from : integer,
+local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean}, alongFree : {integer : boolean})
+		: function(p : Pt, from : integer,
 		to : integer) : boolean
 	local n = #path
 	-- The longest step between neighbouring path points: the nearest-point search skips ahead by it.
@@ -628,6 +636,10 @@ local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean})
 	-- leg, and a table per call made a leg's curves allocate most of a megabyte.
 	local qp : Pt = { x = 0, y = 0 }
 	local mirror : Pt = { x = 0, y = 0 }
+	-- The run of consecutive checks on track cells the path didn't use (see below): the last such point, and the
+	-- length so far.
+	local offX, offY, offRun : number, number, number = nil, nil, 0.0
+	local maxAlong = math.max(MAX_ALONG_CELLS * g.cell, MAX_ALONG)
 	local function nearest(p : Pt, from : integer, to : integer) : integer
 		from, to = math.max(1, from), math.min(n, to)
 		if hint < from or hint > to then
@@ -691,6 +703,28 @@ local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean})
 		if g.water[cell] and not grid.waterAt(g, qp) then
 			return false
 		end
+		-- Track cells the path didn't use: a short crossing is fine (the profile bridges it), but no run along them,
+		-- where the profile would bridge the line lengthwise. The checks come in order along each candidate piece, a
+		-- quarter cell apart, so consecutive ones (no farther apart than half a cell) make a run; a stretch's own cells
+		-- (alongFree) are free.
+		if g.track[cell] and not (alongFree ~= nil and alongFree[cell]) then
+			local tx, ty = grid.cellOf(g, qp)
+			if not g.track[grid.index(g, tx, ty)] then
+				if offX ~= nil and math.abs(px - offX) + math.abs(py - offY) <= g.cell / 2 then
+					offRun = offRun + math.sqrt((px - offX) * (px - offX) + (py - offY) * (py - offY))
+				else
+					offRun = 0
+				end
+				offX, offY = px, py
+				if offRun > maxAlong then
+					return false
+				end
+			else
+				offX = nil
+			end
+		else
+			offX = nil
+		end
 		mirror.x, mirror.y = qx * 2 - px, qy * 2 - py
 		local bend = grid.heightAt(g, p) - 2 * grid.heightAt(g, qp) + grid.heightAt(g, mirror)
 		return math.abs(bend) <= MAX_GROUND_DIFF
@@ -699,14 +733,14 @@ end
 
 -- Building a leg takes three steps, so no frame takes them all (in-game one took 14.7 ms): simplifying the path
 -- (the guard's checks along each candidate straight are the dearest part), filleting it, and sampling its heights.
-local function simplifyLeg(input : Input, a : Station, b : Station, path : {Pt},
+local function simplifyLeg(input : Input, alongFree : {integer : boolean}, a : Station, b : Station, path : {Pt},
 		taken : {integer : boolean}, footprint : {integer : boolean}) : PgraceRailRouterRoute.Simplified
 	local g, w = input.grid, input.weights
 	local aEnd, aApproach = stationEnds(input, a, true, taken, b)
 	local bEnd, bApproach = stationEnds(input, b, false, taken, a)
 	-- Simplifying and filleting are guarded, so the track keeps to the ground the path chose (off water, hillsides
 	-- and buildings it went round), checked every quarter cell.
-	local clear = pathGuard(g, path, footprint)
+	local clear = pathGuard(g, path, footprint, alongFree)
 	local step = g.cell / 4
 	local probe : Pt = { x = 0, y = 0 }
 	local function straightOnPath(i : integer, j : integer) : boolean
@@ -1168,7 +1202,7 @@ local function stepResite(job : Job, maxExpansions : integer)
 			from, to = candidate, next
 		end
 		if leg.simplified == nil then
-			leg.simplified = simplifyLeg(input, from, to, leg.path, leg.taken, rs.avoid)
+			leg.simplified = simplifyLeg(input, job.alongFree, from, to, leg.path, leg.taken, rs.avoid)
 			return
 		end
 		local fitted = stepFit(input, leg.simplified, leg.fitting)
@@ -1534,7 +1568,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 	end
 	if job.path ~= nil then
 		if job.simplified == nil then
-			job.simplified = simplifyLeg(input, a, b, job.path, job.taken, job.footprint)
+			job.simplified = simplifyLeg(input, job.alongFree, a, b, job.path, job.taken, job.footprint)
 			return false
 		end
 		if job.fitted == nil then

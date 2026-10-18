@@ -1186,3 +1186,24 @@ t.test("route: with turns spaced for a wide radius, legs leave an existing stati
 	-- existing line would run on, and eases across to our straight 10 m off by the stretch's far end; the cell holding
 	-- the existing track's last metres counts as track, and the profile bridges it.)
 end)
+
+t.test("route: a leg doesn't run on top of the existing line beyond the station's stretch", function()
+	-- B's existing line runs on west along y = 0 past its stretch, 2 km from the station in all, towards A.
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	local g = markTrack(flatGrid(), station, snap)
+	for x = 920, 1920, 10 do
+		local ix, iy = grid.cellOf(g, { x = x, y = 0 })
+		g.track[grid.index(g, ix, iy)] = true
+	end
+	-- Turns spaced for a wide radius, where leaving the line's axis costs the most (with Fastest's fallback to a
+	-- freely turning search: spaced turns alone can't jog the one row the scouted A leaves the leg).
+	local plan = runExisting({ town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) }, 2, station, snap,
+		{ grid = g, weights = withWeights({ minRadius = 1500, minSearchRadius = 220 }) })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[2].existing == station, "existing")
+	for __, span in ipairs(plan.legs[1].spans) do
+		if span.kind == "bridge" then
+			t.ok(span.s1 - span.s0 <= 300, ("a bridge of %.0f m: the leg runs along the line"):format(span.s1 - span.s0))
+		end
+	end
+end)
