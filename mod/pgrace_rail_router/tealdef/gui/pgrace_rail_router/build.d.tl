@@ -27,6 +27,18 @@ global record PgraceRailRouterBuild
 		nodeTrack : {integer : integer}
 	end
 
+	-- A way for a station's road to reach the streets: "dead end" (continued straight on), "node" (a T at a node
+	-- along a street) or "split" (a T partway along a piece, at parameter u, split there first; node is set once it is).
+	record RoadTarget
+		kind : string
+		p : PgraceRailRouterNetwork.Pt3
+		-- The way the road runs as it arrives.
+		arrive : PgraceRailRouterNetwork.Pt3
+		node : PgraceRailRouterNetwork.Pt3
+		piece : integer
+		u : number
+	end
+
 	record Build
 		check : PgraceRailRouterBuilder.Check
 		-- "stations", "track", "roads", "done" or "failed"
@@ -49,6 +61,8 @@ global record PgraceRailRouterBuild
 		roadRepair : {integer}
 		-- The street node a road was just joined to: its pieces are queued for repair on the next step.
 		roadJunction : integer
+		-- A street split for the current station's road: the road to its new node comes next.
+		roadTarget : RoadTarget
 		-- PROBE (remove before release): the junction just repaired, its lane connections logged on the next step.
 		roadRepaired : integer
 	end

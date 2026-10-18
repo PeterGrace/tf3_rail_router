@@ -229,6 +229,38 @@ end
 -- 9.5 m; the planner keeps 10 m (grid.JOINT_CLEARANCE), and its 100 m cells let 9.8 m through.
 local JOINT_MIN = 9.5
 
+-- A street in pieces at parameters us (ascending), new nodes -k-1..: the engine's replaceSegment proposal edited
+-- (it can't be dry-run: the Bus Loops way, probe P9). Its lanes need repairing once sent.
+local function splitStreet(entity : integer, street : Engine.Component.BaseEdge, h : Hermite, us : {number}) : Proposal
+	local rep = api.engine.util.proposal.replaceSegment(entity)
+	local sp = rep.proposal
+	local template = sp.addedSegments[1]
+	local nodes : {Proposal.NodeAndEntity} = {}
+	local pieces : {Proposal.SegmentAndEntity} = {}
+	local rest = h
+	local restU = 0.0
+	local prev = street.node0 as integer
+	local k = #us
+	for j, u in ipairs(us) do
+		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
+		local n = api.type.NodeAndEntity.new()
+		n.entity = -(k + 1 + j)
+		n.comp.position = v3(here.p1)
+		table.insert(nodes, n)
+		local piece = streetPiece(prev, n.entity, here, street, template)
+		piece.entity = -j
+		table.insert(pieces, piece)
+		prev, rest, restU = n.entity, after, u
+	end
+	local last_ = streetPiece(prev, street.node1 as integer, rest, street, template)
+	last_.entity = -(k + 1)
+	table.insert(pieces, last_)
+	sp.addedNodes = nodes
+	sp.addedSegments = pieces
+	sp.nodeConfigsToAdd = {}
+	return rep
+end
+
 -- One crossed street: where the chunk's edges cross it; near an end node, that node is used; elsewhere the street is
 -- split (sent; its lanes are then repaired before the next street).
 local function stepStreet(b : Build, first : integer, last : integer)
@@ -280,34 +312,11 @@ local function stepStreet(b : Build, first : integer, last : integer)
 	table.sort(splits, function(x : {integer, number, number}, y : {integer, number, number}) : boolean
 		return x[3] < y[3]
 	end)
-	-- The street in pieces at each split, new nodes -k-1..: the engine's replaceSegment proposal edited (it can't
-	-- be dry-run: the Bus Loops way, probe P9).
-	local rep = api.engine.util.proposal.replaceSegment(entity)
-	local sp = rep.proposal
-	local template = sp.addedSegments[1]
-	local nodes : {Proposal.NodeAndEntity} = {}
-	local pieces : {Proposal.SegmentAndEntity} = {}
-	local rest = h
-	local restU = 0.0
-	local prev = street.node0 as integer
-	local k = #splits
-	for j, sp_ in ipairs(splits) do
-		local here, after = network.splitHermite(rest, (sp_[3] - restU) / (1 - restU))
-		local n = api.type.NodeAndEntity.new()
-		n.entity = -(k + 1 + j)
-		n.comp.position = v3(here.p1)
-		table.insert(nodes, n)
-		local piece = streetPiece(prev, n.entity, here, street, template)
-		piece.entity = -j
-		table.insert(pieces, piece)
-		prev, rest, restU = n.entity, after, sp_[3]
+	local us : {number} = {}
+	for __, sp_ in ipairs(splits) do
+		table.insert(us, sp_[3])
 	end
-	local last_ = streetPiece(prev, street.node1 as integer, rest, street, template)
-	last_.entity = -(k + 1)
-	table.insert(pieces, last_)
-	sp.addedNodes = nodes
-	sp.addedSegments = pieces
-	sp.nodeConfigsToAdd = {}
+	local rep = splitStreet(entity, street, h, us)
 	local at = network.hermiteAt(h, splits[1][3])
 	send(b, rep, at.x, at.y, function(res : WorldBuildProposalCommandData)
 		-- The new nodes, matched to the splits by place.
@@ -425,102 +434,21 @@ end
 
 -- Roads ----------------------------------------------------------------------------------------------------------
 
--- A road from each station's main building to the nearest street node that takes one, after the track: the game
--- links the building's sidewalks to a road ending in front of it. Never fails the build: a station left without one
--- is listed instead.
--- How far from the entrance a street node may be (metres), and how many of the nearest are tried.
+-- A road from each station's main building to the town's streets, after the track: the game links the building's
+-- sidewalks to a road ending in front of it. Never fails the build: a station left without one is listed instead.
+-- The road never meets a street at a kink: a corner joint made the game put a no-entry sign on it (every station,
+-- 2026-10-18). It continues a dead end straight on, or meets a street square to it as a T, at a node along it or
+-- partway along a piece, which is split there first.
+-- How far from the entrance a street may be (metres), and how many ways are dry-run.
 local ROAD_REACH = 300.0
-local ROAD_TRIES = 12
+local ROAD_TRIES = 16
 -- A street node this close to the entrance means the road is there already (a build carried on after a restart).
 local ROAD_SNAP = 3.0
--- How far behind the building's front a node may be (the cosine of the angle off straight out): one alongside is
+-- How far behind the building's front a street may be (the cosine of the angle off straight out): one alongside is
 -- tried (Mercer Island's nearest dead ends ended beside the station), one behind it isn't.
 local ROAD_SQUARE = -0.3
-
-local function streetNodesNear(p : Pt3, reach : number) : {Pt3}
-	local seen : {integer : boolean} = {}
-	local nodes : {Pt3} = {}
-	local streets = api.engine.system.streetSystem
-	for __, e in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(p.x, p.y), reach,
-			api.type.ComponentType.BASE_EDGE)) do
-		if api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) ~= nil then
-			local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-			if edge ~= nil and edge.type == api.type["enum"].BaseEdgeType.NORMAL then
-				for __, n in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
-					if not seen[n] then
-						seen[n] = true
-						local q = nodePos(n)
-						-- A dead end or a node along a street (a junction of three would need its fourth arm square to
-						-- the others), not a level crossing.
-						if q ~= nil and dist2(q, p) <= reach and #streets.getNodeStreetSegments(n) <= 2
-								and #streets.getNodeTrackSegments(n) == 0 then
-							table.insert(nodes, q)
-						end
-					end
-				end
-			end
-		end
-	end
-	table.sort(nodes, function(a : Pt3, c : Pt3) : boolean
-		return dist2(a, p) < dist2(c, p)
-	end)
-	return nodes
-end
-
--- A road from the entrance (leaving it outward) to an existing street node, typed like a street at that node; nil
--- if the node is behind the station. It meets a node along a street square to it, as a T, and a dead end either
--- straight on (`square` false), continuing the street, or square to it, as a corner: arriving at an angle, it
--- overlapped the street there (Collision, Mercer Island).
-local function roadProposal(e : Pt3, out : Pt3, node : Pt3, square : boolean) : SimpleProposal
-	local l = dist2(e, node)
-	local cx, cy = (node.x - e.x) / l, (node.y - e.y) / l
-	if cx * out.x + cy * out.y < ROAD_SQUARE then
-		return nil
-	end
-	local pieces = api.engine.system.streetSystem.getNodeStreetSegments(node.entity)
-	local piece = pieces[1] as integer
-	local street = api.engine.getComponent(piece, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-	local rep = api.engine.util.proposal.replaceSegment(piece)
-	if street == nil or rep == nil or #rep.proposal.addedSegments == 0 then
-		return nil
-	end
-	-- The street's way out of the node along this piece.
-	local ax, ay : number, number
-	if street.node0 as integer == node.entity then
-		ax, ay = -street.tangent0.x, -street.tangent0.y
-	else
-		ax, ay = street.tangent1.x, street.tangent1.y
-	end
-	local al = math.sqrt(ax * ax + ay * ay)
-	if al < 1e-6 then
-		return nil
-	end
-	ax, ay = ax / al, ay / al
-	-- The way the road runs as it reaches the node.
-	local dx, dy : number, number
-	if #pieces == 1 and not square then
-		dx, dy = -ax, -ay
-	else
-		-- Square to the street, from the entrance's side.
-		local px, py = -ay, ax
-		if px * (e.x - node.x) + py * (e.y - node.y) < 0 then
-			px, py = -px, -py
-		end
-		dx, dy = -px, -py
-	end
-	local dz = node.z - e.z
-	local h : Hermite = { p0 = e, p1 = node, t0 = { x = out.x * l, y = out.y * l, z = dz },
-		t1 = { x = dx * l, y = dy * l, z = dz } }
-	local n = api.type.NodeAndEntity.new()
-	n.entity = -2
-	n.comp.position = v3(e)
-	local seg = streetPiece(-2, node.entity, h, street, rep.proposal.addedSegments[1])
-	seg.entity = -1
-	local proposal = api.type.SimpleProposal.new()
-	proposal.streetProposal.nodesToAdd = { n }
-	proposal.streetProposal.edgesToAdd = { seg }
-	return proposal
-end
+-- A street piece is split for a T no closer than this to its ends (metres; the joint rule for level crossings).
+local SPLIT_END = 12.0
 
 -- PROBE (remove before release): a node's lane connections (BASE_NODE_CONFIG), as Bus Loops logged them.
 local function laneConnections(node : integer) : string
@@ -537,6 +465,162 @@ local function laneConnections(node : integer) : string
 	return n as integer < 0 and "none" or tostring(n)
 end
 
+local function unit(x : number, y : number) : number, number
+	local l = math.sqrt(x * x + y * y)
+	if l < 1e-9 then
+		return 0, 0
+	end
+	return x / l, y / l
+end
+
+-- Square to a street running (sx, sy), on the entrance's side of p, pointing at p (the way the road arrives).
+local function squareArrival(e : Pt3, p : Pt3, sx : number, sy : number) : Pt3
+	local px, py = unit(-sy, sx)
+	if px * (e.x - p.x) + py * (e.y - p.y) < 0 then
+		px, py = -px, -py
+	end
+	return { x = -px, y = -py, z = 0 }
+end
+
+local function isStreet(e : integer) : Engine.Component.BaseEdge
+	if api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) == nil then
+		return nil
+	end
+	local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+	if edge == nil or edge.type ~= api.type["enum"].BaseEdgeType.NORMAL then
+		return nil
+	end
+	return edge
+end
+
+-- Every way to reach the streets within reach of the entrance, nearest first: dead ends straight on, nodes along a
+-- street and points partway along a piece square to it. None behind the station, none at a level crossing.
+local function roadTargets(e : Pt3, out : Pt3, reach : number) : {PgraceRailRouterBuild.RoadTarget}
+	local streets = api.engine.system.streetSystem
+	local targets : {PgraceRailRouterBuild.RoadTarget} = {}
+	local seen : {integer : boolean} = {}
+	local function inFront(p : Pt3) : boolean
+		local cx, cy = unit(p.x - e.x, p.y - e.y)
+		return dist2(p, e) <= reach and cx * out.x + cy * out.y >= ROAD_SQUARE
+	end
+	for __, ent in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(e.x, e.y), reach,
+			api.type.ComponentType.BASE_EDGE)) do
+		local edge = isStreet(ent as integer)
+		if edge ~= nil then
+			for __, n in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
+				if not seen[n] then
+					seen[n] = true
+					local q = nodePos(n)
+					local pieces = streets.getNodeStreetSegments(n)
+					if q ~= nil and inFront(q) and #streets.getNodeTrackSegments(n) == 0 then
+						local first = isStreet(pieces[1] as integer)
+						if first ~= nil and (#pieces == 1 or #pieces == 2) then
+							-- The street's way out of the node along its first piece.
+							local ax, ay : number, number
+							if first.node0 as integer == n then
+								ax, ay = unit(-first.tangent0.x, -first.tangent0.y)
+							else
+								ax, ay = unit(first.tangent1.x, first.tangent1.y)
+							end
+							local arrive : Pt3
+							if #pieces == 1 then
+								arrive = { x = -ax, y = -ay, z = 0 }
+							else
+								arrive = squareArrival(e, q, ax, ay)
+							end
+							table.insert(targets, { kind = #pieces == 1 and "dead end" or "node", p = q, arrive = arrive,
+								node = q, piece = pieces[1] as integer })
+						end
+					end
+				end
+			end
+			-- The point of the piece nearest the entrance, if it's well clear of its ends.
+			local h : Hermite = { p0 = p3(edge.position0), p1 = p3(edge.position1), t0 = p3(edge.tangent0),
+				t1 = p3(edge.tangent1) }
+			local u = network.nearestParam(h, { x = e.x, y = e.y })
+			local p = network.hermiteAt(h, u)
+			if dist2(p, h.p0) >= SPLIT_END and dist2(p, h.p1) >= SPLIT_END and inFront(p)
+					and #streets.getNodeTrackSegments(edge.node0) == 0 then
+				local before = network.hermiteAt(h, math.max(0, u - 0.01))
+				local after = network.hermiteAt(h, math.min(1, u + 0.01))
+				table.insert(targets, { kind = "split", p = p, arrive = squareArrival(e, p, after.x - before.x,
+					after.y - before.y), piece = ent as integer, u = u })
+			end
+		end
+	end
+	table.sort(targets, function(x : PgraceRailRouterBuild.RoadTarget, y : PgraceRailRouterBuild.RoadTarget) : boolean
+		return dist2(x.p, e) < dist2(y.p, e)
+	end)
+	return targets
+end
+
+-- Whether a street node is within r of p.
+local function streetNodeNear(p : Pt3, r : number) : boolean
+	for __, ent in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(p.x, p.y), r + 1,
+			api.type.ComponentType.BASE_EDGE)) do
+		local edge = isStreet(ent as integer)
+		if edge ~= nil then
+			for __, n in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
+				local q = nodePos(n)
+				if q ~= nil and dist2(q, p) <= r then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+-- A road from the entrance (leaving it outward) to the target, arriving along t.arrive, joined to t.node, or ending
+-- at a new node at t.p (a split's dry run: it collides with that street only), typed like the target's street.
+local function roadProposal(e : Pt3, out : Pt3, t : PgraceRailRouterBuild.RoadTarget) : SimpleProposal
+	local street = api.engine.getComponent(t.piece, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+	local rep = api.engine.util.proposal.replaceSegment(t.piece)
+	if street == nil or rep == nil or #rep.proposal.addedSegments == 0 then
+		return nil
+	end
+	local l = dist2(e, t.p)
+	local dz = t.p.z - e.z
+	local h : Hermite = { p0 = e, p1 = t.p, t0 = { x = out.x * l, y = out.y * l, z = dz },
+		t1 = { x = t.arrive.x * l, y = t.arrive.y * l, z = dz } }
+	local nodes : {Proposal.NodeAndEntity} = {}
+	local n = api.type.NodeAndEntity.new()
+	n.entity = -2
+	n.comp.position = v3(e)
+	table.insert(nodes, n)
+	local far = -3
+	if t.node ~= nil then
+		far = t.node.entity
+	else
+		local m = api.type.NodeAndEntity.new()
+		m.entity = -3
+		m.comp.position = v3(t.p)
+		table.insert(nodes, m)
+	end
+	local seg = streetPiece(-2, far, h, street, rep.proposal.addedSegments[1])
+	seg.entity = -1
+	local proposal = api.type.SimpleProposal.new()
+	proposal.streetProposal.nodesToAdd = nodes
+	proposal.streetProposal.edgesToAdd = { seg }
+	return proposal
+end
+
+-- A split's dry run is good if all it hit is the street to be split (and its nodes).
+local function onlyHits(messages : {string}, data : ProposalData, piece : integer, street : Engine.Component.BaseEdge)
+		: boolean
+	for __, m in ipairs(messages) do
+		if m:lower() ~= "collision" then
+			return false
+		end
+	end
+	for __, c in ipairs(builder.collisions(data)) do
+		if c.entity ~= piece and c.entity ~= street.node0 as integer and c.entity ~= street.node1 as integer then
+			return false
+		end
+	end
+	return true
+end
+
 local function stepRoad(b : Build)
 	local check = b.check
 	local station = check.plan.stations[b.road]
@@ -549,65 +633,115 @@ local function stepRoad(b : Build)
 			table.insert(b.roadsMissing, name)
 			log(("road to station %d (%s): none, %s"):format(b.road, name, missing))
 		end
+		b.roadTarget = nil
 		b.road = b.road + 1
 	end
-	if #streetNodesNear(e, ROAD_SNAP) > 0 then
+	local function sendRoad(t : PgraceRailRouterBuild.RoadTarget, proposal : SimpleProposal)
+		b.waiting = true
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(proposal, builder.newContext(), false, true),
+			function(res : WorldBuildProposalCommandData, success : boolean)
+				pcall(function() : boolean
+					b.waiting = false
+					if not success then
+						next_("the game refused it")
+						return true
+					end
+					b.charged = b.charged + math.floor(tonumber(res.resultProposalData.costs) or 0)
+					b.roads = b.roads + 1
+					-- The junction's lanes, from the next step: in the callback the node listed only two of its
+					-- three pieces, and the junction was left with a no-entry sign (Antelope).
+					b.roadJunction = t.node.entity
+					log(("road to station %d (%s) built"):format(b.road, name))
+					next_()
+					return true
+				end)
+			end)
+	end
+	-- A split street: now the road to its new node.
+	local t = b.roadTarget
+	if t ~= nil then
+		local proposal = roadProposal(e, out, t)
+		local ok, __, messages = false, 0, {} as {string}
+		if proposal ~= nil then
+			ok, __, messages = builder.dryRun(proposal)
+		end
+		log(("road to station %d (%s) to the split's node %d: %s"):format(b.road, name, t.node.entity,
+			ok and "clean" or table.concat(messages, "; ")))
+		if ok then
+			sendRoad(t, proposal)
+		else
+			next_("the road to the split street wasn't clean")
+		end
+		return
+	end
+	if streetNodeNear(e, ROAD_SNAP) then
 		log(("road to station %d (%s) already there"):format(b.road, name))
 		b.roads = b.roads + 1
 		next_()
 		return
 	end
-	local nodes = streetNodesNear(e, ROAD_REACH)
+	local targets = roadTargets(e, out, ROAD_REACH)
 	local tried = 0
-	local tries : {{Pt3, boolean}} = {}
-	for __, node in ipairs(nodes) do
-		table.insert(tries, { node, true })
-		if #api.engine.system.streetSystem.getNodeStreetSegments(node.entity) == 1 then
-			table.insert(tries, { node, false })
-		end
-	end
-	for __, try in ipairs(tries) do
-		local node = try[1]
+	for __, target in ipairs(targets) do
 		if tried >= ROAD_TRIES then
 			break
 		end
-		local made, proposal = pcall(roadProposal, e, out, node, try[2])
+		local made, proposal = pcall(roadProposal, e, out, target)
 		if made and proposal ~= nil then
 			tried = tried + 1
 			local ok, cost, messages, __, data = builder.dryRun(proposal as SimpleProposal)
+			local street = api.engine.getComponent(target.piece, api.type.ComponentType.BASE_EDGE) as
+				Engine.Component.BaseEdge
+			if target.kind == "split" and not ok and street ~= nil then
+				ok = onlyHits(messages, data, target.piece, street)
+			end
 			local hits : {string} = {}
 			for __, c in ipairs(builder.collisions(data)) do
 				table.insert(hits, ("%s %d"):format(c.what, c.entity))
 			end
-			log(("road to station %d (%s) from node %d (%s), %.0f m: %s%s"):format(b.road, name, node.entity,
-				try[2] and "square" or "straight on", dist2(e, node),
+			log(("road to station %d (%s), %s %s, %.0f m: %s%s"):format(b.road, name, target.kind,
+				target.node ~= nil and tostring(target.node.entity) or tostring(target.piece), dist2(e, target.p),
 				ok and ("clean, " .. tostring(cost)) or table.concat(messages, "; "),
 				#hits > 0 and (" (" .. table.concat(hits, ", ") .. ")") or ""))
-			if ok then
+			if ok and target.kind ~= "split" then
+				sendRoad(target, proposal as SimpleProposal)
+				return
+			elseif ok then
+				-- Split the street first; the road goes to the new node on the next step.
+				local h : Hermite = { p0 = p3(street.position0), p1 = p3(street.position1), t0 = p3(street.tangent0),
+					t1 = p3(street.tangent1) }
+				local rep = splitStreet(target.piece, street, h, { target.u })
 				b.waiting = true
-				api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(proposal as SimpleProposal, builder.newContext(),
-					false, true), function(res : WorldBuildProposalCommandData, success : boolean)
-					pcall(function() : boolean
-						b.waiting = false
-						if not success then
-							next_("the game refused it")
+				api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(rep, builder.newContext(), false, true),
+					function(res : WorldBuildProposalCommandData, success : boolean)
+						pcall(function() : boolean
+							b.waiting = false
+							local best : Pt3 = nil
+							if success then
+								for __, n in ipairs(res.proposal.proposal.addedNodes) do
+									local p = nodePos(n.entity as integer)
+									if p ~= nil and (best == nil or dist2(p, target.p) < dist2(best, target.p)) then
+										best = p
+									end
+								end
+							end
+							if best == nil or dist2(best, target.p) > NODE_MATCH then
+								next_("the street couldn't be split")
+								return true
+							end
+							log(("road to station %d (%s): street %d split at node %d"):format(b.road, name,
+								target.piece, best.entity))
+							target.node = best
+							target.piece = api.engine.system.streetSystem.getNodeStreetSegments(best.entity)[1] as integer
+							b.roadTarget = target
 							return true
-						end
-						b.charged = b.charged + math.floor(tonumber(res.resultProposalData.costs) or 0)
-						b.roads = b.roads + 1
-						-- The junction's lanes, from the next step: in the callback the node listed only two of its
-						-- three pieces, and the junction was left with a no-entry sign (Antelope).
-						b.roadJunction = node.entity
-						log(("road to station %d (%s) built"):format(b.road, name))
-						next_()
-						return true
+						end)
 					end)
-				end)
 				return
 			end
 		end
 	end
-	next_(#nodes == 0 and ("no street within %.0f m"):format(ROAD_REACH)
+	next_(#targets == 0 and ("no street within %.0f m"):format(ROAD_REACH)
 		or ("%d roads tried, none clean"):format(tried))
 end
 
