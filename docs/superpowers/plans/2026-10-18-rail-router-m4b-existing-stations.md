@@ -510,34 +510,45 @@ The caller (Task 9) snapshots each existing station with `survey.trackSnapshot(s
 existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
 
 - [ ] **Step 1: Declare.**
-  - `Input.existing : {integer : PgraceRailRouterExisting.Result}`, keyed by stop index; nil means no existing
-    station.
-  - `Input.existingStations : {integer : PgraceRailRouterExisting.Station}`.
+  - `Input.snapshots : {integer : PgraceRailRouterExisting.Snapshot}`, keyed by stop index, alongside
+    `Input.existingStations : {integer : PgraceRailRouterExisting.Station}`; nil means no existing station. The route
+    runs `existing.analyse` itself, because the side each end is approached from depends on where the neighbouring
+    stops lie, which the route knows.
   - `Input.radius : number`, the turnout radius.
-  - `Station.existing : PgraceRailRouterExisting.Station`, and `Station.junctions : {integer : PgraceRailRouterJunction.Layout}`
-    keyed by end (±1). Also `Station.endOf : {boolean : integer}`: forward=true (the leg leaving) and false (the
-    leg arriving), mapped to an end ±1.
+  - `Station.existing : PgraceRailRouterExisting.Station`, and keyed by end (±1): `Station.ends : {integer :
+    PgraceRailRouterExisting.End}`, `Station.junctions : {integer : PgraceRailRouterJunction.Layout}` and
+    `Station.sides : {integer : number}` (the side of outward our line comes from; Task 7 needs it). Also
+    `Station.endOf : {boolean : integer}`: forward=true (the leg leaving) and false (the leg arriving), mapped to an
+    end ±1.
   - `Plan.notes : {string}`, the fallbacks to report.
 - [ ] **Step 2: Sites phase.** When `input.existingStations[i] ~= nil`, check the ends before starting a finder:
   - **Leg in:** the end whose outward points towards the previous stop is `k = sign(dot(prev.pos − centre, dir))`.
-  - **Leg out:** the same for the next stop.
-  - **In the middle of the route**, the two ends must differ. Each must be usable in `input.existing[i]`, and must
-    get a `junction.fit(end.length, input.radius, side, end.signals)` that isn't nil, where side is which side of
-    outward the neighbour lies on: `sign(cross(outward, neighbour − origin))`.
+  - **Leg out:** the same for the next stop. A stop at an end of the route uses its one end.
+  - **Sides:** for each end k used, outward = k × dir, and `side[k] = sign(cross(outward, neighbour.pos − centre))`
+    (+1 left; 0 counts as +1), the neighbour being the previous stop for the leg in and the next for the leg out.
+  - **In the middle of the route**, the two ends must differ. Then `existing.analyse(station, input.snapshots[i],
+    side, input.radius)`; each end used must be usable, and must get a
+    `junction.fit(end.length, input.radius, side[k], end.signals)` that isn't nil.
 
-  If all hold, insert `{ town, site = { centre, dir, distance }, z, existing = st, junctions = {...}, endOf = {...} }`
-  and skip the finder. Otherwise append a note ("The station in X has no room for a junction (needs N m of
-  straight double track); a new station was planned.") and run the finder as now.
+  If all hold, insert `{ town, site = { centre, dir, distance }, z, existing = st, ends, junctions, sides, endOf }`
+  and skip the finder. Otherwise append a note and run the finder as now. The note is "The station in X has no room
+  for a junction (needs N m of straight double track); a new station was planned." (N = `junction.needed(radius)`
+  in whole metres) for no double track, a short one or no fit; "The station in X can't be used: the tracks at the Y
+  end run left-handed; …" (Y the neighbour that end faces); or "… can't be used: both legs would use the same
+  end; …".
 - [ ] **Step 3: Turning and re-siting skip existing stations.** In the "turn" phase and in `stepResite`, add
   `if station.existing ~= nil then <advance to the next station> end` at the top of each per-station step.
 - [ ] **Step 4: `stationEnds` for an existing station.** For an existing station on the leg end `forward`, take
   `k = station.endOf[forward]`, `e = existing end k`, and `j = station.junctions[k]`:
   - `platformEnd = e.origin + e.dir × j.approachX + left(e.dir) × 10 × side`, where left(d) = (−d.y, d.x);
-  - `approach = platformEnd + e.dir × JUNCTION_APPROACH` (50 m);
-  - return platformEnd, approach, approach, so it has no extension.
+  - `approach = platformEnd + e.dir × Input.approach` (as at a station of ours: the leg's search assumes that much
+    straight behind a corner at the approach point; with 50 m and no extension a leg turned 30° there at 213 m, below
+    the radius);
+  - the extension beyond it as for a station of ours (room to turn, capped at a quarter of the way to the
+    neighbouring station, pulled back until clear), along e.dir.
 
   The leg's first (or last) straight piece then runs along our axis, 10 m off the existing one. The heights use
-  `e.z + e.grade × x`.
+  `e.z + e.grade × x`: the leg's end height is the track's at the approach start.
 - [ ] **Step 5: Footprints.** `addFootprint` and `takePlatforms` for an existing station add nothing. Its cells are
   already track, which the grid treats as crossings or blocks.
 - [ ] **Step 6: Tests** in `tests/route_test.lua`, on a synthetic grid (see that file's helpers) with three stops:
@@ -618,8 +629,9 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
 
 - [ ] **Step 1: Find route.** When the player clicks Find route (main thread), for each picked stop call
   `survey.existingStations(town, 1500)`. Take the station nearest the centre (one per town in 4b-1), then
-  `survey.trackSnapshot` and `existing.analyse` with sides from the neighbours. Pass them as
-  `Input.existingStations` / `Input.existing`, and `Input.radius = turnoutRadius(track)`.
+  `survey.trackSnapshot`. Pass them as `Input.existingStations` / `Input.snapshots` (the route runs
+  `existing.analyse` with sides from the neighbours), and `Input.radius = turnoutRadius(track)`. For the stop list's
+  "usable" check before planning, the window may run `existing.analyse` itself with sides from the picked stops.
 - [ ] **Step 2: The stop list.** A town with a usable station shows "use the existing station in {town}"
   (ticked by default; `Settings.useExisting : {integer : boolean}`, default true) under its stop line. Unticked,
   it isn't passed.

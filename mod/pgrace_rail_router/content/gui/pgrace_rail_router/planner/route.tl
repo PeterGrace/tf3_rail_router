@@ -4,6 +4,8 @@ local stations = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner
 local smooth = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/smooth.tl" as PgraceRailRouterSmooth
 local profile = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/profile.tl" as PgraceRailRouterProfile
 local speed = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/speed.tl" as PgraceRailRouterSpeed
+local existing = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/existing.tl" as PgraceRailRouterExisting
+local junction = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/junction.tl" as PgraceRailRouterJunction
 
 local route : PgraceRailRouterRoute = {}
 
@@ -111,6 +113,14 @@ local RESITE_TIME_LOST = 10.0
 local RESITE_GAIN = 0.02
 -- Re-siting looks this much farther from the town's centre than the old site (metres).
 local RESITE_MOVE = 300.0
+-- At an existing station's junction, our two tracks run at 7.5 and 12.5 m off the existing axis (junction.tl), so
+-- a leg's end sits on their midline, this far off.
+local JUNCTION_OFFSET = 10.0
+
+-- −1 for a negative number, else +1.
+local function sign(v : number) : number
+	return v < 0 and -1 or 1
+end
 
 -- The direction of travel at stop i: from the previous stop towards the next.
 local function stopDir(stops : {Town}, i : integer) : Pt
@@ -182,6 +192,31 @@ local function extensionLength(input : Input, radius : number) : number
 	return r * math.tan(math.pi / 16)
 end
 
+-- Where a leg meets an existing station's junction, on the leg's leaving side (forward = true) or its arriving side:
+-- the junction's approach start, on our tracks' midline (in place of a platform end), and the approach's length
+-- (Input.approach) out along the existing axis from it (in place of the approach point), as at a station of ours, so
+-- the leg's search's room behind its first corner holds; the unit outward direction; and the track's heights at the
+-- two points, on the existing stretch's grade.
+local function junctionEnds(input : Input, station : Station, forward : boolean) : Pt, Pt, Pt, number, number
+	local k = station.endOf[forward]
+	local e, j = station.ends[k], station.junctions[k]
+	local left : Pt = { x = -e.dir.y, y = e.dir.x }
+	local x, a = j.approachX, approachOf(input)
+	local platformEnd = geo.add(geo.add(e.origin, geo.scale(e.dir, x)), geo.scale(left, JUNCTION_OFFSET * station.sides[k]))
+	local approach = geo.add(platformEnd, geo.scale(e.dir, a))
+	return platformEnd, approach, e.dir, e.z + e.grade * x, e.z + e.grade * (x + a)
+end
+
+-- The track's height where a leg leaves (forward = true) or arrives at a station: its own height, or at an existing
+-- station the junction's.
+local function endHeight(input : Input, station : Station, forward : boolean) : number
+	if station.existing ~= nil then
+		local __, __, __, z = junctionEnds(input, station, forward)
+		return z
+	end
+	return station.z
+end
+
 -- Where a station's platforms end, where its straight approach ends, and where the room to turn beyond it ends
 -- (extensionLength), on its leaving side (forward = true) or its arriving side.
 -- The room to turn takes at most a quarter of the way to the neighbouring station on that side (`other`: the
@@ -197,6 +232,25 @@ end
 local function stationEnds(input : Input, station : Station, forward : boolean, taken : {integer : boolean},
 		other : Station, radius ?: number) : Pt, Pt, Pt
 	local g = input.grid
+	if station.existing ~= nil then
+		-- At an existing station's junction alike, from the junction's approach (junctionEnds) out along its axis; the
+		-- way ahead to the neighbouring station measured from that approach.
+		local platformEnd, approach, out = junctionEnds(input, station, forward)
+		local ext = extensionLength(input, radius)
+		if other ~= nil then
+			local ahead = geo.dot(geo.sub(other.site.centre, approach), out)
+			ext = math.min(ext, (ahead - (input.platformLength / 2 + approachOf(input))) / 4)
+		end
+		local none : {integer : boolean} = {}
+		while ext > 0 do
+			local extension = geo.add(approach, geo.scale(out, ext))
+			if straightClear(input, approach, extension, taken, none) and leavable(g, platformEnd, extension, out) then
+				return platformEnd, approach, extension
+			end
+			ext = ext - g.cell / 2
+		end
+		return platformEnd, approach, approach
+	end
 	local sign = forward and 1 or -1
 	local half = input.platformLength / 2
 	local c, d = station.site.centre, station.site.dir
@@ -235,8 +289,12 @@ local function turnRoom(input : Input, station : Station, forward : boolean, tak
 end
 
 -- Adds the cells (by grid index) under a station's platforms and approaches to `cells`: legs' searches keep off
--- them (their own ends' cells aside), so a line that loops round never crosses a station's track.
+-- them (their own ends' cells aside), so a line that loops round never crosses a station's track. An existing
+-- station adds none: its cells are track already, which the search crosses or keeps off as any track.
 local function addFootprint(input : Input, station : Station, cells : {integer : boolean})
+	if station.existing ~= nil then
+		return
+	end
 	local g = input.grid
 	local reach = input.platformLength / 2 + approachOf(input)
 	local c, dir = station.site.centre, station.site.dir
@@ -261,8 +319,12 @@ local function footprints(input : Input, plan : Plan, i : integer, site : Statio
 	return cells
 end
 
--- Adds a station's platform cells (by grid index) to `taken`, so later sites keep off them.
+-- Adds a station's platform cells (by grid index) to `taken`, so later sites keep off them (none for an existing
+-- station, as addFootprint).
 local function takePlatforms(input : Input, station : Station, taken : {integer : boolean})
+	if station.existing ~= nil then
+		return
+	end
 	for i in pairs(platformCells(input, station)) do
 		taken[i] = true
 	end
@@ -769,7 +831,7 @@ local function startHeights(input : Input, a : Station, b : Station, fitted : Pg
 	end
 	local fit = profile.start(s, ground, water, { maxGrade = w.maxGrade, bridgeAbove = w.bridgeAbove,
 		tunnelBelow = w.tunnelBelow, bridgeCostFactor = w.bridgeCostFactor, tunnelCostFactor = w.tunnelCostFactor,
-		zStart = a.z, zEnd = b.z, crossing = crossing })
+		zStart = endHeight(input, a, true), zEnd = endHeight(input, b, false), crossing = crossing })
 	return { fitted = fitted, samples = samples, blockedSamples = blockedSamples, fit = fit }
 end
 
@@ -835,8 +897,13 @@ local function summarise(input : Input, plan : Plan) : Summary
 			sum.estimate = sum.estimate + l * w.costPerMetre * factor
 		end
 	end
-	local platforms = #plan.stations * input.platformLength
-	sum.length = sum.length + platforms
+	local ours = 0
+	for __, station in ipairs(plan.stations) do
+		if station.existing == nil then
+			ours = ours + 1
+		end
+	end
+	sum.length = sum.length + ours * input.platformLength
 	-- The platforms' track is the stations' (priced with them), so not in the estimate.
 	return sum
 end
@@ -1109,7 +1176,7 @@ end
 -- A fitted leg that loops, or hooks round into or out of a station, or has a curve the game can't build, or (time
 -- priced) loses more than RESITE_TIME_LOST to its curves: perhaps a station faces the wrong way for it. Weigh other
 -- directions for one by their legs' costs: the one nearer the curve that can't be built (or for a slow leg, its
--- tightest curve), else the one the leg arrives at; each station once.
+-- tightest curve), else the one the leg arrives at; each station once, and never an existing one.
 local function checkLeg(job : Job, a : Station, b : Station)
 	local input = job.input
 	local slow = timePriced(input.weights) and legTimeLost(input, job.fitted) > RESITE_TIME_LOST
@@ -1125,17 +1192,81 @@ local function checkLeg(job : Job, a : Station, b : Station)
 		first, second = job.legIndex, job.legIndex + 1
 	end
 	for __, i in ipairs({ first, second }) do
-		if not job.resited[i] then
+		if not job.resited[i] and job.result.stations[i].existing == nil then
 			startResite(job, i)
 			return
 		end
 	end
 end
 
+-- Stop i joined at its existing station (input.existingStations[i]) rather than a station of ours: the leg in uses the
+-- end facing the previous stop, the leg out the end facing the next (different ends, in the middle of the line). Each
+-- end is read from the station's snapshot (existing.analyse, told which side of it the neighbour lies on) and must
+-- be usable and fit a junction (junction.fit). nil, and a note saying why, where it can't be used. Pure Lua over the
+-- snapshot (a few hundred pieces at most): a millisecond or two, once per stop.
+local function existingStop(input : Input, i : integer) : Station, string
+	local st, town = input.existingStations[i], input.stops[i]
+	local dir = geo.norm(st.dir)
+	local neighbours : {boolean : Town} = {}
+	neighbours[false], neighbours[true] = input.stops[i - 1], input.stops[i + 1]
+	local endOf : {boolean : integer} = {}
+	local sides : {integer : number} = {}
+	for __, forward in ipairs({ false, true }) do
+		local other = neighbours[forward]
+		if other ~= nil then
+			local towards = geo.sub(other.pos, st.centre)
+			local k = math.floor(sign(geo.dot(towards, dir)))
+			local outward = geo.scale(dir, k)
+			endOf[forward], sides[k] = k, sign(outward.x * towards.y - outward.y * towards.x)
+		end
+	end
+	local function note(why : string) : string
+		return ("The station in %s %s; a new station was planned."):format(town.name, why)
+	end
+	if endOf[false] ~= nil and endOf[false] == endOf[true] then
+		return nil, note("can't be used: both legs would use the same end")
+	end
+	local room = note(("has no room for a junction (needs %d m of straight double track)"):format(
+		math.floor(junction.needed(input.radius) + 0.5)))
+	local snap : PgraceRailRouterExisting.Snapshot = input.snapshots ~= nil and input.snapshots[i] or nil
+	if snap == nil then
+		return nil, room
+	end
+	local result = existing.analyse(st, snap, sides, input.radius)
+	local ends : {integer : PgraceRailRouterExisting.End} = {}
+	local junctions : {integer : PgraceRailRouterJunction.Layout} = {}
+	local z, n = 0.0, 0
+	for __, forward in ipairs({ false, true }) do
+		local k = endOf[forward]
+		if k ~= nil then
+			local e = result.ends[k]
+			if e == nil and result.why[k] == "left-hand" then
+				return nil, note(("can't be used: the tracks at the %s end run left-handed"):format(neighbours[forward].name))
+			elseif e == nil then
+				return nil, room
+			end
+			local j = junction.fit(e.length, input.radius, sides[k], e.signals)
+			if j == nil then
+				return nil, room
+			end
+			ends[k], junctions[k] = e, j
+			z, n = z + e.z, n + 1
+		end
+	end
+	-- The site faces the way the line runs through the station: out of the end the leg out uses, or into the one the
+	-- leg in uses.
+	local facing = endOf[true] or -endOf[false]
+	local site : PgraceRailRouterStations.Site = { centre = { x = st.centre.x, y = st.centre.y },
+		dir = geo.scale(dir, facing), distance = geo.dist(town.pos, st.centre) }
+	return { town = town, site = site, z = z / n, existing = st, ends = ends, junctions = junctions, sides = sides,
+		endOf = endOf }, nil
+end
+
 function route.start(input : Input) : Job
 	local job : Job = { input = input, phase = "sites", siteIndex = 1, legIndex = 1, taken = {}, searchExpansions = 0,
 		exits = {}, turnPending = false, resited = {}, searchCache = {}, searchKeys = {},
-		result = { ok = true, failureTowns = {}, platformLength = input.platformLength, stations = {}, legs = {} } }
+		result = { ok = true, failureTowns = {}, platformLength = input.platformLength, stations = {}, legs = {},
+			notes = {} } }
 	if #input.stops < 2 then
 		fail(job, "no_stops", {})
 	end
@@ -1152,10 +1283,30 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		local i = job.siteIndex
 		local town = input.stops[i]
 		local prev = plan.stations[i - 1]
+		local function placed(station : Station) : boolean
+			if prev ~= nil and not apartEnough(input, prev.site, station.site) then
+				return fail(job, "too_close", { prev.town.name, town.name })
+			end
+			table.insert(plan.stations, station)
+			job.siteIndex = i + 1
+			if job.siteIndex > #input.stops then
+				job.phase, job.round, job.scoutIndex, job.scouts = "scout", 1, 1, {}
+			end
+			return false
+		end
 		if job.finder == nil then
 			if prev ~= nil then
 				-- Keep the next site off the earlier platforms.
 				takePlatforms(input, prev, job.taken)
+			end
+			-- An existing station is joined as it is, where it can be; otherwise the stop gets a station of ours, and
+			-- the plan a note saying why.
+			if input.existingStations ~= nil and input.existingStations[i] ~= nil then
+				local station, note = existingStop(input, i)
+				if station ~= nil then
+					return placed(station)
+				end
+				table.insert(plan.notes, note)
 			end
 			job.finder = stations.startFind(input.grid, town.pos, stopDir(input.stops, i),
 				input.platformLength + 2 * approachOf(input), MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken, exitFor(job, i))
@@ -1173,15 +1324,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			end
 			return fail(job, "no_site", { town.name })
 		end
-		if prev ~= nil and not apartEnough(input, prev.site, site) then
-			return fail(job, "too_close", { prev.town.name, town.name })
-		end
-		table.insert(plan.stations, { town = town, site = site, z = grid.heightAt(input.grid, site.centre) })
-		job.siteIndex = i + 1
-		if job.siteIndex > #input.stops then
-			job.phase, job.round, job.scoutIndex, job.scouts = "scout", 1, 1, {}
-		end
-		return false
+		return placed({ town = town, site = site, z = grid.heightAt(input.grid, site.centre) })
 	end
 	if job.phase == "scout" then
 		-- A search between consecutive site centres, free to start and end in any direction, turning as freely as the
@@ -1212,6 +1355,11 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		-- found site is weighed in a step of its own.
 		local i = job.siteIndex
 		local station = plan.stations[i]
+		-- An existing station stays as it is.
+		if station.existing ~= nil then
+			nextTurn(job)
+			return false
+		end
 		if job.turnPending then
 			local site, others = job.turnSite, job.others
 			job.turnPending, job.turnSite, job.others = false, nil, nil
