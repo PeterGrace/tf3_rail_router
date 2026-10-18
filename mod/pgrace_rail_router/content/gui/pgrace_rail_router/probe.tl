@@ -197,7 +197,27 @@ local function logEdge(e : integer)
 		return true
 	end)
 	pcall(function() : boolean
-		strips = tostring(#api.engine.system.baseParallelStripSystem.getStrips(e))
+		local list = api.engine.system.baseParallelStripSystem.getStrips(e)
+		local parts : {string} = {}
+		for __, st in ipairs(list) do
+			local entity = st as integer
+			local desc = tostring(entity)
+			pcall(function() : boolean
+				local strip = api.engine.getComponent(entity, api.type.ComponentType.BASE_PARALLEL_STRIP) as Engine.Component.BaseParallelStrip
+				local groups : {string} = {}
+				for __, g in ipairs(strip.rangeGroups) do
+					local ranges : {string} = {}
+					for __, r in ipairs(g) do
+						table.insert(ranges, ("%d[%.2f-%.2f]"):format(r.edge, r.bounds[1], r.bounds[2]))
+					end
+					table.insert(groups, "{" .. table.concat(ranges, " ") .. "}")
+				end
+				desc = desc .. ":" .. #strip.rangeGroups .. " groups " .. table.concat(groups, " ")
+				return true
+			end)
+			table.insert(parts, desc)
+		end
+		strips = tostring(#list) .. " (" .. table.concat(parts, "; ") .. ")"
 		return true
 	end)
 	pcall(function() : boolean
