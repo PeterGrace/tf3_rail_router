@@ -14,6 +14,13 @@ local type Addons = PgraceRailRouterStationLayout.Addons
 local AXIS_X = 7.5
 local LEFT_X = 5.0
 local RIGHT_X = 10.0
+-- Halt 2+2 (the Express & Local Rail Stations mod's "PLTTLP"): platform, local, express, express, local, platform on
+-- rows 0 to 5, so its axis is at 12.5; the line runs on through the express pair (10, 15), the locals are at 5 and 20.
+local HALT_AXIS_X = 12.5
+local HALT_LEFT_X = 10.0
+local HALT_RIGHT_X = 15.0
+local HALT_LEFT_LOCAL_X = 5.0
+local HALT_RIGHT_LOCAL_X = 20.0
 local MODULE_LENGTH = 40.0
 -- The station script only makes slots for j from -10 to 10 (trainstationutil.lua stationYMin, stationYMax): at most
 -- 21 modules, 840 m.
@@ -65,7 +72,7 @@ local function range(platformLength : number) : integer, integer
 	return -math.floor(k / 2), math.ceil(k / 2)
 end
 
-function sl.addons(platformLength : number, addons : Addons) : {integer : Module}
+function sl.addons(platformLength : number, addons : Addons, style ?: string) : {integer : Module}
 	local s, e = range(platformLength)
 	local dist = e - s
 	local modules : {integer : Module} = {}
@@ -73,7 +80,7 @@ function sl.addons(platformLength : number, addons : Addons) : {integer : Module
 	local k = dist % 2 == 1 and 2 or 0
 	modules[MAIN_BUILDING_SLOT + 10 * k] = { name = addons.building, variant = 0 }
 	local centre = math.floor(dist / 2) + s
-	for __, i in ipairs({ 0, 3 }) do
+	for __, i in ipairs({ 0, style == "halt" and 5 or 3 }) do
 		for j = s, e do
 			if j == centre or (dist > 3 and (j == s + 1 or j == e - 1)) then
 				modules[STAIRS_SLOT + 1000 * i + 10 * j] = { name = addons.stairs, variant = 0 }
@@ -101,32 +108,50 @@ local function atan2(y : number, x : number) : number
 	return 0
 end
 
-function sl.layout(centre : Pt, dir : Pt, platformLength : number, era : Era) : Layout
+function sl.layout(centre : Pt, dir : Pt, platformLength : number, era : Era, style ?: string) : Layout
 	-- platformLength / 40 modules along (see range), k = count − 1, j from s to e.
 	local s, e = range(platformLength)
 	local k = e - s
+	local halt = style == "halt"
 	local modules : {integer : Module} = {}
 	for j = s, e do
 		modules[sl.platformSlot(0, j)] = { name = era.platform, variant = 0 }
-		modules[sl.trackSlot(1, j)] = { name = era.track, variant = 0 }
-		modules[sl.trackSlot(2, j)] = { name = era.track, variant = 0 }
-		modules[sl.platformSlot(3, j)] = { name = era.platform, variant = 0 }
+		if halt then
+			for i = 1, 4 do
+				modules[sl.trackSlot(i, j)] = { name = era.track, variant = 0 }
+			end
+			modules[sl.platformSlot(5, j)] = { name = era.platform, variant = 0 }
+		else
+			modules[sl.trackSlot(1, j)] = { name = era.track, variant = 0 }
+			modules[sl.trackSlot(2, j)] = { name = era.track, variant = 0 }
+			modules[sl.platformSlot(3, j)] = { name = era.platform, variant = 0 }
+		end
+	end
+	local axis, leftX, rightX = AXIS_X, LEFT_X, RIGHT_X
+	if halt then
+		axis, leftX, rightX = HALT_AXIS_X, HALT_LEFT_X, HALT_RIGHT_X
 	end
 	-- Local +y is along dir, local +x to its right. With an odd count the platforms run from 40 s − 20 to 40 e + 20,
 	-- centred on the origin; with an even count they're centred 20 m ahead of it, so the origin moves back 20 m.
 	local localX : Pt = { x = dir.y, y = -dir.x }
-	local origin = geo.sub(geo.sub(centre, geo.scale(localX, AXIS_X)), geo.scale(dir, MODULE_LENGTH / 2 * (k % 2)))
+	local origin = geo.sub(geo.sub(centre, geo.scale(localX, axis)), geo.scale(dir, MODULE_LENGTH / 2 * (k % 2)))
 	local function world(x : number, y : number) : Pt
 		return geo.add(geo.add(origin, geo.scale(localX, x)), geo.scale(dir, y))
 	end
 	local y0, y1 = MODULE_LENGTH * s - MODULE_LENGTH / 2, MODULE_LENGTH * e + MODULE_LENGTH / 2
-	-- The track at x = 5 is the left of the two (network.tl's track 1).
+	local localEnds : {Pt} = nil
+	if halt then
+		localEnds = { world(HALT_LEFT_LOCAL_X, y0), world(HALT_RIGHT_LOCAL_X, y0), world(HALT_LEFT_LOCAL_X, y1),
+			world(HALT_RIGHT_LOCAL_X, y1) }
+	end
+	-- The left track of the line's two (network.tl's track 1) is at leftX.
 	return {
 		modules = modules,
 		-- rotZ(angle) takes local +y, (0, 1), to (−sin angle, cos angle) = dir.
 		angle = atan2(-dir.x, dir.y),
 		origin = origin,
-		ends = { world(LEFT_X, y0), world(RIGHT_X, y0), world(LEFT_X, y1), world(RIGHT_X, y1) },
+		ends = { world(leftX, y0), world(rightX, y0), world(leftX, y1), world(rightX, y1) },
+		localEnds = localEnds,
 		-- Level with the platforms' middle: the building's slot is 20 m ahead of the origin where it moved back.
 		entrance = world(ENTRANCE_X, MODULE_LENGTH / 2 * (k % 2)),
 		outward = geo.scale(localX, -1),

@@ -150,3 +150,27 @@ t.test("stationlayout: a road to the main building ends 38 m left of the axis, l
 		t.near(l.outward.y, 0, 1e-9, length .. " m: and only west")
 	end
 end)
+
+t.test("stationlayout: Halt 2+2 has platform, local, express, express, local, platform, centred on the site", function()
+	local l = sl.layout({ x = 100, y = 200 }, { x = 0, y = 1 }, 160, ERA, "halt")
+	for j = -1, 2 do
+		t.eq(l.modules[sl.platformSlot(0, j)].name, "P", "platform row 0, j " .. j)
+		for i = 1, 4 do
+			t.eq(l.modules[sl.trackSlot(i, j)].name, "T", "track row " .. i .. ", j " .. j)
+		end
+		t.eq(l.modules[sl.platformSlot(5, j)].name, "P", "platform row 5, j " .. j)
+	end
+	t.ok(l.modules[sl.platformSlot(3, 0)] == nil, "no platform on row 3")
+	-- Facing north: the express pair straddles the site's axis as the 2-track station's tracks do.
+	t.near(l.ends[1].x, 97.5, 1e-9, "left express")
+	t.near(l.ends[2].x, 102.5, 1e-9, "right express")
+	t.near(l.ends[1].y, 120, 1e-9, "at the platforms' start")
+	t.near(l.localEnds[1].x, 92.5, 1e-9, "left local 5 m further left")
+	t.near(l.localEnds[2].x, 107.5, 1e-9, "right local 5 m further right")
+	t.near(l.localEnds[3].y, 280, 1e-9, "locals end with the platforms")
+	t.near(l.origin.x, 87.5, 1e-9, "origin 12.5 m left of the axis")
+	t.near(l.entrance.x, 100 - 43, 1e-9, "the road's end 30.5 m beyond the frame's x = 0")
+	local addons = sl.addons(160, { building = "B", stairs = "S" }, "halt")
+	t.ok(addons[10800000 + 5000] ~= nil, "stairs on platform row 5")
+	t.ok(addons[10800000 + 3000] == nil, "none on row 3")
+end)
