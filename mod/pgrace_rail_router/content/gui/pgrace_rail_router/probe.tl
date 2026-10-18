@@ -1156,7 +1156,7 @@ local function p15Build(settings : Settings)
 	end)
 end
 
--- Stage 2: split track 1 at x = 100, then the piece with the signal at x = 270 (clear of stage 3's cut at 245). A
+-- Stage 2: split track 1 at x = 100, then the piece with the signal at x = 270 (clear of stage 3's crossing at 200 and the signal at 300). A
 -- cut that already has a node (a retry) is skipped: a second split there would make a ~0 m piece.
 local function p15Split()
 	local o = p15.origin
@@ -1247,15 +1247,15 @@ local function p15Junction(settings : Settings)
 	local off = p15.off
 	local list = scanPieces()
 	local n1, p1 = findNodeAt(list, o.x + 60, o.y + off)
-	local n4, p4 = findNodeAt(list, o.x + 180, o.y - off)
-	local n5, p5 = findNodeAt(list, o.x + 245, o.y + off)
+	local n4, p4 = findNodeAt(list, o.x + 120, o.y - off)
+	local n5, p5 = findNodeAt(list, o.x + 200, o.y + off)
 	if n1 == nil or n4 == nil or n5 == nil then
-		log("P15", ("cut nodes missing: x=60 %s, x=180 %s, x=245 %s"):format(tostring(n1), tostring(n4), tostring(n5)))
+		log("P15", ("cut nodes missing: x=60 %s, x=120 %s, x=200 %s"):format(tostring(n1), tostring(n4), tostring(n5)))
 		return p15Done(3, false)
 	end
-	log("P15", ("cut nodes: x=60 -> %d, x=180 -> %d, x=245 -> %d"):format(n1, n4, n5))
+	log("P15", ("cut nodes: x=60 -> %d, x=120 -> %d, crossing x=200 -> %d"):format(n1, n4, n5))
 	branchSide(list, "switch at x=60 (track 1)", n1)
-	branchSide(list, "switch at x=180 (track 2)", n4)
+	branchSide(list, "switch at x=120 (track 2)", n4)
 	local z = p1.z
 	local function at(x : number, y : number, node ?: integer) : Pt3
 		return { x = o.x + x, y = o.y + y, z = z, entity = node }
@@ -1266,7 +1266,7 @@ local function p15Junction(settings : Settings)
 		at(330, 5 * off),
 		{ x = p4.x, y = p4.y, z = p4.z, entity = n4 },
 		{ x = p5.x, y = p5.y, z = p5.z, entity = n5 },
-		at(310, 3 * off),
+		at(280, 3 * off),
 		at(330, 3 * off),
 	}
 	local function dir(dx : number) : Pt3
@@ -1285,7 +1285,7 @@ local function p15Junction(settings : Settings)
 		t1 = dir(nodes[6].x - nodes[4].x) }
 	local first, second = network.splitHermite(whole, 0.5)
 	log("P15", ("cross S-curve midpoint %s against the crossing node %s"):format(rel(first.p1), rel(nodes[5])))
-	log("P15", ("crossing angle at x=245: %.2f degrees between the cross curve and track 1"):format(
+	log("P15", ("crossing angle at x=200: %.2f degrees between the cross curve and track 1"):format(
 		math.deg(math.atan(first.t1.y / first.t1.x))))
 	first.p1, second.p0 = nodes[5], nodes[5]
 	add(4, 5, first)
@@ -1293,7 +1293,7 @@ local function p15Junction(settings : Settings)
 	add(6, 7, { p0 = nodes[6], p1 = nodes[7], t0 = dir(nodes[7].x - nodes[6].x), t1 = dir(nodes[7].x - nodes[6].x) })
 	local net : PgraceRailRouterNetwork.Network = { nodes = nodes, edges = edges, chunks = {} }
 	-- Which part the game refuses: the merge alone (edges 1-2), the crossing track alone (3-5), its first half alone
-	-- (the switch at x=180 to the crossing node), then everything.
+	-- (the switch at x=120 to the crossing node), then everything.
 	for __, part in ipairs({ { "merge only", 1, 2 }, { "crossing track only", 3, 5 }, { "switch to crossing node only", 3, 3 },
 			{ "crossing node onwards only", 4, 5 } }) do
 		local pr, whyNot = builder.chunkProposal(net, part[2] as integer, part[3] as integer, settings)
@@ -1328,7 +1328,7 @@ local function p15Junction(settings : Settings)
 			return p15Done(3, false)
 		end
 		logAdded("junction", res)
-		for __, pair in ipairs({ { "x=60 switch", n1 }, { "x=180 switch", n4 }, { "x=245 crossing", n5 } }) do
+		for __, pair in ipairs({ { "x=60 switch", n1 }, { "x=120 switch", n4 }, { "x=200 crossing", n5 } }) do
 			local okS, segs = pcall(function() : {any}
 				return api.engine.system.streetSystem.getNodeTrackSegments(pair[2] as integer) as {any}
 			end)
@@ -1362,7 +1362,10 @@ local function p15Cuts(settings : Settings)
 		log("P15", "no origin: run stage 1 first")
 		return p15Done(3, false)
 	end
-	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 1, x = 245 }, { track = 2, x = 180 } }
+	-- The crossing is at track 1's existing node at x = 200 (stage 1's piece end), so no cut there. The crossing
+	-- track's switch is at x = 120 on track 2, 80 m short of its next node: from x = 180, 20 m short of it, the
+	-- branch was refused ("Construction Not Possible"; it had pulled only 0.6 m clear of the main track there).
+	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 2, x = 120 } }
 	local function nextCut(attempt : integer)
 		if attempt > 8 then
 			log("P15", "too many cuts")

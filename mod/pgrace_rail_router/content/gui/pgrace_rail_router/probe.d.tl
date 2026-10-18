@@ -25,8 +25,8 @@ global record PgraceRailRouterProbe
 	halt : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 	-- P15 (test map only), three stages, one click each (a stage counter wraps 1, 2, 3, 1): 1 builds a 400 m double
 	-- track east of the camera with a one-way signal on each track at x = 300; 2 splits track 1 at x = 100, then splits
-	-- the piece carrying the signal, logging where the signal ends up; 3 cuts the tracks at x = 60 and 245 (track 1)
-	-- and 180 (track 2) and builds a flat junction from the north: one track switching into track 1, one switching
-	-- into track 2 and crossing track 1 on the level (four pieces at one node). Logs every piece, node and signal.
+	-- the piece carrying the signal, logging where the signal ends up; 3 cuts track 1 at x = 60 and track 2 at x = 120
+	-- and builds a flat junction from the north: one track switching into track 1, one switching into track 2 and
+	-- crossing track 1 on the level at its node at x = 200 (four pieces at one node). Logs every piece, node and signal.
 	junction : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 end
