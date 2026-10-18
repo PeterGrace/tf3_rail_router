@@ -844,66 +844,146 @@ local function trackPiece(node0 : integer, node1 : integer, h : Hermite, templat
 	return seg
 end
 
+-- A piece shorter than this (metres, in plan) is never made by a split: the game refuses switches next to short edges
+-- (P12) and a split can't be dry-run, so the guard is ours.
+local MIN_PIECE = 10.0
+
+local function chord(h : Hermite) : number
+	return math.sqrt((h.p1.x - h.p0.x) ^ 2 + (h.p1.y - h.p0.y) ^ 2)
+end
+
 -- A track piece in pieces at parameters us (ascending), new nodes -(k+2)..: the engine's replaceSegment proposal
 -- edited, as build.tl splits a street. objectAt are the world places of the piece's signals (in the order of the
--- template's objects); each signal goes on the sub-piece that holds its place.
+-- template's objects); each signal goes on the sub-piece that holds its place. Returns nil, after logging why,
+-- when the split would be unsafe: a split can't be dry-run, so nothing doubtful is sent.
 local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Proposal
+	-- The sub-pieces first, and the guards on them.
+	local hs : {Hermite} = {}
+	local rest = piece.h
+	local restU = 0.0
+	for __, u in ipairs(us) do
+		if u < 0.02 or u > 0.98 then
+			log("P15", ("REFUSED split of %d: parameter %.4f is outside 0.02..0.98"):format(piece.entity, u))
+			return nil
+		end
+		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
+		table.insert(hs, here)
+		rest, restU = after, u
+	end
+	table.insert(hs, rest)
+	for j, sh in ipairs(hs) do
+		if chord(sh) < MIN_PIECE then
+			log("P15", ("REFUSED split of %d: sub-piece %d would be %.1f m (under %.0f m)"):format(piece.entity, j,
+				chord(sh), MIN_PIECE))
+			return nil
+		end
+	end
 	local rep = api.engine.util.proposal.replaceSegment(piece.entity)
 	local sp = rep.proposal
 	local template = sp.addedSegments[1]
 	local objs = template.comp.objects or {}
+	local edgeObjects = (sp.edgeObjectsToAdd or {}) as {any}
 	log("P15", ("replaceSegment(%d): %d added segments, %d added nodes, %d removed segments, %d edge objects to add, %d node configs, template objects %d"):format(
-		piece.entity, #sp.addedSegments, #sp.addedNodes, #(sp.removedSegments or {}), #(sp.edgeObjectsToAdd or {}),
+		piece.entity, #sp.addedSegments, #sp.addedNodes, #(sp.removedSegments or {}), #edgeObjects,
 		#(sp.nodeConfigsToAdd or {}), #objs))
-	local nodes : {Proposal.NodeAndEntity} = {}
-	local pieces : {Proposal.SegmentAndEntity} = {}
-	local hs : {Hermite} = {}
-	local rest = piece.h
-	local restU = 0.0
-	local prev = piece.node0
-	local k = #us
-	for j, u in ipairs(us) do
-		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
-		local n = api.type.NodeAndEntity.new()
-		n.entity = -(k + 1 + j)
-		n.comp.position = v3of(here.p1)
-		table.insert(nodes, n)
-		local seg = trackPiece(prev, n.entity as integer, here, template)
-		seg.entity = -j
-		table.insert(pieces, seg)
-		table.insert(hs, here)
-		prev, rest, restU = n.entity as integer, after, u
+	-- What the engine says about the objects, to compare with what we send.
+	for i, eo in ipairs(edgeObjects) do
+		local okE, text = pcall(function() : string
+			local t = eo as {string : any}
+			return ("edgeEntity %s param %s model %s left %s"):format(tostring(t.edgeEntity), tostring(t.param),
+				tostring(t.model), tostring(t.left))
+		end)
+		log("P15", ("edgeObjectsToAdd[%d]: %s"):format(i, okE and text as string or "unreadable: " .. tostring(text)))
 	end
-	local last_ = trackPiece(prev, piece.node1, rest, template)
-	last_.entity = -(k + 1)
-	table.insert(pieces, last_)
-	table.insert(hs, rest)
-	-- Which sub-piece holds each signal: by the nearest point on each sub-piece's own curve.
+	for __, field in ipairs({ "new2oldEdgeObjects", "old2newEdgeObjects" }) do
+		pcall(function() : boolean
+			local m = (sp as any as {string : any})[field] as {any : any}
+			local parts : {string} = {}
+			if m ~= nil then
+				for from, to in pairs(m) do
+					local list : {string} = {}
+					if type(to) == "table" then
+						for __, x in ipairs(to as {any}) do
+							table.insert(list, tostring(x))
+						end
+					else
+						table.insert(list, tostring(to))
+					end
+					table.insert(parts, tostring(from) .. " -> " .. table.concat(list, ","))
+				end
+			end
+			log("P15", ("%s: %s"):format(field, #parts > 0 and table.concat(parts, "; ") or "empty"))
+			return true
+		end)
+	end
+	-- Which sub-piece holds each signal (the nearest point on each sub-piece's own curve), and its parameter there.
+	local objJ : {integer} = {}
+	local objU : {number} = {}
 	local lists : {{any}} = {}
-	for __ = 1, #pieces do
+	for __ = 1, #hs do
 		table.insert(lists, {})
 	end
 	for idx, o in ipairs(objs) do
+		local okO, a, b = pcall(function() : any, any
+			return (o as {any})[1], (o as {any})[2]
+		end)
+		if not okO or a == nil or b == nil then
+			log("P15", ("REFUSED split of %d: object %d isn't a readable {entity, type} pair (%s, %s)"):format(piece.entity,
+				idx, tostring(a), tostring(b)))
+			return nil
+		end
 		local at = objectAt[idx] or objectAt[1]
 		if at == nil then
-			log("P15", ("object %d on piece %d has no known place: dropped from the split"):format(idx, piece.entity))
-		else
-			local bestJ, bestD = 1, math.huge
-			for j, sh in ipairs(hs) do
-				local q = network.hermiteAt(sh, network.nearestParam(sh, at))
-				local d = (q.x - at.x) ^ 2 + (q.y - at.y) ^ 2
-				if d < bestD then
-					bestJ, bestD = j, d
-				end
-			end
-			log("P15", ("object %d (entity %s, type %s) goes on sub-piece %d, %.2f m off its curve"):format(idx,
-				tostring((o as {any})[1]), tostring((o as {any})[2]), bestJ, math.sqrt(bestD)))
-			table.insert(lists[bestJ], { (o as {any})[1], (o as {any})[2] })
+			log("P15", ("REFUSED split of %d: object %d has no known place"):format(piece.entity, idx))
+			return nil
 		end
+		local bestJ, bestD, bestU = 1, math.huge, 0.0
+		for j, sh in ipairs(hs) do
+			local u = network.nearestParam(sh, at)
+			local q = network.hermiteAt(sh, u)
+			local d = (q.x - at.x) ^ 2 + (q.y - at.y) ^ 2
+			if d < bestD then
+				bestJ, bestD, bestU = j, d, u
+			end
+		end
+		log("P15", ("object %d (entity %s, type %s) goes on sub-piece %d at param %.3f, %.2f m off its curve"):format(idx,
+			tostring(a), tostring(b), bestJ, bestU, math.sqrt(bestD)))
+		objJ[idx], objU[idx] = bestJ, bestU
+		table.insert(lists[bestJ], { a, b })
 	end
-	for j, seg in ipairs(pieces) do
+	local nodes : {Proposal.NodeAndEntity} = {}
+	local pieces : {Proposal.SegmentAndEntity} = {}
+	local prev = piece.node0
+	local k = #us
+	for j = 1, #hs do
+		local node1 = piece.node1
+		if j <= k then
+			local n = api.type.NodeAndEntity.new()
+			n.entity = -(k + 1 + j)
+			n.comp.position = v3of(hs[j].p1)
+			table.insert(nodes, n)
+			node1 = n.entity as integer
+		end
+		local seg = trackPiece(prev, node1, hs[j], template)
+		seg.entity = -j
 		if #lists[j] > 0 then
 			(seg.comp as any as {string : any}).objects = lists[j]
+		end
+		table.insert(pieces, seg)
+		prev = node1
+	end
+	-- The engine's own object entries, pointed at the sub-piece that now holds each signal, so the proposal agrees
+	-- with itself.
+	for i, eo in ipairs(edgeObjects) do
+		if objJ[i] ~= nil then
+			local okW, err = pcall(function() : boolean
+				local t = eo as {string : any}
+				t.edgeEntity = pieces[objJ[i]].entity
+				t.param = objU[i]
+				return true
+			end)
+			log("P15", ("edgeObjectsToAdd[%d] rewritten to edge %d param %.3f: %s"):format(i, pieces[objJ[i]].entity,
+				objU[i], okW and "ok" or tostring(err)))
 		end
 	end
 	sp.addedNodes = nodes
@@ -912,23 +992,95 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 	return rep
 end
 
+local p15Busy = false
+
 local function sendProposal(proposal : any, done : function(WorldBuildProposalCommandData, boolean))
 	api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(proposal as SimpleProposal, builder.newContext(), false, true),
 		function(res : WorldBuildProposalCommandData, success : boolean)
-			guarded("P15", function()
+			local ok, err = pcall(function() : boolean
 				done(res, success)
-			end)()
+				return true
+			end)
+			if not ok then
+				log("P15", "ERROR " .. tostring(err))
+				p15Busy = false
+			end
 		end)
 end
 
 local function p15Done(stage : integer, ok : boolean)
-	if ok or stage == 3 then
+	p15Busy = false
+	if ok then
 		p15Stage = stage % 3 + 1
-		log("P15", ("stage %d finished (%s); the next click runs stage %d"):format(stage, ok and "ok" or "with problems",
-			p15Stage))
+		log("P15", ("stage %d finished; the next click runs stage %d"):format(stage, p15Stage))
 	else
-		log("P15", ("stage %d did not finish: click again to retry it"):format(stage))
+		log("P15", ("stage %d did not finish: click again to retry stage %d"):format(stage, stage))
 	end
+end
+
+local function hasConfig(node : integer) : string
+	local ok, c = pcall(function() : any
+		return api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG)
+	end)
+	return (ok and c ~= nil) and "has a BASE_NODE_CONFIG" or ("NO BASE_NODE_CONFIG" .. (ok and "" or " (read failed)"))
+end
+
+-- A split leaves its new nodes without lane connections (nodeConfigsToAdd is emptied). Sends the engine's own,
+-- unedited replaceSegment for each track piece at the nodes, one at a time (build.tl's stepRepair for streets), and
+-- logs whether each node has its config before and after.
+local function repairNodes(what : string, nodes : {integer}, done : function())
+	for __, n in ipairs(nodes) do
+		log("P15", ("%s: node %d before repair: %s"):format(what, n, hasConfig(n)))
+	end
+	local queue : {integer} = {}
+	local seen : {integer : boolean} = {}
+	for __, n in ipairs(nodes) do
+		local ok, segs = pcall(function() : {any}
+			return api.engine.system.streetSystem.getNodeTrackSegments(n) as {any}
+		end)
+		if ok then
+			for __, sg in ipairs(segs as {any}) do
+				local e = sg as integer
+				if not seen[e] then
+					seen[e] = true
+					table.insert(queue, e)
+				end
+			end
+		else
+			log("P15", ("%s: getNodeTrackSegments(%d) failed: %s"):format(what, n, tostring(segs)))
+		end
+	end
+	local function step()
+		local seg = table.remove(queue, 1)
+		if seg == nil then
+			for __, n in ipairs(nodes) do
+				log("P15", ("%s: node %d after repair: %s"):format(what, n, hasConfig(n)))
+			end
+			return done()
+		end
+		local ok, rep = pcall(function() : Proposal
+			return api.engine.util.proposal.replaceSegment(seg)
+		end)
+		if not ok or rep == nil then
+			log("P15", ("%s: repair of piece %d: replaceSegment failed: %s"):format(what, seg, tostring(rep)))
+			return step()
+		end
+		sendProposal(rep, function(__ : WorldBuildProposalCommandData, success : boolean)
+			log("P15", ("%s: repair of piece %d: %s"):format(what, seg, tostring(success)))
+			step()
+		end)
+	end
+	step()
+end
+
+-- What a split sent: log it, then repair the nodes it made.
+local function afterSplit(what : string, res : WorldBuildProposalCommandData, done : function())
+	logAdded(what, res)
+	local ids : {integer} = {}
+	for __, n in ipairs(res.proposal.proposal.addedNodes) do
+		table.insert(ids, n.entity as integer)
+	end
+	repairNodes(what, ids, done)
 end
 
 -- Stage 1: 400 m of double track east of the camera, a one-way signal on each track at x = 300.
@@ -945,6 +1097,8 @@ local function p15Build(settings : Settings)
 	opts.fan = nil
 	opts.crossovers = false
 	opts.chunkLength = 100000
+	-- Two 200 m pieces per track: stage 3's cuts rely on that.
+	opts.maxEdge = 250
 	local s = with(settings, function(copy : Settings)
 		copy.network = opts
 		copy.signal = "::/infrastructure/signal/signal_path_" .. (settings.year < 1950 and "a" or "c") .. ".con"
@@ -983,31 +1137,23 @@ local function p15Build(settings : Settings)
 	end)
 end
 
--- Stage 2: split track 1 at x = 100, then the piece with the signal at x = 270 (clear of stage 3's crossing cut at 245).
+-- Stage 2: split track 1 at x = 100, then the piece with the signal at x = 270 (clear of stage 3's cut at 245). A
+-- cut that already has a node (a retry) is skipped: a second split there would make a ~0 m piece.
 local function p15Split()
 	local o = p15.origin
 	if o == nil then
 		log("P15", "no origin: run stage 1 first")
-		return
-	end
-	local list = scanPieces()
-	local a = findPiece(list, 1, 100)
-	if a == nil then
-		log("P15", "no track 1 piece under x = 100")
 		return p15Done(2, false)
 	end
-	local at : Pt = { x = o.x + 100, y = o.y + p15.off }
-	local u = network.nearestParam(a.h, at)
-	log("P15", ("split 1: piece %d at param %.4f (x = 100)"):format(a.entity, u))
-	sendProposal(splitTrack(a, { u }, {}), function(res : WorldBuildProposalCommandData, success : boolean)
-		log("P15", "split 1 sent: " .. tostring(success))
-		if not success then
-			return p15Done(2, false)
+	local function second()
+		local list = scanPieces()
+		if findNodeAt(list, o.x + 270, o.y + p15.off) ~= nil then
+			log("P15", "split 2 skipped: a node is already at x = 270")
+			logTracks(list)
+			return p15Done(2, true)
 		end
-		logAdded("split 1", res)
-		local again = scanPieces()
 		local b : P15Piece = nil
-		for __, p in ipairs(again) do
+		for __, p in ipairs(list) do
 			if p.track == 1 and p.objects > 0 then
 				b = p
 			end
@@ -1017,23 +1163,63 @@ local function p15Split()
 			return p15Done(2, false)
 		end
 		log("P15", ("the signal piece is now %d"):format(b.entity))
-		local at2 : Pt = { x = o.x + 270, y = o.y + p15.off }
-		local u2 = network.nearestParam(b.h, at2)
-		if u2 < 0.02 or u2 > 0.98 then
-			u2 = 0.5
-			log("P15", "x = 270 isn't inside the signal piece: cutting its middle")
-		end
+		local u2 = network.nearestParam(b.h, { x = o.x + 270, y = o.y + p15.off })
 		log("P15", ("split 2: piece %d at param %.4f"):format(b.entity, u2))
-		sendProposal(splitTrack(b, { u2 }, { p15.signalPt }), function(res2 : WorldBuildProposalCommandData, success2 : boolean)
+		local rep = splitTrack(b, { u2 }, { p15.signalPt })
+		if rep == nil then
+			return p15Done(2, false)
+		end
+		sendProposal(rep, function(res2 : WorldBuildProposalCommandData, success2 : boolean)
 			log("P15", "split 2 sent: " .. tostring(success2))
-			if success2 then
-				logAdded("split 2", res2)
+			if not success2 then
+				return p15Done(2, false)
 			end
-			log("P15", "tracks after both splits:")
-			logTracks(scanPieces())
-			p15Done(2, success2)
+			afterSplit("split 2", res2, function()
+				log("P15", "tracks after both splits:")
+				logTracks(scanPieces())
+				p15Done(2, true)
+			end)
 		end)
+	end
+	local list = scanPieces()
+	if findNodeAt(list, o.x + 100, o.y + p15.off) ~= nil then
+		log("P15", "split 1 skipped: a node is already at x = 100")
+		return second()
+	end
+	local a = findPiece(list, 1, 100)
+	if a == nil then
+		log("P15", "no track 1 piece under x = 100")
+		return p15Done(2, false)
+	end
+	local u = network.nearestParam(a.h, { x = o.x + 100, y = o.y + p15.off })
+	log("P15", ("split 1: piece %d at param %.4f (x = 100)"):format(a.entity, u))
+	local rep = splitTrack(a, { u }, a.objects > 0 and { p15.signalPt } or {})
+	if rep == nil then
+		return p15Done(2, false)
+	end
+	sendProposal(rep, function(res : WorldBuildProposalCommandData, success : boolean)
+		log("P15", "split 1 sent: " .. tostring(success))
+		if not success then
+			return p15Done(2, false)
+		end
+		afterSplit("split 1", res, second)
 	end)
+end
+
+-- The length of the main-track piece that runs east from a switch node (the branch's side), logged.
+local function branchSide(list : {P15Piece}, what : string, node : integer)
+	local best : number = nil
+	for __, p in ipairs(list) do
+		if p.track ~= 0 and (p.node0 == node or p.node1 == node) then
+			local other = p.node0 == node and p.h.p1 or p.h.p0
+			local here = p.node0 == node and p.h.p0 or p.h.p1
+			if other.x > here.x then
+				best = chord(p.h)
+			end
+		end
+	end
+	log("P15", ("%s: main piece on the branch's side is %s m (the game wants over 16.6)"):format(what,
+		best ~= nil and ("%.1f"):format(best) or "not found"))
 end
 
 -- Stage 3, step 2: with every cut made, one proposal of the new track.
@@ -1042,13 +1228,15 @@ local function p15Junction(settings : Settings)
 	local off = p15.off
 	local list = scanPieces()
 	local n1, p1 = findNodeAt(list, o.x + 60, o.y + off)
-	local n4, p4 = findNodeAt(list, o.x + 190, o.y - off)
+	local n4, p4 = findNodeAt(list, o.x + 180, o.y - off)
 	local n5, p5 = findNodeAt(list, o.x + 245, o.y + off)
 	if n1 == nil or n4 == nil or n5 == nil then
-		log("P15", ("cut nodes missing: x=60 %s, x=190 %s, x=245 %s"):format(tostring(n1), tostring(n4), tostring(n5)))
+		log("P15", ("cut nodes missing: x=60 %s, x=180 %s, x=245 %s"):format(tostring(n1), tostring(n4), tostring(n5)))
 		return p15Done(3, false)
 	end
-	log("P15", ("cut nodes: x=60 -> %d, x=190 -> %d, x=245 -> %d"):format(n1, n4, n5))
+	log("P15", ("cut nodes: x=60 -> %d, x=180 -> %d, x=245 -> %d"):format(n1, n4, n5))
+	branchSide(list, "switch at x=60 (track 1)", n1)
+	branchSide(list, "switch at x=180 (track 2)", n4)
 	local z = p1.z
 	local function at(x : number, y : number, node ?: integer) : Pt3
 		return { x = o.x + x, y = o.y + y, z = z, entity = node }
@@ -1059,7 +1247,7 @@ local function p15Junction(settings : Settings)
 		at(330, 5 * off),
 		{ x = p4.x, y = p4.y, z = p4.z, entity = n4 },
 		{ x = p5.x, y = p5.y, z = p5.z, entity = n5 },
-		at(300, 3 * off),
+		at(310, 3 * off),
 		at(330, 3 * off),
 	}
 	local function dir(dx : number) : Pt3
@@ -1078,6 +1266,8 @@ local function p15Junction(settings : Settings)
 		t1 = dir(nodes[6].x - nodes[4].x) }
 	local first, second = network.splitHermite(whole, 0.5)
 	log("P15", ("cross S-curve midpoint %s against the crossing node %s"):format(rel(first.p1), rel(nodes[5])))
+	log("P15", ("crossing angle at x=245: %.2f degrees between the cross curve and track 1"):format(
+		math.deg(math.atan(first.t1.y / first.t1.x))))
 	first.p1, second.p0 = nodes[5], nodes[5]
 	add(4, 5, first)
 	add(5, 6, second)
@@ -1102,7 +1292,7 @@ local function p15Junction(settings : Settings)
 			return p15Done(3, false)
 		end
 		logAdded("junction", res)
-		for __, pair in ipairs({ { "x=60 switch", n1 }, { "x=190 switch", n4 }, { "x=245 crossing", n5 } }) do
+		for __, pair in ipairs({ { "x=60 switch", n1 }, { "x=180 switch", n4 }, { "x=245 crossing", n5 } }) do
 			local okS, segs = pcall(function() : {any}
 				return api.engine.system.streetSystem.getNodeTrackSegments(pair[2] as integer) as {any}
 			end)
@@ -1117,24 +1307,26 @@ local function p15Junction(settings : Settings)
 				log("P15", ("node %s: getNodeTrackSegments failed: %s"):format(pair[1] as string, tostring(segs)))
 			end
 		end
-		log("P15", "tracks after the junction:")
-		local after = scanPieces()
-		for __, p in ipairs(after) do
-			logPiece(p)
-		end
-		p15Done(3, true)
+		-- The existing nodes now have a branch: the engine's own proposal for each piece there gives the lanes.
+		repairNodes("junction", { n1, n4, n5 }, function()
+			log("P15", "tracks after the junction:")
+			for __, p in ipairs(scanPieces()) do
+				logPiece(p)
+			end
+			p15Done(3, true)
+		end)
 	end)
 end
 
 -- Stage 3: cut the existing tracks where the junction meets them (one proposal per piece, one after another), then
--- build the junction.
+-- build the junction. Cuts that already have a node are skipped, so a retry carries on.
 local function p15Cuts(settings : Settings)
 	local o = p15.origin
 	if o == nil then
 		log("P15", "no origin: run stage 1 first")
-		return
+		return p15Done(3, false)
 	end
-	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 1, x = 245 }, { track = 2, x = 190 } }
+	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 1, x = 245 }, { track = 2, x = 180 } }
 	local function nextCut(attempt : integer)
 		if attempt > 8 then
 			log("P15", "too many cuts")
@@ -1165,34 +1357,47 @@ local function p15Cuts(settings : Settings)
 			end
 		end
 		table.sort(us)
-		local objectAt : {Pt} = {}
-		if piece.objects > 0 then
-			objectAt = { p15.signalPt }
+		local rep = splitTrack(piece, us, piece.objects > 0 and { p15.signalPt } or {})
+		if rep == nil then
+			return p15Done(3, false)
 		end
-		sendProposal(splitTrack(piece, us, objectAt), function(res : WorldBuildProposalCommandData, success : boolean)
+		sendProposal(rep, function(res : WorldBuildProposalCommandData, success : boolean)
 			log("P15", "cut sent: " .. tostring(success))
 			if not success then
 				return p15Done(3, false)
 			end
-			logAdded("cut", res)
-			nextCut(attempt + 1)
+			afterSplit("cut", res, function()
+				nextCut(attempt + 1)
+			end)
 		end)
 	end
 	nextCut(1)
 end
 
 function probe.junction(settings : Settings) : {function()}
-	local stage = p15Stage
-	log("P15", ("stage %d"):format(stage))
-	return { guarded("P15", function()
-		if stage == 1 then
-			p15Build(settings)
-		elseif stage == 2 then
-			p15Split()
-		else
-			p15Cuts(settings)
+	return { function()
+		if p15Busy then
+			log("P15", "busy: a stage is still running, click again when it has finished")
+			return
 		end
-	end) }
+		p15Busy = true
+		local stage = p15Stage
+		log("P15", ("stage %d"):format(stage))
+		local ok, err = pcall(function() : boolean
+			if stage == 1 then
+				p15Build(settings)
+			elseif stage == 2 then
+				p15Split()
+			else
+				p15Cuts(settings)
+			end
+			return true
+		end)
+		if not ok then
+			log("P15", "ERROR " .. tostring(err))
+			p15Busy = false
+		end
+	end }
 end
 
 -- P6 -------------------------------------------------------------------------------------------------------------
