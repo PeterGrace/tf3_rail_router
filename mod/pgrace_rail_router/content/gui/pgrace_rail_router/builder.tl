@@ -22,6 +22,33 @@ local function logOnce(key : string, message : string)
 	end
 end
 
+-- How far the track may be above or below the street where it crosses it, for a level crossing (metres).
+local LEVEL = 1.5
+
+function builder.crossesOnLevel(net : Network, first : integer, last : integer, street : integer) : boolean
+	local e = api.engine.getComponent(street, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+	if e == nil then
+		return false
+	end
+	local function pt(v : Vec3f) : Pt3
+		return { x = v.x, y = v.y, z = v.z }
+	end
+	local h : PgraceRailRouterNetwork.Hermite = { p0 = pt(e.position0), p1 = pt(e.position1), t0 = pt(e.tangent0),
+		t1 = pt(e.tangent1) }
+	for i = first, last do
+		local t = net.edges[i]
+		if t.kind == "ground" then
+			local th : PgraceRailRouterNetwork.Hermite = { p0 = t.p0, p1 = t.p1, t0 = t.t0, t1 = t.t1 }
+			for __, c in ipairs(network.crossings(th, h)) do
+				if math.abs(network.hermiteAt(th, c.s).z - c.p.z) <= LEVEL then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
 local function v3(p : Pt3) : Vec3f
 	return api.type.Vec3f.new(p.x, p.y, p.z)
 end
@@ -212,7 +239,8 @@ function builder.stationProposal(plan : Plan, index : integer, settings : Settin
 	return proposal
 end
 
-function builder.levelCrossings(messages : {string}, collisions : {Collision}) : integer
+function builder.levelCrossings(messages : {string}, collisions : {Collision},
+		onLevel ?: function(street : integer) : boolean) : integer
 	for __, m in ipairs(messages) do
 		if m:lower() ~= "collision" then
 			return 0
@@ -233,6 +261,21 @@ function builder.levelCrossings(messages : {string}, collisions : {Collision}) :
 			local ra, rb = root(c.node0 or -i), root(c.node1 or -i)
 			if ra ~= rb then
 				parent[rb] = ra
+			end
+		end
+	end
+	-- Each road hit must be crossed on the level by some piece of it: one the track only runs into is no crossing.
+	if onLevel ~= nil then
+		local level : {integer : boolean} = {}
+		for i, c in ipairs(collisions) do
+			if c.what == "street" then
+				local r = root(c.node0 or -i)
+				level[r] = level[r] or onLevel(c.entity)
+			end
+		end
+		for __, crossed in pairs(level) do
+			if not crossed then
+				return 0
 			end
 		end
 	end
@@ -661,7 +704,11 @@ function builder.step(check : Check) : boolean
 		ok, cost, messages, us, data = builder.dryRun(proposal as SimpleProposal)
 		collisions = builder.collisions(data)
 		if not ok and item.kind == "chunk" and check.settings.levelCrossings then
-			crossings = builder.levelCrossings(messages, collisions)
+			local chunk = check.net.chunks[item.index]
+			crossings = builder.levelCrossings(messages, collisions, function(street : integer) : boolean
+				local okLevel, level = pcall(builder.crossesOnLevel, check.net, chunk.first, chunk.last, street)
+				return okLevel and level as boolean
+			end)
 			local others = 0
 			for __, c in ipairs(collisions) do
 				if c.what ~= "street" and c.what ~= "node" then

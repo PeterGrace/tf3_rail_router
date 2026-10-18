@@ -11,6 +11,9 @@ local MIN_SPAN = 75.0
 -- bridge square across existing track collided with it at 7 m (rail to rail) and was clean from 8 m; over a street,
 -- 6 m was clean. 9 leaves a metre for crossings at an angle and uneven ground.
 local CLEARANCE = 9.0
+-- How far a bridge over a crossed road or track reaches past it, where the track is above the ground (metres).
+-- Aloha - Imperial Beach: a bridge that began 11 m before a road, 9 m up, had its embankment's foot on the road.
+local CROSSING_REACH = 25.0
 -- The height search runs on evenly spaced nodes at most this far apart (metres; route.tl samples every 25 m at most).
 local NODE_STEP = 25.0
 -- The coarsest height step it tries (metres). The step is the grade limit's rise between nodes split evenly, so the
@@ -391,6 +394,30 @@ local function finish(st : State) : Result
 		end
 		if k > 1 and s[k] > s[k - 1] then
 			maxG = math.max(maxG, math.abs(z[k] - z[k - 1]) / (s[k] - s[k - 1]))
+		end
+	end
+	-- A bridge over a crossing reaches CROSSING_REACH past it, wherever it is above the ground there, so the
+	-- embankment up to it ends clear of the crossed road or track.
+	local near : {boolean} = {}
+	for k = 1, n do
+		if crossing[k] and kinds[k] == "bridge" then
+			for m = k - 1, 1, -1 do
+				if s[k] - s[m] > CROSSING_REACH then
+					break
+				end
+				near[m] = true
+			end
+			for m = k + 1, n do
+				if s[m] - s[k] > CROSSING_REACH then
+					break
+				end
+				near[m] = true
+			end
+		end
+	end
+	for k = 1, n do
+		if near[k] and kinds[k] == "ground" and z[k] > ground[k] then
+			kinds[k] = "bridge"
 		end
 	end
 	local spans : {Span} = {}

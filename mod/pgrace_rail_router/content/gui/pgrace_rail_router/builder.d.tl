@@ -105,8 +105,14 @@ global record PgraceRailRouterBuilder
 	resolveModule : function(name : string) : string
 	-- How many level crossings a dry run's collisions make: the streets, pieces joined end to end counting once (a
 	-- crossing at a joint hits both, and may hit the node joining them too), where every message is a collision; 0
-	-- otherwise. A junction is never part of one. Pure.
-	levelCrossings : function(messages : {string}, collisions : {Collision}) : integer
+	-- otherwise. A junction is never part of one. With `onLevel`, every road hit must have a piece it says is crossed
+	-- on the level, else 0. Pure (but for what onLevel does).
+	levelCrossings : function(messages : {string}, collisions : {Collision},
+		onLevel ?: function(street : integer) : boolean) : integer
+	-- Whether a ground edge of the chunk (edges first..last) crosses the street piece within 1.5 m of its height: a
+	-- level crossing, not a street the track only runs into (an embankment's foot beside a bridge over it).
+	crossesOnLevel : function(net : PgraceRailRouterNetwork.Network, first : integer, last : integer,
+		street : integer) : boolean
 	-- The entities a dry run collided with, each once, with what each is and where. Empty when there are none or
 	-- they can't be read.
 	collisions : function(data : ProposalData) : {Collision}

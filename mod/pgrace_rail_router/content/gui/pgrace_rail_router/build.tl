@@ -246,7 +246,12 @@ local function stepStreet(b : Build, first : integer, last : integer)
 	local splits : {{integer, number, number}} = {}
 	for i = first, last do
 		local e = net.edges[i]
-		for __, c in ipairs(network.crossings({ p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }, h)) do
+		-- Only track on the ground crosses on the level (a bridge's deck over the street crosses it in plan too).
+		local crossed : {PgraceRailRouterNetwork.Crossing} = {}
+		if e.kind == "ground" then
+			crossed = network.crossings({ p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }, h)
+		end
+		for __, c in ipairs(crossed) do
 			local snapped = false
 			for __, n in ipairs(ends) do
 				if not snapped and n ~= nil and dist2(n, c.p) <= NODE_SNAP
@@ -393,7 +398,11 @@ local function stepChunk(b : Build)
 				others = others + 1
 			end
 		end
-		if not check.settings.levelCrossings or builder.levelCrossings(messages, collisions) == 0 or others > 0 then
+		local function onLevel(street : integer) : boolean
+			return builder.crossesOnLevel(net, chunk.first, chunk.last, street)
+		end
+		if not check.settings.levelCrossings or others > 0
+				or builder.levelCrossings(messages, collisions, onLevel) == 0 then
 			fail(b, messages, p.x, p.y)
 			return
 		end
