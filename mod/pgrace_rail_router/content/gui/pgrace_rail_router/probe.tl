@@ -1477,6 +1477,97 @@ function probe.junction(settings : Settings) : {function()}
 	end }
 end
 
+-- P16 ------------------------------------------------------------------------------------------------------------
+
+-- P16: whether track can cross track on the level from a script, and at what angle. A 360 m double track east of
+-- the camera (no signals), then a 40 m straight across both its tracks at each angle, dry-run with and without
+-- cleanupStreetGraph (nothing built); if any is clean, the 90° one is built with the context that worked.
+local P16_CROSSINGS : {{number}} = { { 90, 30 }, { 60, 65 }, { 45, 100 }, { 30, 135 }, { 20, 225 }, { 15, 265 }, { 10, 310 } }
+
+function probe.trackCrossing(settings : Settings) : {function()}
+	return { guarded("P16", function()
+		local c = camera()
+		local east : Pt = { x = 1, y = 0 }
+		local ground = groundAt(c)
+		local opts : Options = {}
+		for k, v in pairs(settings.network as {string : any}) do
+			(opts as {string : any})[k] = v
+		end
+		opts.fan, opts.crossovers, opts.chunkLength, opts.maxEdge = nil, false, 100000, 250
+		local s = with(settings, function(copy : Settings) copy.network = opts end)
+		local net = network.build(testPlan({ straight(c, east, 360) }, ground, 0, "ground"), opts)
+		local proposal, why = builder.chunkProposal(net, 1, #net.edges, s)
+		if proposal == nil then
+			log("P16", "no proposal: " .. tostring(why))
+			return
+		end
+		local ok, __, messages = builder.dryRun(proposal)
+		log("P16", "double track dry run: " .. (ok and "clean" or table.concat(messages, "; ")))
+		if not ok then
+			return
+		end
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(proposal, builder.newContext(), false, true),
+			function(__ : any, built : boolean)
+				guarded("P16", function()
+					log("P16", "double track built: " .. tostring(built))
+					if not built then
+						return
+					end
+					local winner : SimpleProposal = nil
+					local winnerCleanup = false
+					for __, cr in ipairs(P16_CROSSINGS) do
+						local a = math.rad(cr[1])
+						local d : Pt3 = { x = math.cos(a), y = math.sin(a), z = 0 }
+						local mid : Pt3 = { x = c.x + cr[2], y = c.y, z = ground }
+						local p0 : Pt3 = { x = mid.x - d.x * 20, y = mid.y - d.y * 20, z = ground }
+						local p1 : Pt3 = { x = mid.x + d.x * 20, y = mid.y + d.y * 20, z = ground }
+						local t : Pt3 = { x = d.x * 40, y = d.y * 40, z = 0 }
+						local cross : PgraceRailRouterNetwork.Network = { nodes = { p0, p1 }, edges = {
+							{ node0 = 1, node1 = 2, p0 = p0, p1 = p1, t0 = t, t1 = t, kind = "ground", track = 0, leg = 1,
+								s0 = 0, s1 = 40 } }, chunks = {} }
+						for __, cleanup in ipairs({ false, true }) do
+							local pr = builder.chunkProposal(cross, 1, 1, s)
+							if pr ~= nil then
+								local okC, costC, messagesC, ___, dataC = builder.dryRun(pr, builder.newContext(cleanup))
+								local hits : {string} = {}
+								for __, h in ipairs(builder.collisions(dataC)) do
+									table.insert(hits, ("%s %d"):format(h.what, h.entity))
+								end
+								log("P16", ("%2.0f degrees at x = %3.0f, cleanup %-5s: %s, %d %s"):format(cr[1], cr[2],
+									tostring(cleanup), okC and "clean" or table.concat(messagesC, "; "), costC,
+									table.concat(hits, ", ")))
+								if okC and cr[1] == 90 and winner == nil then
+									winner, winnerCleanup = pr, cleanup
+								end
+							end
+						end
+					end
+					if winner == nil then
+						log("P16", "no clean 90 degree crossing: nothing more built")
+						return
+					end
+					api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(winner, builder.newContext(winnerCleanup), false,
+						true), function(res : WorldBuildProposalCommandData, crossed : boolean)
+						guarded("P16", function()
+							log("P16", ("90 degree crossing built (cleanup %s): %s"):format(tostring(winnerCleanup),
+								tostring(crossed)))
+							if crossed then
+								for __, n in ipairs(res.proposal.proposal.addedNodes) do
+									local e = n.entity as integer
+									local segs = api.engine.system.streetSystem.getNodeTrackSegments(e)
+									log("P16", ("  node %d at (%.1f %.1f): %d track pieces"):format(e,
+										n.comp.position.x - c.x, n.comp.position.y - c.y, #segs))
+								end
+								log("P16", ("  %d pieces added, %d removed"):format(#res.proposal.proposal.addedSegments,
+									#res.proposal.proposal.removedSegments))
+							end
+						end)()
+					end)
+				end)()
+			end)
+	end) }
+end
+
 -- P6 -------------------------------------------------------------------------------------------------------------
 
 local function moduleLookup(name : string) : string
