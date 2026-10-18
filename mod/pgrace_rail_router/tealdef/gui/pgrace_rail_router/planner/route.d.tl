@@ -19,7 +19,8 @@ global record PgraceRailRouterRoute
 		-- neighbouring stops.
 		existingStations : {integer : PgraceRailRouterExisting.Station}
 		snapshots : {integer : PgraceRailRouterExisting.Snapshot}
-		-- The turnout radius junctions are fitted for (metres); needed with existingStations.
+		-- The turnout radius junctions are fitted for (metres); needed with existingStations (else the plan fails
+		-- "no_radius").
 		radius : number
 	end
 
@@ -38,7 +39,8 @@ global record PgraceRailRouterRoute
 		-- at a junction on each end it uses (by end, ±1, as existing.Result's): the end's stretch (ends), the junction
 		-- fitted to it (junctions) and the side of outward our line comes from (sides: +1 left, −1 right). endOf maps
 		-- the leg leaving (true) and the leg arriving (false) to their ends. Such a station is never turned or
-		-- re-sited, has no footprint, and its platforms aren't counted in the summary's length.
+		-- re-sited, its footprint is its track along the stretches used (see route.tl's addFootprint), and its
+		-- platforms aren't counted in the summary's length.
 		existing : PgraceRailRouterExisting.Station
 		ends : {integer : PgraceRailRouterExisting.End}
 		junctions : {integer : PgraceRailRouterJunction.Layout}
@@ -118,7 +120,8 @@ global record PgraceRailRouterRoute
 		-- Why the plan failed: "no_stops", "no_site", "no_exit" (the town has clear spots for a station, but buildings
 		-- wall every one in, or a leg's search found its start closed off inside the area: a wider area can't help),
 		-- "too_close" (two consecutive stations' platforms, with their approaches, don't fit between them, or the
-		-- second isn't ahead of the first along both stations' directions) or "no_path"; nil when ok.
+		-- second isn't ahead of the first along both stations' directions), "no_path" or "no_radius" (existing stations
+		-- given without Input.radius); nil when ok.
 		failure : string
 		-- The town for no_site and no_exit; the two towns for too_close and no_path.
 		failureTowns : {string}

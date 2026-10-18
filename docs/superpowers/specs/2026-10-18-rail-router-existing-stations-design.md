@@ -121,9 +121,15 @@ It is used where the straight stretch is long enough. Otherwise the junction is 
   - A station at an end of the line uses the end facing its one neighbour.
   - If the needed ends aren't usable, the stop falls back to a new station.
 - **Legs.** The leg's fixed end is the junction's approach start, at x = junction length out from the station end,
-  on y = +10 (the axis of our two tracks), facing along x. It replaces the site's platform end and approach. The
-  grid search ends there, as it does at a station's approach today. Cells holding the existing line stay blocked as
-  they are now, and our parallel approach is fixed geometry outside the search.
+  on y = +10 (the axis of our two tracks), facing along x. It replaces the site's platform end. As at a station of
+  ours, an approach straight (the planner's approach length) and a room to turn follow it along x; the junction is
+  fitted so that the approach lies along the straight stretch, and the room to turn and the search's run along the
+  axis stop at the stretch's end. The grid search ends there, as it does at a station's approach today.
+  - **The existing line's cells.** The survey marks them as track, which the search otherwise crosses (a crossing,
+    bridged) and runs along for free. Along the stretches used, from the station's centre out, the cells from our
+    side's track across to a cell beyond the far track are kept off as a station's footprint is (but for the leg's
+    own end cell), so the leg leaves the existing line sideways, on our side. Samples beside a stretch (along it,
+    5 m or more out on our side) aren't counted as crossings, so our parallel straight stays on the ground.
 - **No station of ours** is placed at that stop, and it gets no road.
 
 ## Network

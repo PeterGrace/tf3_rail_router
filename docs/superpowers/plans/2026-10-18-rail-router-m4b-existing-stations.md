@@ -535,22 +535,38 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
   for a junction (needs N m of straight double track); a new station was planned." (N = `junction.needed(radius)`
   in whole metres) for no double track, a short one or no fit; "The station in X can't be used: the tracks at the Y
   end run left-handed; …" (Y the neighbour that end faces); or "… can't be used: both legs would use the same
-  end; …".
-- [ ] **Step 3: Turning and re-siting skip existing stations.** In the "turn" phase and in `stepResite`, add
-  `if station.existing ~= nil then <advance to the next station> end` at the top of each per-station step.
+  end; …". A missing snapshot: "The track at the station in X couldn't be read; …". An existing station too close
+  to the stop before it: "The station in X is too close to the station in Y; …" (a stop after it too close to it
+  still fails the plan `too_close`, as between our own). `route.start` fails the plan `no_radius` when existing
+  stations are given without `Input.radius`.
+- [ ] **Step 3: Turning and re-siting skip existing stations.** In the "turn" phase, add
+  `if station.existing ~= nil then <advance to the next station> end` at the top of each per-station step; `checkLeg`
+  never starts re-siting an existing station.
 - [ ] **Step 4: `stationEnds` for an existing station.** For an existing station on the leg end `forward`, take
   `k = station.endOf[forward]`, `e = existing end k`, and `j = station.junctions[k]`:
   - `platformEnd = e.origin + e.dir × j.approachX + left(e.dir) × 10 × side`, where left(d) = (−d.y, d.x);
   - `approach = platformEnd + e.dir × Input.approach` (as at a station of ours: the leg's search assumes that much
     straight behind a corner at the approach point; with 50 m and no extension a leg turned 30° there at 213 m, below
-    the radius);
+    the radius). So the approach lies along the stretch, the junction is fitted with
+    `junction.fit(e.length − Input.approach, ...)`, and the "no room" note's N is `junction.needed(radius) +
+    Input.approach`;
   - the extension beyond it as for a station of ours (room to turn, capped at a quarter of the way to the
-    neighbouring station, pulled back until clear), along e.dir.
+    neighbouring station, pulled back until clear), along e.dir, and no farther than the stretch's end
+    (e.length − approachX − Input.approach); the search's run along the axis stops there too (`runRoom`; one run for
+    both ends, so the limit holds at the leg's other end as well);
+  - the straight platformEnd → approach must be clear (`straightClear`); if not, the end is unusable ("no room").
 
   The leg's first (or last) straight piece then runs along our axis, 10 m off the existing one. The heights use
-  `e.z + e.grade × x`: the leg's end height is the track's at the approach start.
-- [ ] **Step 5: Footprints.** `addFootprint` and `takePlatforms` for an existing station add nothing. Its cells are
-  already track, which the grid treats as crossings or blocks.
+  `e.z + e.grade × x`, but only the leg's end height (the track's at the approach start) is pinned: the profile may
+  grade the straight beyond as it grades any leg.
+- [ ] **Step 5: Footprints and crossings.** `takePlatforms` adds nothing for an existing station. In-game the survey
+  marks the existing line's cells as track, where a move from track to track is free and every sample counts as a
+  crossing (bridged, 9 m up), so:
+  - `addFootprint` adds, along each stretch used (from the station's centre out to the stretch's end), the cells from
+    the near track across to one cell beyond the far track. Legs' searches keep off them but for their own end cell,
+    so a leg leaves the existing line sideways, on our side (a 100 m cell holds both tracks and our straight).
+  - `startHeights` doesn't count a sample as a track crossing where it lies beside a stretch: along it (0 ≤ x ≤
+    e.length) and 5 m or more out on our side.
 - [ ] **Step 6: Tests** in `tests/route_test.lua`, on a synthetic grid (see that file's helpers) with three stops:
   - **Usable.** The middle stop has an `existingStations` entry and a usable `existing` result at both ends. Expect
     `plan.stations[2].existing ~= nil`, `plan.legs[1]` ending at that station's −1 junction's platformEnd, and
@@ -581,7 +597,9 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
     tangents `e.dir × tx + left(e.dir) × ty` with z `e.grade × tx`. Never split a piece: the game refuses a new piece
     over existing track unless they share a node (P15). Then a straight edge on our track from each outer piece end
     (the merge's x1 on our far track, the "cross out" piece's x1 on our near track) to the approach start (approachX),
-    where the leg's track end nodes sit: the merge joins our far track, the crossing track our near track. The far
+    where the leg's track end nodes sit: the leg's own first (or last) piece is our approach, a straight from the
+    approach start out along e.dir (the route's fixed straight, Input.approach and the extension, all beside the
+    stretch) before its search's path: the merge joins our far track, the crossing track our near track. The far
     track is whichever of the leg's tracks 1/2 lies further from the existing axis at that end. Edges run in whichever
     direction the leg's chunk needs; reverse a piece by swapping its ends and negating its tangents.
   - **The existing end** becomes a new node carrying `existing = { piece, s }`. Find the piece in
