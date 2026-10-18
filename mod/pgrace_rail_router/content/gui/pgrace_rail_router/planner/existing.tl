@@ -13,12 +13,16 @@ local REACH = 1500.0
 local WIDE = 12.0
 local STEP = 5.0
 local EPS = 1e-6
--- A double track: two tracks 4.5–5.5 m apart, whose midline and height drift no more than DRIFT from the start.
+-- A double track: two tracks 4.5–5.5 m apart, whose midline and height drift no more than DRIFT from the straight
+-- line through the start.
 local GAP_MIN = 4.5
 local GAP_MAX = 5.5
 local DRIFT = 0.5
--- A straight, level piece: each tangent's sideways share (|t × outward| / |t|) and upward share at most this.
+-- A straight piece on the stretch's grade: each tangent's sideways share (|t × outward| / |t_xy|) and its grade's
+-- difference from the stretch's at most this.
 local SIDEWAYS = 0.005
+-- The two tracks' grades at the start may differ by this.
+local GRADES = 0.002
 -- A node on the track's line: within this of it across the axis.
 local ON_LINE = 1.0
 
@@ -45,13 +49,14 @@ local record Corridor
 	oy : number
 end
 
--- A stretch of double track: its start (x), midline (y) and height there, its length, each track's spans in order
--- outward (left: left of outward) and the two pieces it starts on, and why it ended ("stop", or "structure",
--- "drift" or "crossover", past which the scan reads on).
+-- A stretch of double track: its start (x), midline (y) and height there, its grade (dz per metre outward), its
+-- length, each track's spans in order outward (left: left of outward) and the two pieces it starts on, and why it
+-- ended ("stop", or "structure", "drift" or "crossover", past which the scan reads on).
 local record Stretch
 	start : number
 	mid : number
 	z : number
+	grade : number
 	length : number
 	left : {Span}
 	right : {Span}
@@ -160,16 +165,25 @@ local function crossing(spans : {Span}, x : number) : {Span}
 	return out
 end
 
--- Both tangents along the axis and level: a piece that bulges or kinks, sideways or up, isn't straight, whatever its
--- chord.
-local function straight(p : Piece, ox : number, oy : number) : boolean
+-- Both tangents along the axis at grade g (dz per metre outward): a piece that bulges or kinks, sideways or up,
+-- isn't straight, whatever its chord.
+local function straight(p : Piece, ox : number, oy : number, g : number) : boolean
 	for __, tg in ipairs({ p.t0, p.t1 }) do
-		local len = math.sqrt(tg.x * tg.x + tg.y * tg.y + tg.z * tg.z)
-		if len < EPS or math.abs(tg.x * oy - tg.y * ox) / len > SIDEWAYS or math.abs(tg.z) / len > SIDEWAYS then
+		local len = math.sqrt(tg.x * tg.x + tg.y * tg.y)
+		if len < EPS or math.abs(tg.x * oy - tg.y * ox) / len > SIDEWAYS then
+			return false
+		end
+		local along = tg.x * ox + tg.y * oy > 0 and 1 or -1
+		if math.abs(along * tg.z / len - g) > SIDEWAYS then
 			return false
 		end
 	end
 	return true
+end
+
+-- The span's grade along its chord (dz per metre outward).
+local function gradeOf(s : Span) : number
+	return (s.zb - s.za) / (s.xb - s.xa)
 end
 
 -- The other piece at a plain node.
@@ -185,7 +199,7 @@ end
 -- One track outward from `first`, piece by piece through plain nodes (degree 2). Ends at the first node that isn't
 -- plain ("switch" for degree 3, else "stop"), or where the next piece leaves the corridor or turns back ("stop"),
 -- isn't on the ground ("structure") or isn't straight ("drift"). Returns the track's spans and where it ends.
-local function walk(c : Corridor, snap : Snapshot, first : Span) : {Span}, number, string
+local function walk(c : Corridor, snap : Snapshot, first : Span, g : number) : {Span}, number, string
 	local list : {Span} = { first }
 	local s = first
 	while true do
@@ -201,7 +215,7 @@ local function walk(c : Corridor, snap : Snapshot, first : Span) : {Span}, numbe
 		if nxt.piece.kind ~= "ground" then
 			return list, s.xb, "structure"
 		end
-		if not straight(nxt.piece, c.ox, c.oy) then
+		if not straight(nxt.piece, c.ox, c.oy, g) then
 			return list, s.xb, "drift"
 		end
 		table.insert(list, nxt)
@@ -298,18 +312,23 @@ local function onTrack(list : {Span}, x : number) : Span
 	return nil
 end
 
--- A stretch starting at x, if one does: exactly two pieces cross x, on the ground, straight and 4.5–5.5 m apart.
--- Each track is walked outward through plain nodes (see `walk`); the stretch ends where the first track does. Then
--- every STEP and at every node on the way, the two tracks must stay the only ones crossing, 4.5–5.5 m apart, with
--- midline and height within DRIFT of the start's; where that fails, the stretch ends at the point checked before
+-- A stretch starting at x, if one does: exactly two pieces cross x, on the ground, 4.5–5.5 m apart, on grades within
+-- GRADES of each other and straight at their mean grade g. Each track is walked outward through plain nodes (see
+-- `walk`); the stretch ends where the first track does. Then every STEP and at every node on the way, the two
+-- tracks must stay the only ones crossing, 4.5–5.5 m apart, with midline and height within DRIFT of the straight
+-- line through the start (z0 + g × distance); where that fails, the stretch ends at the point checked before
 -- ("drift").
 local function stretchAt(c : Corridor, snap : Snapshot, x : number) : Stretch
 	local cross = crossing(c.spans, x)
 	if #cross ~= 2 then
 		return nil
 	end
+	local g = (gradeOf(cross[1]) + gradeOf(cross[2])) / 2
+	if math.abs(gradeOf(cross[1]) - gradeOf(cross[2])) > GRADES then
+		return nil
+	end
 	for __, s in ipairs(cross) do
-		if s.piece.kind ~= "ground" or not straight(s.piece, c.ox, c.oy) then
+		if s.piece.kind ~= "ground" or not straight(s.piece, c.ox, c.oy, g) then
 			return nil
 		end
 	end
@@ -323,8 +342,8 @@ local function stretchAt(c : Corridor, snap : Snapshot, x : number) : Stretch
 		leftFirst, rightFirst = cross[2], cross[1]
 	end
 	local mid, z0 = (y1 + y2) / 2, (z1 + z2) / 2
-	local left, leftEnd, leftWhy = walk(c, snap, leftFirst)
-	local right, rightEnd, rightWhy = walk(c, snap, rightFirst)
+	local left, leftEnd, leftWhy = walk(c, snap, leftFirst, g)
+	local right, rightEnd, rightWhy = walk(c, snap, rightFirst, g)
 	local stop = math.min(leftEnd, rightEnd)
 	local why : string = nil
 	for __, track in ipairs({ { left, leftEnd, leftWhy }, { right, rightEnd, rightWhy } }) do
@@ -361,7 +380,7 @@ local function stretchAt(c : Corridor, snap : Snapshot, x : number) : Stretch
 			local yl, zl = at(l, q)
 			local yr, zr = at(r, q)
 			good = yl - yr >= GAP_MIN and yl - yr <= GAP_MAX and math.abs((yl + yr) / 2 - mid) <= DRIFT
-				and math.abs(zl - z0) <= DRIFT and math.abs(zr - z0) <= DRIFT
+				and math.abs(zl - z0 - g * (q - x)) <= DRIFT and math.abs(zr - z0 - g * (q - x)) <= DRIFT
 		end
 		if not good then
 			stop, why = prev, "drift"
@@ -378,7 +397,7 @@ local function stretchAt(c : Corridor, snap : Snapshot, x : number) : Stretch
 		end
 		return out
 	end
-	return { start = x, mid = mid, z = z0, length = stop - x, left = upTo(left), right = upTo(right),
+	return { start = x, mid = mid, z = z0, grade = g, length = stop - x, left = upTo(left), right = upTo(right),
 		firsts = { leftFirst, rightFirst }, why = why }
 end
 
@@ -388,6 +407,7 @@ local function readEnd(st : Stretch, side : number, ox : number, oy : number, ex
 	local e : End = {
 		origin = { x = ex + ox * st.start - oy * st.mid, y = ey + oy * st.start + ox * st.mid },
 		z = st.z,
+		grade = st.grade,
 		dir = { x = ox, y = oy },
 		length = st.length,
 		pieces = { near = {}, far = {} },

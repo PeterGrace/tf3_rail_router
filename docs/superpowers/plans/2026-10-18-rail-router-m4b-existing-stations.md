@@ -378,13 +378,15 @@ global record PgraceRailRouterExisting
 		ends : {integer}
 	end
 
-	-- A usable end: the straight double-track stretch's start on the two tracks' midline (and its height), the unit
+	-- A usable end: the straight double-track stretch's start on the two tracks' midline (and its height), its grade
+	-- (dz per metre outward: the track at x along the stretch is at z + grade × x, and so is the junction), the unit
 	-- outward direction, the stretch's length (metres), each track's pieces along it ("near": the track on our
 	-- line's side, "far"), ordered outward, and each track's signals as positions along the stretch (metres from its
 	-- start).
 	record End
 		origin : PgraceRailRouterGeo.Pt
 		z : number
+		grade : number
 		dir : PgraceRailRouterGeo.Pt
 		length : number
 		pieces : {string : {Piece}}
@@ -398,16 +400,17 @@ global record PgraceRailRouterExisting
 		why : {integer : string}
 	end
 
-	-- Each end's first straight, level, plain double-track stretch at least junction.needed(radius) long. Frame: x
-	-- outward from the platform end, y to the left; the scan starts at the station's end nodes and reads up to
-	-- 1.5 km out, 12 m either side. A stretch starts where exactly two straight ground pieces 4.5–5.5 m apart cross
-	-- x. Each track is then walked piece by piece through plain nodes (degree 2), and the stretch ends at the first
-	-- node that isn't plain, a bridge or tunnel, a piece that isn't straight (tangents within 0.5% of the axis), or
-	-- where the tracks stop being the only two, 4.5–5.5 m apart, with midline and height within 0.5 m of the start's
-	-- (checked every 5 m and at each node). Past a short stretch the scan reads on only after a bridge or tunnel,
-	-- such a drift, or a crossover; any other switch, the track's end or single track stops it. A stretch's tracks
-	-- must also lead back only to the station's end nodes (through the fan's merges and crossovers), so a stretch
-	-- past a siding, branch or another line's switch stops the scan too.
+	-- Each end's first straight (on a steady grade), plain double-track stretch at least junction.needed(radius)
+	-- long. Frame: x outward from the platform end, y to the left; the scan starts at the station's end nodes and
+	-- reads up to 1.5 km out, 12 m either side. A stretch starts where exactly two straight ground pieces 4.5–5.5 m
+	-- apart cross x, their grades within 0.2% of each other. Each track is then walked piece by piece through plain
+	-- nodes (degree 2), and the stretch ends at the first node that isn't plain, a bridge or tunnel, a piece that
+	-- isn't straight (tangents within 0.5% of the axis sideways and of the grade upward), or where the tracks stop
+	-- being the only two, 4.5–5.5 m apart, with midline and height within 0.5 m of the straight line through the
+	-- start (checked every 5 m and at each node). Past a short stretch the scan reads on only after a bridge or
+	-- tunnel, such a drift, or a crossover; any other switch, the track's end or single track stops it. A stretch's
+	-- tracks must also lead back only to the station's end nodes (through the fan's merges and crossovers), so a
+	-- stretch past a siding, branch or another line's switch stops the scan too.
 	-- `side[k]`: which side of end k our line comes from (+1 left of outward, −1 right; nil +1).
 	analyse : function(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 end
@@ -423,8 +426,10 @@ end
    nodes on this end (less 1 m), that the end nodes reach over such pieces (a BFS over node → pieces). The scan
    starts at the end nodes' smallest x.
 3. **A stretch's start.** Scan x in 5 m steps. A stretch starts where exactly two pieces cross x (a piece starting at
-   x counts, one ending there doesn't; y and z along the chord), both "ground", both straight (each tangent's
-   sideways and upward share ≤ 0.005), 4.5–5.5 m apart. Until the fan has merged to two tracks nothing starts.
+   x counts, one ending there doesn't; y and z along the chord), both "ground", 4.5–5.5 m apart, their chord grades
+   (dz/dx outward) within 0.002 of each other. Their mean is the stretch's grade g. Both must be straight at g: each
+   tangent's sideways share |t × o| / |t_xy| ≤ 0.005 and |t.z / |t_xy| − g| ≤ 0.005 (t.z taken along outward).
+   Until the fan has merged to two tracks nothing starts.
 4. **Its tracks must come from the station.** Walking inward from the two start pieces, every way back must end at a
    station end node. A node may merge two inward pieces (the fan), or split towards the station only where one of
    its outward pieces leads across to the other track (a crossover: through plain nodes to a degree-3 node
@@ -433,8 +438,8 @@ end
 5. **Its length.** Each track is walked outward piece by piece through plain (degree 2) nodes. A track ends at a
    switch (degree 3), any other non-plain node, a next piece that leaves the corridor or turns back, a bridge or
    tunnel, or a piece that isn't straight. The stretch ends where the first track does. Then every 5 m and at each
-   node on the way, the two tracks must stay the only ones crossing, 4.5–5.5 m apart, with midline and height
-   within 0.5 m of the start's; where that fails it ends at the point checked before (a drift). Piece lists hold
+   node on the way, the two tracks must stay the only ones crossing, 4.5–5.5 m apart, with midline within 0.5 m of
+   the start's and height within 0.5 m of z_start + g (x − start); where that fails it ends at the point checked before (a drift). Piece lists hold
    each track's pieces that start before the end, ordered outward.
 6. **Usable** if the length ≥ `junction.needed(radius)`. If shorter, the scan reads on from its end only if it
    ended at a bridge or tunnel, a drift or a crossover (a switch whose other piece leads across, as in 4); any other
@@ -527,7 +532,7 @@ end
   - return platformEnd, approach, approach, so it has no extension.
 
   The leg's first (or last) straight piece then runs along our axis, 10 m off the existing one. The heights use
-  `e.z`.
+  `e.z + e.grade × x`.
 - [ ] **Step 5: Footprints.** `addFootprint` and `takePlatforms` for an existing station add nothing. Its cells are
   already track, which the grid treats as crossings or blocks.
 - [ ] **Step 6: Tests** in `tests/route_test.lua`, on a synthetic grid (see that file's helpers) with three stops:
@@ -556,13 +561,13 @@ end
   - **No fan and no crossovers** at that end, so pass `atStart`/`atEnd` = false for that end to `crossoverPlaces`,
     and skip the fan code for it.
   - **Edges.** For each `j.pieces` entry, make one edge from the frame to the world:
-    `world(x, y) = e.origin + e.dir × x + left(e.dir) × y`, at height `e.z`; tangents
-    `e.dir × tx + left(e.dir) × ty`. Never split a piece: the game refuses a new piece over existing track unless
-    they share a node (P15). Then a straight edge on our track from each outer piece end (the merge's x1 on our far
-    track, the "cross out" piece's x1 on our near track) to the approach start (approachX), where the leg's track
-    end nodes sit: the merge joins our far track, the crossing track our near track. The far track is whichever of
-    the leg's tracks 1/2 lies further from the existing axis at that end. Edges run in whichever direction the
-    leg's chunk needs; reverse a piece by swapping its ends and negating its tangents.
+    `world(x, y) = e.origin + e.dir × x + left(e.dir) × y`; every junction node takes z = `e.z + e.grade × x`, and
+    tangents `e.dir × tx + left(e.dir) × ty` with z `e.grade × tx`. Never split a piece: the game refuses a new piece
+    over existing track unless they share a node (P15). Then a straight edge on our track from each outer piece end
+    (the merge's x1 on our far track, the "cross out" piece's x1 on our near track) to the approach start (approachX),
+    where the leg's track end nodes sit: the merge joins our far track, the crossing track our near track. The far
+    track is whichever of the leg's tracks 1/2 lies further from the existing axis at that end. Edges run in whichever
+    direction the leg's chunk needs; reverse a piece by swapping its ends and negating its tangents.
   - **The existing end** becomes a new node carrying `existing = { piece, s }`. Find the piece in
     `e.pieces[near|far]` whose x-range holds the cut, then compute s by linear interpolation along its chord.
   - **The crossing.** The "cross in" and "cross out" pieces share one node, the crossing node, which carries the

@@ -43,8 +43,8 @@ A station is usable if all of these hold:
   is a Halt 2+2.
 - That double track then runs **straight, on the ground, with no switches**, for at least the junction's length
   (below).
-- The stretch must be **level**: on the ground, within 0.5 m of its start height (the junction is built flat at that
-  height).
+- The stretch must be **straight in 3D**: on the ground, on a steady grade, within 0.5 m of the straight line
+  through its start (the junction is built on that line).
 - Signals on that straight stretch are allowed. We never move or remove them. The junction's points must stay at
   least 15 m from them, the same clearance as our own signals.
 

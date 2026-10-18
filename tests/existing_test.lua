@@ -277,32 +277,58 @@ t.test("existing: a piece bulging sideways between straight chord ends breaks th
 	t.eq(r.why[1], "short", "100 m before the bulging piece")
 end)
 
--- Puts the track from x = 180 on a grade (rising outward).
-local function grade(b, g)
+-- Puts the track from x = 180 on a grade (rising outward), level again from `kink` if given.
+local function grade(b, g, kink)
+	local function z(x)
+		return g * (math.min(x, kink or math.huge) - 180)
+	end
 	for __, p in ipairs(b.pieces) do
 		if p.p0.x >= 180 and p.p1.x >= 180 then
-			p.p0.z = g * (p.p0.x - 180)
-			p.p1.z = g * (p.p1.x - 180)
+			p.p0.z = z(p.p0.x)
+			p.p1.z = z(p.p1.x)
 			p.t0.z = p.p1.z - p.p0.z
 			p.t1.z = p.t0.z
 		end
 	end
 end
 
-t.test("existing: the stretch must be level", function()
+t.test("existing: a steady grade is usable, and the end carries it", function()
 	local b, station = plain()
-	grade(b, 0.003)
+	grade(b, 0.02)
 	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
-	t.eq(r.ends[1], nil, "a 0.3% grade climbs 0.5 m in 167 m")
-	t.eq(r.why[1], "short", "short")
+	local e = r.ends[1]
+	t.ok(e ~= nil, "a 2% grade: " .. tostring(r.why[1]))
+	t.near(e.grade, 0.02, 1e-9, "the grade")
+	t.near(e.z, 0, 1e-9, "the start's height")
+	t.near(e.length, 820, 1e-9, "to the track's end")
+end)
+
+t.test("existing: a change of grade ends the stretch at the kink", function()
+	local b, station = plain()
+	grade(b, 0.02, 580)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	local e = r.ends[1]
+	t.ok(e ~= nil, "400 m on 2% before the kink: " .. tostring(r.why[1]))
+	t.near(e.length, 400, 1e-9, "ends at the kink, world x = 580")
+	t.near(e.grade, 0.02, 1e-9, "the grade")
 	local b2, station2 = plain()
-	grade(b2, 0.02)
+	grade(b2, 0.02, 380)
 	local r2 = existing.analyse(station2, b2.snapshot(), { [1] = 1 }, R)
-	t.eq(r2.ends[1], nil, "a 2% grade isn't level")
-	local b3, station3 = plain()
-	grade(b3, 0.0005)
-	local r3 = existing.analyse(station3, b3.snapshot(), { [1] = 1 }, R)
-	t.ok(r3.ends[1] ~= nil, "0.05% climbs 0.41 m over 820 m: " .. tostring(r3.why[1]))
+	t.ok(r2.ends[1] ~= nil, "the level part beyond a kink at 380: " .. tostring(r2.why[1]))
+	t.near(r2.ends[1].origin.x, 380, 1e-9, "starts at the kink")
+	t.near(r2.ends[1].grade, 0, 1e-9, "level")
+	t.near(r2.ends[1].z, 4, 1e-9, "at the kink's height")
+end)
+
+t.test("existing: tracks on different grades are not a double track", function()
+	local b, station, L = plain()
+	grade(b, 0.01)
+	for __, p in ipairs(L) do
+		p.p0.z, p.p1.z = 0, 0
+		p.t0.z, p.t1.z = 0, 0
+	end
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.eq(r.ends[1], nil, "1% apart")
 end)
 
 t.test("existing: a hump between level ends breaks the stretch", function()
