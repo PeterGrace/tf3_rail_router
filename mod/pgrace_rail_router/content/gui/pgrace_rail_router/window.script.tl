@@ -993,6 +993,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.bridgeClearance(settings)
 			elseif work.name == "P14" then
 				work.tasks = probe.halt(settings)
+			elseif work.name == "P15" then
+				work.tasks = probe.junction(settings)
 			elseif work.name == "P13" then
 				work.tasks = probe.stationStreets()
 			else
@@ -1430,6 +1432,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P6", "Probe P6: dry-run a station" },
 			{ "P13", "Probe P13: streets around the station" },
 			{ "P14", "Probe P14: build a Halt 2+2 station, fans and signals (test map only)" },
+			{ "P15", "Probe P15: junction into existing track, stage by stage (test map only)" },
 		}) do
 			table.insert(body, builtin.Button{
 				content = builtin.TextView{ text = p[2] },

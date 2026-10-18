@@ -23,4 +23,10 @@ global record PgraceRailRouterProbe
 	-- fans, crossovers and one-way signals in one proposal; logs the signal resource the game knows and the signals as
 	-- built, against the planned ones.
 	halt : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
+	-- P15 (test map only), three stages, one click each (a stage counter wraps 1, 2, 3, 1): 1 builds a 400 m double
+	-- track east of the camera with a one-way signal on each track at x = 300; 2 splits track 1 at x = 100, then splits
+	-- the piece carrying the signal, logging where the signal ends up; 3 cuts the tracks at x = 60 and 245 (track 1)
+	-- and 190 (track 2) and builds a flat junction from the north: one track switching into track 1, one switching
+	-- into track 2 and crossing track 1 on the level (four pieces at one node). Logs every piece, node and signal.
+	junction : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 end
