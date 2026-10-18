@@ -216,6 +216,17 @@ global record PgraceRailRouterRoute
 		keep : LegTry
 	end
 
+	-- The track round an existing station, from its snapshot, for telling where a leg crosses it (route.tl's
+	-- trackIndex): points along the pieces (but tunnels) every 2 m or less, bucketed in squares of `bucket` metres
+	-- (key: ix × 2^20 + iy, from the floor of x and y over bucket, offset to keep them positive) as flat lists
+	-- {x1, y1, x2, y2, ...}; it holds within `reach` of `centre`. Internal.
+	record TrackIndex
+		centre : PgraceRailRouterGeo.Pt
+		reach : number
+		bucket : number
+		points : {integer : {number}}
+	end
+
 	-- Work in progress. The fields are internal.
 	record Job
 		input : Input
@@ -272,6 +283,8 @@ global record PgraceRailRouterRoute
 		-- Grid cells (by index) of the existing stations' own track (their platforms, and each stretch used): searches
 		-- run along track cells there at plain cost (grid.startSearch's alongFree). Worked out once the sites are.
 		alongFree : {integer : boolean}
+		-- Each existing station's TrackIndex, in the order they were placed.
+		trackIndexes : {TrackIndex}
 		footprintVersion : integer
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
 		-- is never changed.

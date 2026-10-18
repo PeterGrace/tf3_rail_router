@@ -123,6 +123,17 @@ local RESITE_MOVE = 300.0
 -- a leg's end sits on their midline, this far off.
 local JUNCTION_OFFSET = 10.0
 
+-- A profile sample within this of an existing station's track (its snapshot's pieces; metres from our line's midline)
+-- crosses it: our tracks run 2.5 m either side, so about a metre between rails. Our straight beside a stretch is 7.5 m
+-- from its near track.
+local CROSS_NEAR = 6.0
+-- The track index's points are at most this far apart along a piece, and its buckets this wide (metres).
+local INDEX_SPACING = 2.0
+local INDEX_BUCKET = 12.0
+-- How far round an existing station its snapshot is read, beyond its platform ends' reach (the window's
+-- survey.trackSnapshot radius is half + existing.REACH + this).
+local SNAPSHOT_MARGIN = 50.0
+
 -- −1 for a negative number, else +1.
 local function sign(v : number) : number
 	return v < 0 and -1 or 1
@@ -315,7 +326,10 @@ end
 -- on our side across to a cell beyond its far track: a leg's search, starting beside that track (where a move from
 -- track cell to track cell is free), would otherwise run along it (its curves then bridged over it), or leave its end
 -- cell across it to the far side (a 100 m cell holds both tracks and our straight 10 m off). So the leg leaves it
--- sideways, on our side (the end's own cell aside).
+-- sideways, on our side (the end's own cell aside). Past the stretch's end, where the line runs on somewhere the
+-- grid's cells can't tell, the cells from half a cell beyond the far track out to a cell beyond it stay kept off as far as our
+-- straight may reach or the snapshot reads (existing.REACH), so the leg keeps to our side there too rather than come
+-- round the far side and cross the line to reach its end (with the stops in line, either side looked the same).
 local function addFootprint(input : Input, station : Station, cells : {integer : boolean})
 	local g = input.grid
 	if station.existing ~= nil then
@@ -325,11 +339,15 @@ local function addFootprint(input : Input, station : Station, cells : {integer :
 			-- In the stretch's frame (x from its start, across from its midline): from back at the station's centre out
 			-- to where our straight may reach (its approach, room to turn at the full radius, and run, and a cell more).
 			local x = -geo.dot(geo.sub(e.origin, c), e.dir)
-			local reach = math.min(e.length, station.junctions[k].approachX + approachOf(input)
-				+ extensionLength(input, nil) + MAX_END_RUN + g.cell)
+			local reach = station.junctions[k].approachX + approachOf(input) + extensionLength(input, nil) + MAX_END_RUN
+				+ g.cell
+			local far = math.min(reach, existing.REACH - geo.dot(geo.sub(e.origin, c), e.dir) + station.existing.half)
+			reach = math.min(e.length, reach)
 			local side = station.sides[k]
-			while x <= reach + 1e-6 do
-				local y = 2.5
+			while x <= math.max(reach, far) + 1e-6 do
+				-- Past the stretch only the far side, from half a cell beyond the far track out: the axis's own cells stay
+				-- open, so a leg in line with the station may still come in along it (spaced turns can't jog one cell aside).
+				local y = x <= reach + 1e-6 and 2.5 or -(2.5 + g.cell / 2)
 				while y >= -(2.5 + g.cell) - 1e-6 do
 					local p = geo.add(geo.add(e.origin, geo.scale(e.dir, x)), geo.scale(left, y * side))
 					if grid.inside(g, p) then
@@ -396,6 +414,7 @@ local function alongFreeCells(input : Input, plan : Plan) : {integer : boolean}
 			local dir = geo.norm(st.dir)
 			band(st.centre, dir, -st.half, st.half)
 			for __, e in pairs(station.ends) do
+				-- Half a cell short of the stretch's end, so a cell overhanging it, where the line runs on, isn't free.
 				band(e.origin, e.dir, -geo.dot(geo.sub(e.origin, st.centre), e.dir), e.length)
 			end
 		end
@@ -610,6 +629,9 @@ local function fail(job : Job, failure : string, towns : {string}) : boolean
 	return true
 end
 
+-- A check of a point against a leg's path (see pathGuard).
+local type PointCheck = function(p : Pt, from : integer, to : integer) : boolean
+
 -- Whether track at a point stays on the kind of ground the grid path had, so that smoothing doesn't take it where
 -- the search chose not to go. clear(p, from, to) takes q, the point of the path line path[from..to] nearest to p,
 -- and is true when p is inside the grid and off blocked cells, over water only where q is, off track cells q isn't on
@@ -621,9 +643,10 @@ end
 -- offset on a plain incline.
 -- Track also keeps off the stations' platforms and approaches (`footprint`), except next to the leg's ends (within
 -- END_POINTS path points of them), where it runs into its own stations.
+-- The second function returned starts a new piece: call it before each piece's first check (and the run of checks on
+-- track cells starts again).
 local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean}, alongFree : {integer : boolean})
-		: function(p : Pt, from : integer,
-		to : integer) : boolean
+		: PointCheck, function()
 	local n = #path
 	-- The longest step between neighbouring path points: the nearest-point search skips ahead by it.
 	local maxGap = 1e-9
@@ -663,7 +686,7 @@ local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean},
 		hint = best
 		return best
 	end
-	return function(p : Pt, from : integer, to : integer) : boolean
+	local function check(p : Pt, from : integer, to : integer) : boolean
 		if not grid.inside(g, p) then
 			return false
 		end
@@ -705,8 +728,8 @@ local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean},
 		end
 		-- Track cells the path didn't use: a short crossing is fine (the profile bridges it), but no run along them,
 		-- where the profile would bridge the line lengthwise. The checks come in order along each candidate piece, a
-		-- quarter cell apart, so consecutive ones (no farther apart than half a cell) make a run; a stretch's own cells
-		-- (alongFree) are free.
+		-- quarter cell apart, so consecutive ones on one piece (no farther apart than half a cell) make a run; a
+		-- stretch's own cells (alongFree) are free.
 		if g.track[cell] and not (alongFree ~= nil and alongFree[cell]) then
 			local tx, ty = grid.cellOf(g, qp)
 			if not g.track[grid.index(g, tx, ty)] then
@@ -729,6 +752,16 @@ local function pathGuard(g : Grid, path : {Pt}, footprint : {integer : boolean},
 		local bend = grid.heightAt(g, p) - 2 * grid.heightAt(g, qp) + grid.heightAt(g, mirror)
 		return math.abs(bend) <= MAX_GROUND_DIFF
 	end
+	-- A refused check ends its piece's run too.
+	return function(p : Pt, from : integer, to : integer) : boolean
+		if check(p, from, to) then
+			return true
+		end
+		offX = nil
+		return false
+	end, function()
+		offX = nil
+	end
 end
 
 -- Building a leg takes three steps, so no frame takes them all (in-game one took 14.7 ms): simplifying the path
@@ -740,7 +773,7 @@ local function simplifyLeg(input : Input, alongFree : {integer : boolean}, a : S
 	local bEnd, bApproach = stationEnds(input, b, false, taken, a)
 	-- Simplifying and filleting are guarded, so the track keeps to the ground the path chose (off water, hillsides
 	-- and buildings it went round), checked every quarter cell.
-	local clear = pathGuard(g, path, footprint, alongFree)
+	local clear, begin = pathGuard(g, path, footprint, alongFree)
 	local step = g.cell / 4
 	local probe : Pt = { x = 0, y = 0 }
 	local function straightOnPath(i : integer, j : integer) : boolean
@@ -749,6 +782,7 @@ local function simplifyLeg(input : Input, alongFree : {integer : boolean}, a : S
 		local scale = 1 / math.max(length, 1e-9)
 		local dx, dy = (to.x - from.x) * scale, (to.y - from.y) * scale
 		local d = 0.0
+		begin()
 		while true do
 			local along = math.min(d, length)
 			probe.x, probe.y = from.x + dx * along, from.y + dy * along
@@ -780,7 +814,7 @@ local function simplifyLeg(input : Input, alongFree : {integer : boolean}, a : S
 	local guard : PgraceRailRouterSmooth.Guard = { step = step, minRadius = w.minBuildRadius,
 		clear = function(p : Pt, from : integer, to : integer) : boolean
 			return clear(p, raw[from], raw[to])
-		end }
+		end, begin = begin }
 	return { pts = pts, guard = guard }
 end
 
@@ -920,8 +954,72 @@ local function stepFit(input : Input, simplified : PgraceRailRouterRoute.Simplif
 	end
 end
 
--- Samples a fitted leg's ground and starts fitting its heights (profile.start; stepped by route.step).
-local function startHeights(input : Input, a : Station, b : Station, fitted : PgraceRailRouterSmooth.Result) : LegHeights
+local function bucketKey(ix : integer, iy : integer) : integer
+	return (ix + 524288) * 1048576 + (iy + 524288)
+end
+
+-- The track round an existing station, from its snapshot (Input.snapshots): points every INDEX_SPACING or less along
+-- each piece's Hermite curve but tunnels', bucketed (Plan.TrackIndex), so a leg's profile tells a crossing from the
+-- pieces themselves, not the grid's cells (a 100 m cell overhangs a stretch's end, where the line runs on past it).
+-- Once per existing station: a few thousand points for a few kilometres of track.
+local function trackIndex(st : PgraceRailRouterExisting.Station, snap : PgraceRailRouterExisting.Snapshot)
+		: PgraceRailRouterRoute.TrackIndex
+	local index : PgraceRailRouterRoute.TrackIndex = { centre = st.centre, reach = st.half + existing.REACH + SNAPSHOT_MARGIN,
+		bucket = INDEX_BUCKET, points = {} }
+	for __, piece in ipairs(snap.pieces) do
+		if piece.kind ~= "tunnel" then
+			local p0, p1, t0, t1 = piece.p0, piece.p1, piece.t0, piece.t1
+			local chord = math.sqrt((p1.x - p0.x) ^ 2 + (p1.y - p0.y) ^ 2)
+			local tl = (math.sqrt(t0.x * t0.x + t0.y * t0.y) + math.sqrt(t1.x * t1.x + t1.y * t1.y)) / 2
+			local m = math.max(1, math.ceil(math.max(chord, tl) / INDEX_SPACING))
+			for k = 0, m do
+				local s = k / m
+				local s2, s3 = s * s, s * s * s
+				local h00, h10, h01, h11 = 2 * s3 - 3 * s2 + 1, s3 - 2 * s2 + s, -2 * s3 + 3 * s2, s3 - s2
+				local x = h00 * p0.x + h10 * t0.x + h01 * p1.x + h11 * t1.x
+				local y = h00 * p0.y + h10 * t0.y + h01 * p1.y + h11 * t1.y
+				local key = bucketKey(math.floor(x / INDEX_BUCKET), math.floor(y / INDEX_BUCKET))
+				local list = index.points[key]
+				if list == nil then
+					list = {}
+					index.points[key] = list
+				end
+				list[#list + 1] = x
+				list[#list + 1] = y
+			end
+		end
+	end
+	return index
+end
+
+-- Whether a point is within CROSS_NEAR of the track in an index (nil: outside its reach, so unknown).
+local function nearTrack(index : PgraceRailRouterRoute.TrackIndex, p : Pt) : boolean
+	local dx, dy = p.x - index.centre.x, p.y - index.centre.y
+	if dx * dx + dy * dy > index.reach * index.reach then
+		return nil
+	end
+	local bx, by = math.floor(p.x / index.bucket), math.floor(p.y / index.bucket)
+	for ix = bx - 1, bx + 1 do
+		for iy = by - 1, by + 1 do
+			local list = index.points[bucketKey(ix, iy)]
+			if list ~= nil then
+				for k = 1, #list, 2 do
+					local ex, ey = list[k] - p.x, list[k + 1] - p.y
+					if ex * ex + ey * ey <= CROSS_NEAR * CROSS_NEAR then
+						return true
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
+-- Samples a fitted leg's ground and starts fitting its heights (profile.start; stepped by route.step). Round an
+-- existing station (within its TrackIndex's reach) a sample crosses track only near the snapshot's pieces; elsewhere
+-- where its cell is track.
+local function startHeights(input : Input, indexes : {PgraceRailRouterRoute.TrackIndex}, a : Station, b : Station,
+		fitted : PgraceRailRouterSmooth.Result) : LegHeights
 	local g, w = input.grid, input.weights
 	local samples = smooth.sample(fitted.pieces, SAMPLE_STEP)
 	local s : {number} = {}
@@ -930,18 +1028,14 @@ local function startHeights(input : Input, a : Station, b : Station, fitted : Pg
 	-- Existing track is always crossed by a bridge, roads only when the mode says so.
 	local crossing : {boolean} = {}
 	local blockedSamples = 0
-	-- Our straights at an existing station's junctions run beside its track (5 m or more from the nearer track's
-	-- axis, on our side), in cells marked as track: not crossings there.
-	local function beside(station : Station, forward : boolean, p : Pt) : boolean
-		if station.existing == nil then
-			return false
+	local function crossesTrack(p : Pt, cell : integer) : boolean
+		for __, index in ipairs(indexes or {}) do
+			local near = nearTrack(index, p)
+			if near ~= nil then
+				return near
+			end
 		end
-		local k = station.endOf[forward]
-		local e = station.ends[k]
-		local v = geo.sub(p, e.origin)
-		local x = geo.dot(v, e.dir)
-		local y = (e.dir.x * v.y - e.dir.y * v.x) * station.sides[k]
-		return x >= 0 and x <= e.length and y >= 5
+		return g.track[cell]
 	end
 	for i, sample in ipairs(samples) do
 		s[i] = sample.s
@@ -954,8 +1048,7 @@ local function startHeights(input : Input, a : Station, b : Station, fitted : Pg
 		end
 		-- A level crossing can't go through a road junction, nor come within JOINT_CLEARANCE of a road joint: bridge
 		-- those as track is. A crossing lies within half a sample step of a sample on the road.
-		local track = g.track[cell] and not beside(a, true, sample.p) and not beside(b, false, sample.p)
-		crossing[i] = track or g.junction[cell] or (w.bridgeRoads and g.road[cell])
+		crossing[i] = crossesTrack(sample.p, cell) or g.junction[cell] or (w.bridgeRoads and g.road[cell])
 			or (g.road[cell] and grid.jointNear(g, sample.p, grid.JOINT_CLEARANCE + SAMPLE_STEP / 2)) or false
 	end
 	local fit = profile.start(s, ground, water, { maxGrade = w.maxGrade, bridgeAbove = w.bridgeAbove,
@@ -1458,6 +1551,8 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 						:format(town.name, prev.town.name)
 				end
 				if station ~= nil then
+					job.trackIndexes = job.trackIndexes or {}
+					table.insert(job.trackIndexes, trackIndex(station.existing, input.snapshots[i]))
 					return placed(station)
 				end
 				table.insert(plan.notes, note)
@@ -1598,7 +1693,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			return false
 		end
 		if job.heights == nil then
-			job.heights = startHeights(input, a, b, job.fitted)
+			job.heights = startHeights(input, job.trackIndexes, a, b, job.fitted)
 		end
 		if not profile.step(job.heights.fit, PROFILE_WORK_PER_STEP) then
 			return false

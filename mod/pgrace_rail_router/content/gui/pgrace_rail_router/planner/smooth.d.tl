@@ -41,6 +41,8 @@ global record PgraceRailRouterSmooth
 		-- Arcs are never tightened below this for the guard (nil: the step); the track type's buildable minimum.
 		minRadius : number
 		clear : function(p : PgraceRailRouterGeo.Pt, from : integer, to : integer) : boolean
+		-- Called before each piece's first check (nil: none), for a guard that weighs a piece's checks together.
+		begin : function()
 	end
 
 	-- Douglas–Peucker: drops points within `tolerance` metres of the segment between their neighbours (so a point

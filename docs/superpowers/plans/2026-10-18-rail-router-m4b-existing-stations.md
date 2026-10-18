@@ -567,10 +567,16 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
   crossing (bridged, 9 m up), so:
   - `addFootprint` adds, along each stretch used (from the station's centre out to where our straight may reach:
     min(e.length, approachX + Input.approach + the room to turn at full radius + MAX_END_RUN + a cell)), the cells
-    from the near track across to one cell beyond the far track, laid out from the stretch's midline. Legs' searches keep off them but for their own end cell,
+    from the near track across to one cell beyond the far track, laid out from the stretch's midline; past the
+    stretch's end, out to that reach or existing.REACH, only the cells from half a cell beyond the far track out (so a
+    leg in line may still come in along the axis, but not round the far side across the line). Legs' searches keep off them but for their own end cell,
     so a leg leaves the existing line sideways, on our side (a 100 m cell holds both tracks and our straight).
-  - `startHeights` doesn't count a sample as a track crossing where it lies beside a stretch: along it (0 ≤ x ≤
-    e.length) and 5 m or more out on our side.
+  - `startHeights` decides crossings round an existing station (within half + existing.REACH + 50 m of its centre)
+    from the snapshot's pieces: a sample crosses only within 6 m of a piece's Hermite curve (points every 2 m or
+    less, bucketed in 12 m squares, built once per station: `TrackIndex`). Farther out the cell flag decides.
+  - Moving between track cells costs as a bridge in the search, but for the stations' own track (`alongFree`), and
+    `pathGuard` refuses curves running along track cells the path didn't use for more than two cells (its run
+    restarts at each piece: `Guard.begin`).
 - [ ] **Step 6: Tests** in `tests/route_test.lua`, on a synthetic grid (see that file's helpers) with three stops:
   - **Usable.** The middle stop has an `existingStations` entry and a usable `existing` result at both ends. Expect
     `plan.stations[2].existing ~= nil`, `plan.legs[1]` ending at that station's −1 junction's platformEnd, and

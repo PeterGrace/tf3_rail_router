@@ -130,8 +130,13 @@ It is used where the straight stretch is long enough. Otherwise the junction is 
     bridged) and runs along for free. Along the stretches used, from the station's centre out as far as our
     straight and run may reach, the cells from our side's track across to a cell beyond the far track are kept off as
     a station's footprint is (but for the leg's own end cells, along its run), so the leg leaves the existing line
-    sideways, on our side. Samples beside a stretch (along it, 5 m or more out on our side) aren't counted as
-    crossings, so our parallel straight stays on the ground.
+    sideways, on our side. Past the stretch's end, the cells from half a cell beyond the far track out stay kept off
+    as far as the snapshot reads, so the leg doesn't come round the far side and cross the line. Moving from track
+    cell to track cell costs as a bridge (but along the stations' own track), and fitted curves may not run along
+    track cells the path didn't use for more than two cells.
+  - **Crossings in the profile.** Round an existing station (within the snapshot's reach) a sample crosses track
+    only within 6 m of a snapshot piece's curve, so our straight beside a stretch, and a leg passing the stretch's
+    end where a 100 m cell overhangs it, stay on the ground; farther out, the cells decide as before.
 - **No station of ours** is placed at that stop, and it gets no road.
 
 ## Network

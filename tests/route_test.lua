@@ -911,8 +911,11 @@ local JR = 300
 
 -- A station at (cx, 0) facing +x, half 80, its two tracks at y = ±2.5 running straight out from each platform end:
 -- `reach[k]` metres at end k (±1; 0: none), in 100 m pieces. Options: z[k] the track's height at end k's platform
--- end and grade[k] its grade outward (both 0 if not given), and wrongWay[k] a one-way signal at end k on the track
--- left of outward facing outward trains (left-hand running). Nodes are shared by position; degrees counted.
+-- end and grade[k] its grade outward (both 0 if not given), wrongWay[k] a one-way signal at end k on the track
+-- left of outward facing outward trains (left-hand running), and carry[k] the line running on past end k's stretch:
+-- swinging 20 m aside (towards world y × carry[k]) over 200 m, then straight on for 250 m (within the 1.5 km the
+-- snapshot reads). Nodes are shared by
+-- position; degrees counted.
 local function existingStation(cx, reach, opts)
 	opts = opts or {}
 	local pieces, ids, nextNode = {}, {}, 1
@@ -940,6 +943,20 @@ local function existingStation(cx, reach, opts)
 					t0 = { x = x1 - x0, y = 0, z = grade * l }, t1 = { x = x1 - x0, y = 0, z = grade * l }, kind = "ground",
 					signals = signals }
 				d = d + l
+			end
+			local carry = (opts.carry or {})[k]
+			if carry ~= nil and (reach[k] or 0) > 0 then
+				local x0, x1 = cx + k * (80 + reach[k]), cx + k * (280 + reach[k])
+				local y1 = y + 20 * carry
+				local function add(ax, ay, bx, by)
+					pieces[#pieces + 1] = { entity = 100 + #pieces, node0 = node(ax, ay), node1 = node(bx, by),
+						p0 = { x = ax, y = ay, z = z0 }, p1 = { x = bx, y = by, z = z0 },
+						t0 = { x = bx - ax, y = by - ay, z = 0 }, t1 = { x = bx - ax, y = by - ay, z = 0 }, kind = "ground",
+						signals = {} }
+				end
+				add(x0, y, x1, y1)
+				add(x1, y1, x1 + k * 150, y1)
+				add(x1 + k * 150, y1, x1 + k * 250, y1)
 			end
 		end
 	end
@@ -1207,3 +1224,22 @@ t.test("route: a leg doesn't run on top of the existing line beyond the station'
 		end
 	end
 end)
+
+-- The existing line runs on past both stretches' ends (in the snapshot and the grid's cells), swinging away from
+-- our side; turns spaced for a wide radius.
+for __, case in ipairs({
+		{ "in line", { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) }, { [-1] = 1, [1] = -1 } },
+		{ "off the axis", AXC, { [-1] = 1, [1] = 1 } } }) do
+	t.test("route: junction legs don't bridge the existing line running on past its stretches, stops " .. case[1],
+			function()
+		local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 }, { carry = case[3] })
+		local g = markTrack(flatGrid(), station, snap)
+		local plan = runExisting(case[2], 2, station, snap,
+			{ grid = g, weights = withWeights({ minRadius = 1000, minSearchRadius = 220 }) })
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		t.ok(plan.stations[2].existing == station, "existing")
+		t.near(plan.stations[2].ends[1].length, 1000, 1e-6, "the stretch ends where the line swings aside")
+		t.eq(plan.summary.bridges, 0, "no bridges")
+		t.eq(plan.summary.tightCurves, 0, "no tight curves")
+	end)
+end
