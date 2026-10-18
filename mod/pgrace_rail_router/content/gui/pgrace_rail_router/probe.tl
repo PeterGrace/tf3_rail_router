@@ -983,7 +983,7 @@ local function p15Build(settings : Settings)
 	end)
 end
 
--- Stage 2: split track 1 at x = 100, then the piece with the signal at x = 250.
+-- Stage 2: split track 1 at x = 100, then the piece with the signal at x = 270 (clear of stage 3's crossing cut at 245).
 local function p15Split()
 	local o = p15.origin
 	if o == nil then
@@ -1017,11 +1017,11 @@ local function p15Split()
 			return p15Done(2, false)
 		end
 		log("P15", ("the signal piece is now %d"):format(b.entity))
-		local at2 : Pt = { x = o.x + 250, y = o.y + p15.off }
+		local at2 : Pt = { x = o.x + 270, y = o.y + p15.off }
 		local u2 = network.nearestParam(b.h, at2)
 		if u2 < 0.02 or u2 > 0.98 then
 			u2 = 0.5
-			log("P15", "x = 250 isn't inside the signal piece: cutting its middle")
+			log("P15", "x = 270 isn't inside the signal piece: cutting its middle")
 		end
 		log("P15", ("split 2: piece %d at param %.4f"):format(b.entity, u2))
 		sendProposal(splitTrack(b, { u2 }, { p15.signalPt }), function(res2 : WorldBuildProposalCommandData, success2 : boolean)
