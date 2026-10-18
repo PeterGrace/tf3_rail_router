@@ -56,7 +56,8 @@ local record Settings
 	-- electrified variant available in the current year.
 	electrified : boolean
 	platform : integer
-	-- Station style: "simple" (2 tracks) or "halt" (Halt 2+2, with fans and one-way signals); nil: simple.
+	-- Station style: "simple" (2 tracks) or "halt" (Halt 2+2, with fans and one-way signals); nil: halt (the
+	-- player's choice for almost every station).
 	style : string
 	-- The player's ticks on candidate stops, by town id, over the default (corridor.select's towns ticked): true
 	-- ticked, false unticked, nil the default. Cleared when From or To changes.
@@ -70,8 +71,9 @@ local rememberedStations = false
 local rememberedProbes = false -- PROBE (remove before release)
 -- Unticked candidates listed besides the ticked ones while the list is short.
 local EXTRA_STOPS = 5
--- Halt 2+2 lines: a one-way block signal on each track every so many metres between stations (design draft: 2 km).
-local BLOCK_SPACING = 2000.0
+-- Halt 2+2 lines: a one-way block signal on each track every so many metres between stations (the player's habit:
+-- 500 m, 32 signals a track across a 16 km map).
+local BLOCK_SPACING = 500.0
 
 -- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
 local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, ticked = {} }
@@ -227,7 +229,7 @@ end
 
 -- The straight a station of a style needs at each platform end: Halt 2+2's fan and the crossovers' room after it.
 local function approachFor(style : string, track : TrackType) : number
-	if style ~= "halt" or track == nil then
+	if style == "simple" or track == nil then
 		return nil
 	end
 	return network.fanLength(network.turnoutLength(turnoutRadius(track))) + 100
@@ -250,7 +252,8 @@ local function settingsFor(track : TrackType, electrified : boolean, year : inte
 	local dir = "::/stations/rail/modular_station/"
 	local options = network.defaults()
 	local signal : string = nil
-	if style == "halt" then
+	local halt = style ~= "simple"
+	if halt then
 		options.fan = network.turnoutLength(turnoutRadius(track))
 		options.blockSpacing = BLOCK_SPACING
 		signal = "::/infrastructure/signal/signal_path_" .. (year < 1950 and "a" or "c") .. ".con"
@@ -264,7 +267,7 @@ local function settingsFor(track : TrackType, electrified : boolean, year : inte
 			stairs = dir .. "addon_platform_passenger_stairs_era_" .. era .. ".module" },
 		network = options,
 		levelCrossings = levelCrossings,
-		style = style == "halt" and "halt" or nil,
+		style = halt and "halt" or nil,
 		signal = signal,
 	}
 end
@@ -681,7 +684,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			local name = templateFor(track, electrified, year)
 			if prices[name] == nil then
 				local ok, price = pcall(function() : number
-					return builder.pricePerMetre(settingsFor(track, electrified, year, false),
+					return builder.pricePerMetre(settingsFor(track, electrified, year, false, "simple"),
 						{ x = station.site.centre.x, y = station.site.centre.y, z = station.z }, station.site.dir)
 				end)
 				if ok and price ~= nil then
@@ -979,7 +982,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- task per join.
 	local function advanceProbe(work : ProbeWork)
 		if work.tasks == nil then
-			local settings = settingsFor(work.track, work.electrified, currentYear(data.year), false)
+			local settings = settingsFor(work.track, work.electrified, currentYear(data.year), false, "simple")
 			if work.name == "P1" then
 				work.tasks = probe.logTrack()
 			elseif work.name == "P2" then
@@ -1198,7 +1201,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			content = builtin.TextView{ text = formatLength(length) } })
 	end
 	table.insert(body, labelled(_("Stations"), builtin.ComboBox{
-		value = settings.style == "halt" and 2 or 1,
+		value = settings.style == "simple" and 1 or 2,
 		items = {
 			builtin.ComboBoxItem{ value = 1, content = builtin.TextView{ text = _("2 tracks") } },
 			builtin.ComboBoxItem{ value = 2, content = builtin.TextView{ text = _("Halt 2+2, signalled") } },

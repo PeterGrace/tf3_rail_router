@@ -552,7 +552,8 @@ exception, a shape the engine made); copy positions out of engine data; don't ke
 Reference: the Express & Local Rail Stations mod (`express_local_stations_1`, read in full; we copy its geometry, not
 its code, and don't depend on it).
 
-- **Setting:** "Station style": Simple 2-track (the default) or Halt 2+2. Applies to every station of the line.
+- **Setting:** "Stations": Halt 2+2, signalled (the default: the player wants it for almost every station, and
+  lines may later be joined into one network) or 2 tracks. Applies to every station of the line.
 - **Station:** the base modular station with rows platform, local, express, express, local, platform (i = 0…5, x = 5 i;
   slots as now), so its axis is at x = 12.5 and the line runs on through the express pair (x = 10, 15: 5 m apart, as
   our double track). Main building and stairs as now (the building on row 0's side, facing the town); the road's
@@ -571,8 +572,8 @@ its code, and don't depend on it).
   end the tracks on the right of the outward direction are the leaving ones.
 - **Signals** (one-way path signals, `::/infrastructure/signal/signal_path_a|c` by year): per station end a starter on
   each leaving station track (local and express) on its fan piece about 26 m from the platform end, facing out, and a
-  home signal on the arriving main track 15 m before the fan's open end, facing in. Along the line, a one-way block
-  signal on each track every 2 km (a train per block, so more than one train per direction between stations).
+  home signal on the arriving main track 15 m past the fan (or the terminus's crossovers), facing in. Along the line,
+  a one-way block signal on each track every 500 m (the player's habit; a train per block).
   Signals go into the same proposals as the track: `edgeObjectsToAdd` (edge, param, oneWay, left, model) with the
   edge's `comp.objects` listing them (the mod numbers new edge objects from −400000000). Probe P14 checks the model
   name, which way `left` and the edge's direction make a signal face, and that a dry run takes them.
@@ -583,8 +584,8 @@ its code, and don't depend on it).
   Intermediate stations get no crossovers (a train keeps its side).
 - **Not in 4a:** using existing stations (4b), the 4-track main option, left-hand running.
 
-Open questions for the player: block spacing (2 km?); whether Halt 2+2 is the default when the line has 3 or more
-stations; whether termini should be Halt 2+2 too or plain 2-track with crossovers.
+Settled with the player (2026-10-18): blocks every 500 m; Halt 2+2 the default. Termini are Halt 2+2 too, with the
+crossovers (a line may later be extended or joined to others).
 
 ## Testing
 
