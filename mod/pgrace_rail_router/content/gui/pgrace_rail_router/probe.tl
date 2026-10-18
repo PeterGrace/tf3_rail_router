@@ -1243,16 +1243,19 @@ local function branchSide(list : {P15Piece}, what : string, node : integer)
 end
 
 -- Stage 3, step 2: with every cut made, one proposal of the new track.
--- Stage 3's crossing track: its angle to track 1 at the crossing (degrees) and its straight each side (metres).
-local CROSS_ANGLE = 8.0
-local CROSS_STRAIGHT = 25.0
+-- Stage 3's crossing track: its angle to track 1 at the crossing (degrees). It is one circular arc off track 2's
+-- switch into the crossing node and its mirror out of it, so each piece that lies over an existing track shares a node
+-- with it (the game refuses a piece over track it isn't joined to: a node of ours 1.5 m beside track 2 was refused).
+local CROSS_ANGLE = 12.0
 
--- Where the crossing track leaves track 2: an arc from there onto the crossing line (see p15Junction).
+-- The length along x of each of the crossing track's arcs: each climbs 2 * off.
+local function crossRun() : number
+	return 2 * p15.off / math.tan(math.rad(CROSS_ANGLE) / 2)
+end
+
+-- Where the crossing track leaves track 2.
 local function crossSwitchX() : number
-	local theta = math.rad(CROSS_ANGLE)
-	local rise = CROSS_STRAIGHT * math.sin(theta)
-	local radius = (2 * p15.off - rise) / (1 - math.cos(theta))
-	return 200 - CROSS_STRAIGHT * math.cos(theta) - radius * math.sin(theta)
+	return 200 - crossRun()
 end
 
 local function p15Junction(settings : Settings)
@@ -1273,57 +1276,43 @@ local function p15Junction(settings : Settings)
 	local function at(x : number, y : number, node ?: integer) : Pt3
 		return { x = o.x + x, y = o.y + y, z = z, entity = node }
 	end
-	-- The crossing track is shaped as the game's own diamond (P16): straight through the crossing node for
-	-- CROSS_STRAIGHT each side, at CROSS_ANGLE to track 1; an arc off track 2's switch onto that line, and an arc from
-	-- it onto our near track's line. (An S-curve, straight only at the crossing, was refused.)
+	-- The crossing track: an arc from track 2's switch into the crossing node at CROSS_ANGLE, the mirror arc out of
+	-- it onto our near track's line, then straight on.
 	local theta = math.rad(CROSS_ANGLE)
-	local rise = CROSS_STRAIGHT * math.sin(theta)
-	local radius = (2 * off - rise) / (1 - math.cos(theta))
-	local run = radius * math.sin(theta)
+	local run = crossRun()
+	local radius = run / math.sin(theta)
 	local cx = 200.0
 	local nodes : {Pt3} = {
 		{ x = p1.x, y = p1.y, z = p1.z, entity = n1 },
 		at(170, 5 * off),
 		at(330, 5 * off),
 		{ x = p4.x, y = p4.y, z = p4.z, entity = n4 },
-		at(cx - CROSS_STRAIGHT * math.cos(theta), off - rise),
 		{ x = p5.x, y = p5.y, z = p5.z, entity = n5 },
-		at(cx + CROSS_STRAIGHT * math.cos(theta), off + rise),
-		at(cx + CROSS_STRAIGHT * math.cos(theta) + run, 3 * off),
+		at(cx + run, 3 * off),
 		at(330, 3 * off),
 	}
-	log("P15", ("crossing track: %.1f degrees, straight %.0f m each side, arcs of radius %.0f m over %.1f m; its switch at x = %.1f"):format(
-		CROSS_ANGLE, CROSS_STRAIGHT, radius, run, p4.x - o.x))
+	log("P15", ("crossing track: %.1f degrees at the crossing, arcs of radius %.0f m over %.1f m; its switch at x = %.1f"):format(
+		CROSS_ANGLE, radius, run, p4.x - o.x))
 	local function dir(dx : number) : Pt3
 		return { x = dx, y = 0, z = 0 }
-	end
-	local function along(l : number) : Pt3
-		return { x = math.cos(theta) * l, y = math.sin(theta) * l, z = 0 }
 	end
 	local edges : {PgraceRailRouterNetwork.Edge} = {}
 	local function add(a_ : integer, b_ : integer, h : Hermite)
 		table.insert(edges, { node0 = a_, node1 = b_, p0 = h.p0, p1 = h.p1, t0 = h.t0, t1 = h.t1, kind = "ground", track = 0,
 			leg = 1, s0 = 0, s1 = 0 })
 	end
-	local function edge(a_ : integer, b_ : integer, from : Pt3, into : Pt3)
-		local p, q = nodes[a_], nodes[b_]
-		local l = math.sqrt((q.x - p.x) ^ 2 + (q.y - p.y) ^ 2)
-		local function scaled(v : Pt3) : Pt3
-			local n = math.sqrt(v.x * v.x + v.y * v.y)
-			return { x = v.x / n * l, y = v.y / n * l, z = 0 }
-		end
-		add(a_, b_, { p0 = p, p1 = q, t0 = scaled(from), t1 = scaled(into) })
-	end
+	-- A circular arc's tangents are as long as the arc (R theta).
+	local arc = radius * theta
+	local slant : Pt3 = { x = math.cos(theta) * arc, y = math.sin(theta) * arc, z = 0 }
 	-- All edges run east from their first node, as they leave an existing node there.
 	add(1, 2, { p0 = nodes[1], p1 = nodes[2], t0 = dir(nodes[2].x - nodes[1].x), t1 = dir(nodes[2].x - nodes[1].x) })
 	add(2, 3, { p0 = nodes[2], p1 = nodes[3], t0 = dir(nodes[3].x - nodes[2].x), t1 = dir(nodes[3].x - nodes[2].x) })
-	edge(4, 5, dir(1), along(1))
-	edge(5, 6, along(1), along(1))
-	edge(6, 7, along(1), along(1))
-	edge(7, 8, along(1), dir(1))
-	edge(8, 9, dir(1), dir(1))
+	add(4, 5, { p0 = nodes[4], p1 = nodes[5], t0 = dir(arc), t1 = slant })
+	add(5, 6, { p0 = nodes[5], p1 = nodes[6], t0 = slant, t1 = dir(arc) })
+	add(6, 7, { p0 = nodes[6], p1 = nodes[7], t0 = dir(nodes[7].x - nodes[6].x), t1 = dir(nodes[7].x - nodes[6].x) })
 	local net : PgraceRailRouterNetwork.Network = { nodes = nodes, edges = edges, chunks = {} }
-	for __, part in ipairs({ { "merge only", 1, 2 }, { "crossing track only", 3, 7 } }) do
+	for __, part in ipairs({ { "merge only", 1, 2 }, { "crossing track only", 3, 5 },
+			{ "switch to crossing node only", 3, 3 } }) do
 		local pr, whyNot = builder.chunkProposal(net, part[2] as integer, part[3] as integer, settings)
 		if pr == nil then
 			log("P15", ("%s: no proposal: %s"):format(part[1], tostring(whyNot)))
