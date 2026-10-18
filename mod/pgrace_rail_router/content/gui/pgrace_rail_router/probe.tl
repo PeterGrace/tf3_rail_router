@@ -611,8 +611,10 @@ local function repairLanes(name : string, nodes : {integer}, andThen : function(
 	nextSegment()
 end
 
-function probe.levelCrossing(settings : Settings) : {function()}
+function probe.levelCrossing(settings : Settings, angle ?: number) : {function()}
 	local c = camera()
+	-- The track's angle to the street (degrees; 90: square across).
+	local crossAngle = math.rad(angle or 90)
 	return { guarded("P9", function()
 		local found = nearest(c, "street")
 		if found == nil then
@@ -623,13 +625,17 @@ function probe.levelCrossing(settings : Settings) : {function()}
 		local h : PgraceRailRouterNetwork.Hermite = { p0 = p3(street.position0), p1 = p3(street.position1),
 			t0 = p3(street.tangent0), t1 = p3(street.tangent1) }
 		local node0, node1 = street.node0 as integer, street.node1 as integer
-		log("P9", ("camera (%.1f %.1f): street edge %d, nodes %d %d, at (%.1f %.1f) height %.2f"):format(c.x, c.y,
-			found.entity, node0, node1, found.p.x, found.p.y, found.z))
+		log("P9", ("camera (%.1f %.1f): street edge %d (%s), nodes %d %d, at (%.1f %.1f) height %.2f, crossing at %.0f degrees")
+			:format(c.x, c.y, found.entity, tostring(street.roadTemplate), node0, node1, found.p.x, found.p.y, found.z,
+			math.deg(crossAngle)))
 		-- The track runs square across the street through found.p; its two tracks cross the street 2.5 m either side.
-		local across : Pt = { x = -found.dir.y, y = found.dir.x }
+		-- The track's direction, crossAngle from the street's; its two tracks, 2.5 m either side of its centre line,
+		-- cross the street 2.5 / sin(angle) m either side of found.p.
+		local across = geo.rotate(found.dir, crossAngle)
 		local params : {number} = {}
 		for __, k in ipairs({ -1, 1 }) do
-			table.insert(params, network.nearestParam(h, geo.add(found.p, geo.scale(found.dir, 2.5 * k))))
+			table.insert(params, network.nearestParam(h,
+				geo.add(found.p, geo.scale(found.dir, 2.5 * k / math.sin(crossAngle)))))
 		end
 		table.sort(params)
 		local a, rest = network.splitHermite(h, params[1])
