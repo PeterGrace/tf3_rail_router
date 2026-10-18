@@ -450,6 +450,82 @@ function probe.bridgeClearance(settings : Settings) : {function()}
 	return tasks
 end
 
+-- P13 ------------------------------------------------------------------------------------------------------------
+
+function probe.stationStreets() : {function()}
+	return { guarded("P13", function()
+		local c = camera()
+		local station : integer = nil
+		local bestD = math.huge
+		for __, e in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(c.x, c.y), 300,
+				api.type.ComponentType.CONSTRUCTION)) do
+			local con = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+			if con ~= nil and tostring(con.fileName):find("modular_station.con", 1, true) ~= nil then
+				local m = con.transf
+				local d = math.sqrt((m[13] - c.x) ^ 2 + (m[14] - c.y) ^ 2)
+				if d < bestD then
+					station, bestD = e, d
+				end
+			end
+		end
+		if station == nil then
+			log("P13", "no modular station within 300 m of the camera")
+			return
+		end
+		local con = api.engine.getComponent(station, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+		local m = con.transf
+		local ox, oy, oz = m[13], m[14], m[15]
+		-- Local x and y axes in the world (columns 1 and 2).
+		local xx, xy, yx, yy = m[1], m[2], m[5], m[6]
+		local function toLocal(v : Vec3f) : string
+			local dx, dy = v.x - ox, v.y - oy
+			return ("(%.2f %.2f %.2f)"):format(dx * xx + dy * xy, dx * yx + dy * yy, v.z - oz)
+		end
+		local function dirLocal(v : Vec3f) : string
+			return ("(%.2f %.2f %.2f)"):format(v.x * xx + v.y * xy, v.x * yx + v.y * yy, v.z)
+		end
+		log("P13", ("station %d at (%.1f %.1f %.1f), local x (%.3f %.3f), local y (%.3f %.3f), %.0f m from the camera")
+			:format(station, ox, oy, oz, xx, xy, yx, yy, bestD))
+		pcall(function() : boolean
+			for slot, mod in pairs((con.params as any as {string : {integer : {string : any}}}).modules) do
+				local name = tostring(mod.name)
+				if name:find("building", 1, true) ~= nil or name:find("stairs", 1, true) ~= nil then
+					log("P13", ("module slot %s %s"):format(tostring(slot), name))
+				end
+			end
+			return true
+		end)
+		local frozen : {integer : boolean} = {}
+		for __, n in ipairs(con.frozenNodes) do
+			frozen[n as integer] = true
+		end
+		for __, e in ipairs(con.frozenEdges) do
+			if api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) ~= nil then
+				log("P13", ("frozen street edge %d"):format(e as integer))
+			end
+		end
+		local count = 0
+		for __, e in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(ox, oy), 200,
+				api.type.ComponentType.BASE_EDGE)) do
+			if api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) ~= nil then
+				local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+				local function nodeInfo(n : integer) : string
+					local segs = api.engine.system.streetSystem.getNodeSegments ~= nil
+						and #(api.engine.system.streetSystem as any as {string : function(integer) : {integer}})
+							.getNodeSegments(n) or -1
+					return ("%d%s(%d pieces)"):format(n, frozen[n] and " frozen " or " ", segs)
+				end
+				log("P13", ("street %d %s: %s -> %s, t0 %s t1 %s, nodes %s / %s, type %s"):format(e as integer,
+					tostring(edge.roadTemplate), toLocal(edge.position0), toLocal(edge.position1), dirLocal(edge.tangent0),
+					dirLocal(edge.tangent1), nodeInfo(edge.node0 as integer), nodeInfo(edge.node1 as integer),
+					tostring(edge.type)))
+				count = count + 1
+			end
+		end
+		log("P13", ("done: %d street pieces within 200 m"):format(count))
+	end) }
+end
+
 -- P6 -------------------------------------------------------------------------------------------------------------
 
 local function moduleLookup(name : string) : string
