@@ -616,9 +616,17 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
     `e.pieces[near|far]` whose x-range holds the cut, then compute s by linear interpolation along its chord.
   - **The crossing.** The "cross in" and "cross out" pieces share one node, the crossing node, which carries the
     crossing's `existing` cut.
-  - **Home signals** on our two approach tracks, 15 m from the approach start, facing inward. Use `addSignal` with
-    `forward` according to the edge's direction.
+  - **Signals** (as built): the leg's first signals sit on our two approach tracks 15 m out from the approach start
+    (`signalAt`, so 15 m from any node), one-way, each facing its own track's trains (track 1 runs against the leg,
+    track 2 with it), with or without Halt 2+2; they replace the starter and home signal at that end, and block
+    signals run on from them. None on the junction pieces. Note: "our far track carries trains in" holds on side +1
+    only; the frame is mirrored for side −1, which flips the running directions (there our far track and the
+    existing near track carry trains out), so the code takes directions from the track numbers, not from near/far.
   - Put the junction edges into the leg's first (or last) chunk, and record the chunk's `splits`.
+  - **As built, also:** a cut node sits on the existing piece (its Hermite point at s), the junction edges' ends on
+    it; a cut within 0.5 m (MIN_EDGE) of a piece's end uses that piece's own node (`entity`) and splits nothing.
+    Junction edges run along the leg (reversed at its end), with s before 0 or past the leg's length, and come last
+    in their chunk.
 - [ ] **Step 3: Test.** Add a test to `tests/network_test.lua` with a one-leg plan whose start station has
   `existing` (built by hand, as the route would). Expect:
   - 5 junction edges (track 4): the 3 pieces and the 2 straights to the approach start;

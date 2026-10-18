@@ -9,6 +9,22 @@ global record PgraceRailRouterNetwork
 		-- A node: the game's node entity already there (a station's track end, a chunk built before), which a proposal
 		-- joins instead of adding a node; nil for a new node.
 		entity : integer
+		-- A node cut into an existing station's track (a junction's switch or crossing; milestone 4b): made by
+		-- splitting that piece at that parameter before the chunk is built (Chunk.splits), which sets entity. nil
+		-- for any other node.
+		existing : ExistingCut
+	end
+
+	-- Where an existing track piece (its entity) is cut for a junction node: the parameter along it, from its node0.
+	record ExistingCut
+		piece : integer
+		s : number
+	end
+
+	-- An existing piece a chunk splits before it is built: its entity, and the parameters to cut it at, ascending.
+	record Split
+		piece : integer
+		s : {number}
 	end
 
 	record Edge
@@ -23,7 +39,8 @@ global record PgraceRailRouterNetwork
 		-- "ground", "bridge" or "tunnel".
 		kind : string
 		-- 1: the left track (in the leg's direction of travel), 2: the right; 0: a crossover between them; 3: a fan's
-		-- piece, from a Halt 2+2 station's local track into the line's track on its side.
+		-- piece, from a Halt 2+2 station's local track into the line's track on its side; 4: a junction's piece into
+		-- an existing station's track (one edge each, never split), or the straight on from it to the leg's end.
 		track : integer
 		-- One-way signals on it (Halt 2+2), or nil.
 		signals : {Signal}
@@ -38,8 +55,10 @@ global record PgraceRailRouterNetwork
 		first : integer
 		last : integer
 		leg : integer
-		-- Centre-line metres × 2 (both tracks).
+		-- Centre-line metres × 2 (both tracks), and the junction pieces' lengths along the existing axis.
 		length : number
+		-- The existing pieces to split before the chunk (its junctions' cuts, by piece), or nil.
+		splits : {Split}
 	end
 
 	record Network
@@ -121,11 +140,16 @@ global record PgraceRailRouterNetwork
 	-- cuts: where edges must also break; keepWhole: windows {s0, s1} with no break inside (a switch's branch side).
 	trackEdges : function(leg : PgraceRailRouterRoute.Leg, legIndex : integer, side : number, options : Options,
 		cuts ?: {number}, keepWhole ?: {{number}}) : {Edge}
-	-- The whole plan's network.
 	-- A Halt 2+2 fan's turnout length for a radius: max(40, 5 × round(√(20 R) / 5)) (the Express & Local mod's: simple
 	-- track 150 → 55 m, standard 300 → 75 m, high-speed 600 → 110 m).
 	turnoutLength : function(radius : number) : number
 	-- How far a fan reaches from the platforms for a turnout length: 20 + L + 30.
 	fanLength : function(l : number) : number
+	-- The whole plan's network. Where a leg starts or ends at an existing station (route.Station.existing), that end
+	-- has no fan and no crossovers: its junction's pieces (track 4) run from the cuts in the existing track (nodes
+	-- with `existing`; the crossing node shared by the two crossing pieces) to our two tracks, and a straight on each
+	-- to the leg's track ends at the junction's approach start; they go into the leg's first (or last) chunk, which
+	-- lists the cuts' pieces in `splits`. The leg's first signals there sit 15 m out from the approach start, one-way,
+	-- each facing its own track's trains (with or without Halt 2+2; none on the junction pieces).
 	build : function(plan : PgraceRailRouterRoute.Plan, options : Options) : Network
 end
