@@ -944,20 +944,6 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.dryRunCrossing(settings)
 			elseif work.name == "P8" then
 				work.tasks = probe.bridgeClearance(settings)
-			elseif work.name == "P12" then
-				work.tasks = probe.catenaryPairs(settings)
-			elseif work.name == "P9" then
-				work.tasks = probe.levelCrossing(settings)
-			elseif work.name == "P9b" then
-				work.tasks = probe.levelCrossing(settings, 70)
-			elseif work.name == "P9c" then
-				work.tasks = probe.levelCrossing(settings, 90, 12)
-			elseif work.name == "P9d" then
-				work.tasks = probe.levelCrossing(settings, 90, 25)
-			elseif work.name == "P10" then
-				work.tasks = probe.buildStation(settings)
-			elseif work.name == "P11" then
-				work.tasks = probe.joinStation(settings)
 			else
 				work.tasks = probe.dryRunStation(settings, data.tracks)
 			end
@@ -1380,13 +1366,6 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P4", "Probe P4: dry-run across a street" },
 			{ "P8", "Probe P8: bridge clearance over track and street" },
 			{ "P6", "Probe P6: dry-run a station" },
-			{ "P12", "Probe P12: overhead wire, two test pairs (builds; test map only)" },
-			{ "P9", "Probe P9: level crossing (builds; test map only)" },
-			{ "P9b", "Probe P9b: level crossing at 70 degrees (builds; test map only)" },
-			{ "P9c", "Probe P9c: level crossing 12 m from a road joint (builds)" },
-			{ "P9d", "Probe P9d: level crossing 25 m from a road joint (builds)" },
-			{ "P10", "Probe P10: build a station (test map only)" },
-			{ "P11", "Probe P11: join track to the station (test map only)" },
 		}) do
 			table.insert(body, builtin.Button{
 				content = builtin.TextView{ text = p[2] },

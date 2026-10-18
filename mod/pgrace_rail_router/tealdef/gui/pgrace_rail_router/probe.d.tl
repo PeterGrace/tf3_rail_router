@@ -16,18 +16,4 @@ global record PgraceRailRouterProbe
 	-- P6: a 160 m station at the camera facing east, without and with the main building and stairs (and roofs), with
 	-- its bounding box's length along the axis; the module names.
 	dryRunStation : function(settings : PgraceRailRouterBuilder.Settings, tracks : {PgraceRailRouterModes.TrackType}) : {function()}
-	-- P9: a level crossing over the nearest street (within 200 m of the camera; test map only): the street split at
-	-- the two points a double track square across it would cross (the engine's replaceSegment proposal, edited; it
-	-- can't be dry-run), its lanes repaired, then 300 m of double track through the two new nodes, dry-run and built.
-	levelCrossing : function(settings : PgraceRailRouterBuilder.Settings, angle ?: number, fromJoint ?: number) : {function()}
-	-- P10: builds a 160 m station at the camera facing east (if its dry run is clean; test map only) and logs its
-	-- frozen nodes: where the track ends are, and their pieces.
-	buildStation : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
-	-- P11: joins 100 m of track to the free track ends on one side of the modular station nearest the camera (the
-	-- ends' node entities in the proposal; new nodes at the same places with cleanupStreetGraph, dry run only), builds
-	-- it, then a second 100 m from where the first ended (test map only).
-	joinStation : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
-	-- P12: two 200 m double-track straights at the camera, 40 m apart (test map only): pair A with both tracks running
-	-- east, pair B with the second (south) track running west: which way gets its overhead wire over each track.
-	catenaryPairs : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 end
