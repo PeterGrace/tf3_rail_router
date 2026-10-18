@@ -11,6 +11,7 @@ local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/are
 local preview = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/preview.tl" as PgraceRailRouterPreview
 local mapcapture = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/mapcapture.tl" as PgraceRailRouterMapCapture
 local builder = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/builder.tl" as PgraceRailRouterBuilder
+local build = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/build.tl" as PgraceRailRouterBuild
 local network = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/network.tl" as PgraceRailRouterNetwork
 local sl = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/stationlayout.tl" as PgraceRailRouterStationLayout
 local probe = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/probe.tl" as PgraceRailRouterProbe -- PROBE (remove before release)
@@ -513,6 +514,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local probeStatusState : ReactStateT<string> = react.useState(nil)
 	-- A join is queued and hasn't run yet; at most one at a time.
 	local joinQueuedRef : ReactRefT<boolean> = react.useRef(false)
+	-- Build (milestone 3): the build of the checked plan (nil before Build is clicked), and what the window last
+	-- showed of it ("phase:done"), set each step so the window redraws as it goes.
+	local buildRef : ReactRefT<PgraceRailRouterBuild.Build> = react.useRef(nil)
+	local buildViewState : ReactStateT<string> = react.useState(nil)
 
 	-- Copies from the latest state, not this render's `settings`, so two changes in one frame both stick: transform
 	-- (as the base save-game page uses) hands us the newest value, even one set earlier in the same frame.
@@ -527,7 +532,78 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 
 	-- Drops a check with the game, running or done: it was for another plan or other settings.
+	-- A build under way: commands are in flight, so the plan and settings stay as they are until it's over.
+	local function building() : boolean
+		local b = buildRef:get()
+		return b ~= nil and b.phase ~= "done" and b.phase ~= "failed"
+	end
+
+	-- Build, once the check is clean: the button, then the build's progress, its result, or what failed with Show and
+	-- Retry from here.
+	local function buildRows(checked : PgraceRailRouterBuilder.Check) : {TreeNodeId}
+		local rows : {TreeNodeId} = {}
+		local b = buildRef:get()
+		if b == nil then
+			table.insert(rows, builtin.Button{
+				meta = { class = "primary" },
+				content = builtin.TextView{ text = _("Build") },
+				onClick = function()
+					if buildRef:get() == nil and workRef:get() == nil and probeRef:get() == nil
+							and captureRef:get() == nil then
+						buildRef:set(build.start(checked))
+						buildViewState:set("start")
+					end
+				end,
+			})
+			return rows
+		end
+		local done, total = build.progress(b)
+		if b.phase == "done" then
+			table.insert(rows, textRow(fill(_("Built: {money}, {count} level crossings."), { money = formatMoney(b.charged),
+				count = tostring(b.levelCrossings) }), "font-scale-body"))
+		elseif b.phase == "failed" then
+			local f = b.failure
+			local what : string
+			if f.item.kind == "station" then
+				local station = checked.plan.stations[f.item.index]
+				what = fill(_("Station {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
+			else
+				what = outcomePlace(checked, { item = f.item, ok = false, cost = 0, messages = f.messages, x = f.x, y = f.y,
+					us = 0, collisions = {}, crossings = 0 })
+			end
+			table.insert(rows, textRow(fill(_("Building stopped at {what}: {messages}"), { what = what,
+				messages = table.concat(f.messages, "; ") }), "font-scale-body"))
+			table.insert(rows, builtin.BoxLayout{
+				orientation = builtin.type.Orientation.Horizontal,
+				children = {
+					builtin.Button{
+						content = builtin.TextView{ text = _("Show") },
+						onClick = function()
+							pcall(function() : boolean
+								api.gui.camera.focusPosition(api.type.Vec3f.new(f.x, f.y, 0), 300)
+								return true
+							end)
+						end,
+					},
+					builtin.Button{
+						content = builtin.TextView{ text = _("Retry from here") },
+						onClick = function()
+							build.retry(b)
+							buildViewState:set("retry")
+						end,
+					},
+				},
+			})
+		else
+			table.insert(rows, textRow(fill(_("Building… {done} of {total}"), { done = tostring(done),
+				total = tostring(total) }), "font-scale-annotation"))
+		end
+		return rows
+	end
+
 	local function resetCheck()
+		buildRef:set(nil)
+		buildViewState:set(nil)
 		checkRef:set(nil)
 		checkDoneState:set(nil)
 		checkState:set(nil)
@@ -567,6 +643,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 
 	-- Every settings change drops the shown plan and any work in progress: a plan for other settings would mislead.
 	local function update(change : function(Settings))
+		if building() then
+			return
+		end
 		setSettings(change)
 		resetCheck()
 		planState:set(nil)
@@ -599,8 +678,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 
 	local function findRoute()
-		-- Not while the map capture or a probe runs (PROBE): one piece of long work at a time.
-		if captureRef:get() ~= nil or probeRef:get() ~= nil then
+		-- Not while the map capture or a probe runs (PROBE), or a build: one piece of long work at a time.
+		if captureRef:get() ~= nil or probeRef:get() ~= nil or building() then
 			return
 		end
 		if fromTown == nil or toTown == nil or fromTown.id == toTown.id or track == nil then
@@ -872,6 +951,23 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 
 	react.onStep(function()
 		if joinQueuedRef:get() then
+			return
+		end
+		if building() then
+			joinQueuedRef:set(true)
+			safeJoin(function()
+				joinQueuedRef:set(false)
+				local b = buildRef:get()
+				if b == nil then
+					return
+				end
+				build.step(b)
+				local done = build.progress(b)
+				local view = b.phase .. ":" .. tostring(done)
+				if buildViewState:old() ~= view then
+					buildViewState:set(view)
+				end
+			end, "PgraceRailRouterBuild")
 			return
 		end
 		if workRef:get() == nil and checkRef:get() ~= nil then
@@ -1159,7 +1255,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 					{ price = formatMoney(checked.total), track = formatMoney(checked.total - stationsPrice),
 					stations = formatMoney(stationsPrice) }), "font-scale-body"))
 				if checked.crossings > 0 then
-					table.insert(body, textRow(fill(_("Level crossings: {count} (built in a later version)"),
+					table.insert(body, textRow(fill(_("Level crossings: {count}"),
 						{ count = tostring(checked.crossings) }), "font-scale-annotation"))
 				end
 				if checked.failures > 0 then
@@ -1178,6 +1274,11 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				if shown > MAX_PROBLEMS then
 					table.insert(body, textRow(fill(_("and {count} more"), { count = tostring(shown - MAX_PROBLEMS) }),
 						"font-scale-annotation"))
+				end
+				if checked.failures == 0 then
+					for __, row in ipairs(buildRows(checked)) do
+						table.insert(body, row)
+					end
 				end
 			else
 				table.insert(body, builtin.Button{
