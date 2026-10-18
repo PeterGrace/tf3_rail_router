@@ -124,12 +124,14 @@ It is used where the straight stretch is long enough. Otherwise the junction is 
   on y = +10 (the axis of our two tracks), facing along x. It replaces the site's platform end. As at a station of
   ours, an approach straight (the planner's approach length) and a room to turn follow it along x; the junction is
   fitted so that the approach lies along the straight stretch, and the room to turn and the search's run along the
-  axis stop at the stretch's end. The grid search ends there, as it does at a station's approach today.
+  axis (beside the existing track, so the leg may leave the stretch anywhere along it) stop at the stretch's end.
+  The grid search ends there, as it does at a station's approach today.
   - **The existing line's cells.** The survey marks them as track, which the search otherwise crosses (a crossing,
-    bridged) and runs along for free. Along the stretches used, from the station's centre out, the cells from our
-    side's track across to a cell beyond the far track are kept off as a station's footprint is (but for the leg's
-    own end cell), so the leg leaves the existing line sideways, on our side. Samples beside a stretch (along it,
-    5 m or more out on our side) aren't counted as crossings, so our parallel straight stays on the ground.
+    bridged) and runs along for free. Along the stretches used, from the station's centre out as far as our
+    straight and run may reach, the cells from our side's track across to a cell beyond the far track are kept off as
+    a station's footprint is (but for the leg's own end cells, along its run), so the leg leaves the existing line
+    sideways, on our side. Samples beside a stretch (along it, 5 m or more out on our side) aren't counted as
+    crossings, so our parallel straight stays on the ground.
 - **No station of ours** is placed at that stop, and it gets no road.
 
 ## Network

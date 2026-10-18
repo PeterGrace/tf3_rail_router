@@ -683,10 +683,10 @@ local function turnModel(s : Search, cell : number, radius : number)
 end
 
 -- The points along a ray from p in direction dir (a unit vector), one cell apart, out to `run` metres: p itself, then
--- each one whose straight from p stays inside the grid and off blocked, water, road and track cells (the first that
--- doesn't ends the ray). Each costs the straight from p to it, as moves do (length, and the slope penalty over the
+-- each one whose straight from p stays inside the grid and off blocked, water, road and track cells (track allowed
+-- with overTrack; the first that doesn't ends the ray). Each costs the straight from p to it, as moves do (length, and the slope penalty over the
 -- grade between neighbouring points). One per cell, the nearest to p.
-local function ray(g : Grid, w : Weights, p : Pt, dir : Pt, run : number) : {End}
+local function ray(g : Grid, w : Weights, p : Pt, dir : Pt, run : number, overTrack : boolean) : {End}
 	local ix, iy = grid.cellOf(g, p)
 	local ends : {End} = { { pt = p, cell = grid.index(g, ix, iy), x = ix, y = iy, cost = 0 } }
 	local seen : {integer : boolean} = { [ends[1].cell] = true }
@@ -694,7 +694,7 @@ local function ray(g : Grid, w : Weights, p : Pt, dir : Pt, run : number) : {End
 	while d <= run + EPSILON do
 		local q = geo.add(p, geo.scale(dir, d))
 		if not grid.inside(g, q) or not grid.cellsAlong(g, prev, q, function(i : integer) : boolean
-				return not (g.blocked[i] or g.water[i] or g.road[i] or g.track[i])
+				return not (g.blocked[i] or g.water[i] or g.road[i] or (g.track[i] and not overTrack))
 			end) then
 			break
 		end
@@ -717,7 +717,8 @@ end
 
 function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights,
 		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number, startRoom ?: number,
-		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}) : Search
+		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}, startOverTrack ?: boolean,
+		goalOverTrack ?: boolean) : Search
 	local sx, sy = grid.cellOf(g, from)
 	local gx, gy = grid.cellOf(g, to)
 	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
@@ -744,12 +745,12 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 	-- goalDir (only with a direction to move along).
 	local k0 = nearestDir(startDir)
 	if k0 ~= 0 and startRun ~= nil and startRun > 0 then
-		s.starts = ray(g, w, from, geo.norm(startDir), startRun)
+		s.starts = ray(g, w, from, geo.norm(startDir), startRun, startOverTrack)
 	else
 		s.starts = { { pt = from, cell = start, x = sx, y = sy, cost = 0 } }
 	end
 	if s.goalDir ~= 0 and goalRun ~= nil and goalRun > 0 then
-		s.goals = ray(g, w, to, geo.scale(geo.norm(goalDir), -1), goalRun)
+		s.goals = ray(g, w, to, geo.scale(geo.norm(goalDir), -1), goalRun, goalOverTrack)
 	else
 		s.goals = { { pt = to, cell = s.goal, x = gx, y = gy, cost = 0 } }
 	end

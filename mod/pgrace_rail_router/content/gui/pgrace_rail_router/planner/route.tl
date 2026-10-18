@@ -276,8 +276,10 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 	return platformEnd, approach, approach
 end
 
--- How far a leg's search may run its end on beyond the extension point at a station (grid.startSearch's runs): to
--- the end of an existing station's stretch, so the fixed straight stays beside it; no limit at a station of ours.
+-- How far a leg's search may run its end on beyond the extension point at a station (grid.startSearch's runs, where
+-- turns are spaced): at an existing station's junction, to the end of its stretch, beside the existing track (the
+-- search's ray passes its track cells there, and its footprint's cells along the ray are the run's own), so the leg
+-- may leave the stretch anywhere along it and the fixed straight stays beside it; no limit at a station of ours.
 local function runRoom(station : Station, forward : boolean, extension : Pt) : number
 	if station.existing == nil then
 		return math.huge
@@ -314,20 +316,23 @@ local function addFootprint(input : Input, station : Station, cells : {integer :
 		local c = station.existing.centre
 		for k, e in pairs(station.ends) do
 			local left : Pt = { x = -e.dir.y, y = e.dir.x }
-			local reach = geo.dot(geo.sub(e.origin, c), e.dir) + e.length
-			local d = 0.0
+			-- In the stretch's frame (x from its start, across from its midline): from back at the station's centre out
+			-- to where our straight may reach (its approach, room to turn at the full radius, and run, and a cell more).
+			local x = -geo.dot(geo.sub(e.origin, c), e.dir)
+			local reach = math.min(e.length, station.junctions[k].approachX + approachOf(input)
+				+ extensionLength(input, nil) + MAX_END_RUN + g.cell)
 			local side = station.sides[k]
-			while d <= reach + 1e-6 do
+			while x <= reach + 1e-6 do
 				local y = 2.5
 				while y >= -(2.5 + g.cell) - 1e-6 do
-					local p = geo.add(geo.add(c, geo.scale(e.dir, d)), geo.scale(left, y * side))
+					local p = geo.add(geo.add(e.origin, geo.scale(e.dir, x)), geo.scale(left, y * side))
 					if grid.inside(g, p) then
 						local ix, iy = grid.cellOf(g, p)
 						cells[grid.index(g, ix, iy)] = true
 					end
 					y = y - g.cell / 4
 				end
-				d = d + g.cell / 4
+				x = x + g.cell / 4
 			end
 		end
 		return
@@ -435,12 +440,15 @@ end
 
 -- A leg's search, as grid.startSearch, or the same search finished before: re-siting a station searches its current
 -- site's legs first, which are the legs' own searches (the leg just built, and the next one). Only searches with no
--- cost limit and no runs along the stations' axes are kept, the last SEARCH_CACHE_SIZE of them.
+-- cost limit and no runs along the stations' axes are kept, the last SEARCH_CACHE_SIZE of them. fromTrack and
+-- toTrack: that end is at an existing station's junction, where its run lies beside the existing track (in cells
+-- marked as track, which would otherwise end it at once).
 local function searchFor(job : Job, from : Pt, to : Pt, fromDir : Pt, toDir : Pt, radius : number, maxCost : number,
-		run : number, fromRoom : number, toRoom : number, avoid : {integer : boolean}) : PgraceRailRouterGrid.Search
+		fromRun : number, toRun : number, fromRoom : number, toRoom : number, avoid : {integer : boolean},
+		fromTrack : boolean, toTrack : boolean) : PgraceRailRouterGrid.Search
 	local key : string = nil
 	-- The stations' footprints to keep off are the plan's current ones (re-siting's current site) where the key is used.
-	if maxCost == nil and run == nil then
+	if maxCost == nil and fromRun == nil and toRun == nil then
 		key = ("%.6f %.6f %.6f %.6f %.9f %.9f %.9f %.9f %.6f %.6f %.6f %d"):format(from.x, from.y, to.x, to.y, fromDir.x,
 			fromDir.y, toDir.x, toDir.y, radius, fromRoom, toRoom, job.footprintVersion)
 		local hit = job.searchCache[key]
@@ -448,8 +456,8 @@ local function searchFor(job : Job, from : Pt, to : Pt, fromDir : Pt, toDir : Pt
 			return hit
 		end
 	end
-	local s = grid.startSearch(job.input.grid, from, to, fromDir, toDir, job.input.weights, radius, maxCost, run, run,
-		fromRoom, toRoom, approachOf(job.input), avoid)
+	local s = grid.startSearch(job.input.grid, from, to, fromDir, toDir, job.input.weights, radius, maxCost, fromRun,
+		toRun, fromRoom, toRoom, approachOf(job.input), avoid, fromTrack, toTrack)
 	if key ~= nil then
 		s.cacheKey = key
 	end
@@ -1172,19 +1180,20 @@ local function stepResite(job : Job, maxExpansions : integer)
 			maxCost = rs.legBest
 		end
 		-- Spaced turns may leave and join the stations' axes anywhere along a run (as the legs' own).
-		local run : number = nil
+		local a, b = prev, candidate
+		if rs.stage == "out" then
+			a, b = candidate, next
+		end
+		local fromRun, toRun : number, number = nil, nil
 		if 2 * radius * math.tan(math.pi / 16) > input.grid.cell + 1e-6 then
-			-- (One run for both ends: an existing station's limit holds at the other end too.)
-			local a, b = prev, candidate
-			if rs.stage == "out" then
-				a, b = candidate, next
-			end
-			run = math.min(MAX_END_RUN, geo.dist(from, to) / 2, runRoom(a, true, from), runRoom(b, false, to))
+			local run = math.min(MAX_END_RUN, geo.dist(from, to) / 2)
+			fromRun, toRun = math.min(run, runRoom(a, true, from)), math.min(run, runRoom(b, false, to))
 		end
 		if rs.avoid == nil then
 			rs.avoid = footprints(input, plan, i, candidate)
 		end
-		rs.search = searchFor(job, from, to, fromDir, toDir, radius, maxCost, run, fromRoom, toRoom, rs.avoid)
+		rs.search = searchFor(job, from, to, fromDir, toDir, radius, maxCost, fromRun, toRun, fromRoom, toRoom, rs.avoid,
+			a.existing ~= nil, b.existing ~= nil)
 		return
 	end
 	if not grid.stepSearch(rs.search, searchBudget(rs.search, maxExpansions)) then
@@ -1559,14 +1568,13 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		-- Where turns are spaced, the lattice of reachable cells and headings is coarse, and a path rarely meets one
 		-- exact start and goal: let it leave a's axis, and join b's, anywhere along a run beyond the extension points
 		-- (the stations' straights just get longer), up to MAX_END_RUN and never past half way.
-		local run : number = nil
+		local aRun, bRun : number, number = nil, nil
 		if 2 * radius * math.tan(math.pi / 16) > input.grid.cell + 1e-6 then
-			-- (One run for both ends: an existing station's limit holds at the other end too.)
-			run = math.min(MAX_END_RUN, geo.dist(aExtension, bExtension) / 2, runRoom(a, true, aExtension),
-				runRoom(b, false, bExtension))
+			local run = math.min(MAX_END_RUN, geo.dist(aExtension, bExtension) / 2)
+			aRun, bRun = math.min(run, runRoom(a, true, aExtension)), math.min(run, runRoom(b, false, bExtension))
 		end
-		job.search = searchFor(job, aExtension, bExtension, a.site.dir, b.site.dir, radius, maxCost, run, aRoom, bRoom,
-			job.footprint)
+		job.search = searchFor(job, aExtension, bExtension, a.site.dir, b.site.dir, radius, maxCost, aRun, bRun, aRoom,
+			bRoom, job.footprint, a.existing ~= nil, b.existing ~= nil)
 		return false
 	end
 	if not grid.stepSearch(job.search, searchBudget(job.search, maxExpansions)) then

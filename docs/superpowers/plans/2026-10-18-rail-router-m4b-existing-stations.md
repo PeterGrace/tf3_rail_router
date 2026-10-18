@@ -552,8 +552,11 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
     Input.approach`;
   - the extension beyond it as for a station of ours (room to turn, capped at a quarter of the way to the
     neighbouring station, pulled back until clear), along e.dir, and no farther than the stretch's end
-    (e.length − approachX − Input.approach); the search's run along the axis stops there too (`runRoom`; one run for
-    both ends, so the limit holds at the leg's other end as well);
+    (e.length − approachX − Input.approach); where turns are spaced, the search's run along the axis runs to the
+    stretch's end (`runRoom`; each end of a leg has its own run, `searchFor`'s fromRun/toRun), and its ray passes the
+    existing line's track cells there (`grid.startSearch`'s startOverTrack/goalOverTrack), so the leg may leave the
+    stretch anywhere along it: otherwise its first move, a 22.5° knight move from a footprint cell through the next,
+    had nowhere to go, and only the fallback radius found a path;
   - the straight platformEnd → approach must be clear (`straightClear`); if not, the end is unusable ("no room").
 
   The leg's first (or last) straight piece then runs along our axis, 10 m off the existing one. The heights use
@@ -562,8 +565,9 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
 - [ ] **Step 5: Footprints and crossings.** `takePlatforms` adds nothing for an existing station. In-game the survey
   marks the existing line's cells as track, where a move from track to track is free and every sample counts as a
   crossing (bridged, 9 m up), so:
-  - `addFootprint` adds, along each stretch used (from the station's centre out to the stretch's end), the cells from
-    the near track across to one cell beyond the far track. Legs' searches keep off them but for their own end cell,
+  - `addFootprint` adds, along each stretch used (from the station's centre out to where our straight may reach:
+    min(e.length, approachX + Input.approach + the room to turn at full radius + MAX_END_RUN + a cell)), the cells
+    from the near track across to one cell beyond the far track, laid out from the stretch's midline. Legs' searches keep off them but for their own end cell,
     so a leg leaves the existing line sideways, on our side (a 100 m cell holds both tracks and our straight).
   - `startHeights` doesn't count a sample as a track crossing where it lies beside a stretch: along it (0 ≤ x ≤
     e.length) and 5 m or more out on our side.

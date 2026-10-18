@@ -223,7 +223,9 @@ global record PgraceRailRouterGrid
 	-- for the start's and goal's own cells. With startRun (metres), the path may instead start at any point up to
 	-- that far out along startDir from
 	-- `from`, one per cell, and with goalRun finish at any point up to that far back from `to` against goalDir: each
-	-- ray stops at the first blocked, water, road or track cell, and costs its straight (length and slope, as moves).
+	-- ray stops at the first blocked, water, road or track cell (with startOverTrack or goalOverTrack, track cells
+	-- don't stop that end's ray: an end beside an existing station's track, route.tl), and costs its straight (length
+	-- and slope, as moves).
 	-- The path's first and last points are then those points. The first segment, from the start point to the next
 	-- cell's centre, and the last, into the goal point, must be clear of blocked cells too (off-centre ends can cut a
 	-- blocked cell's corner). With maxCost, the search finishes, not found, once every path left would cost more. A
@@ -234,7 +236,8 @@ global record PgraceRailRouterGrid
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
 		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights,
 		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number, startRoom ?: number,
-		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}) : Search
+		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}, startOverTrack ?: boolean,
+		goalOverTrack ?: boolean) : Search
 	-- Expands up to maxExpansions states (or fills that many cells first); true once the search is finished (found
 	-- or not). Gives up, not found, after 12 expansions per cell (a goal cut off only by the turn limit).
 	stepSearch : function(s : Search, maxExpansions : integer) : boolean

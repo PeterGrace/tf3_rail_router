@@ -1161,7 +1161,28 @@ end
 
 t.test("route: an existing station too close to the stop before it falls back, with a note", function()
 	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
-	local plan = runExisting({ town(1, "A", 2750, -100), town(2, "B", 3000, 0), town(3, "C", 6000, -300) }, 2,
+	-- B's centre 600 m east of its existing station, which is 300 m from A's: B's own station fits.
+	local plan = runExisting({ town(1, "A", 2700, 0), town(2, "B", 3600, 0), town(3, "C", 6600, -300) }, 2,
 		station, snap)
-	t.eq(plan.notes[1], "The station in B is too close to the station in A; a new station was planned.", "note")
+	fellBack(plan, "The station in B is too close to the station in A; a new station was planned.")
+end)
+
+t.test("route: with turns spaced for a wide radius, legs leave an existing station's track at full radius", function()
+	-- Turns spaced (2 · 1500 · tan 11.25° is more than a cell), stops in line: the leg's first and last moves have to
+	-- slide along the stretch, off the existing line's cells, to turn away from it.
+	local wide = withWeights({ minRadius = 1500, minSearchRadius = 1500 })
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	local g = markTrack(flatGrid(), station, snap)
+	local plan = runExisting({ town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) }, 2, station, snap,
+		{ grid = g, weights = wide })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[2].existing == station, "existing")
+	t.eq(plan.summary.tightCurves, 0, "no tight curves")
+	t.ok(plan.summary.minRadius >= 1500 - 1e-6, "radius " .. plan.summary.minRadius)
+	for k, leg in ipairs(plan.legs) do
+		t.eq(leg.searchRadius, 1500, "leg " .. k .. " searched at the full radius")
+	end
+	-- (No bridge count: with the stops in line, each leg runs in along the axis beyond the stretch, where in-game the
+	-- existing line would run on, and eases across to our straight 10 m off by the stretch's far end; the cell holding
+	-- the existing track's last metres counts as track, and the profile bridges it.)
 end)
