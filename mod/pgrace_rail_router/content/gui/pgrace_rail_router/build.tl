@@ -16,9 +16,10 @@ local STATION_FILE = "modular_station.con"
 local END_MATCH = 1.0
 -- A node a built chunk added is matched to a network node this close (metres).
 local NODE_MATCH = 0.5
--- A crossing this close to an existing street node uses the node, not a split (metres). Under half the distance
--- between the two tracks (5 m), and a node joins one track at most: two tracks through one node would join them.
-local NODE_SNAP = 2.0
+-- A crossing this close to an existing street node uses the node, not a split (metres): within network.cut's 1 m,
+-- since the track then runs through the node (Bangor - Imperial Beach crossed 1.81 m from one, and the cut refused
+-- it). A node joins one track at most: two tracks through one node would join them.
+local NODE_SNAP = 0.5
 
 local function log(text : string)
 	debugPrint(LOG_PREFIX .. text)
