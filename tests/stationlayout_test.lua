@@ -117,3 +117,25 @@ t.test("stationlayout: addons for 120 m and 320 m stations, and none without roo
 	t.eq(slots(m, "R"), "10399980 10399990 10400000 10400010 10400020 10400030 10402980 10402990 10403000 10403010 10403020 10403030",
 		"roofs from j = -2 to 3")
 end)
+
+t.test("stationlayout: facing turns the station round when the town is on its right", function()
+	local c, east = { x = 0, y = 0 }, { x = 1, y = 0 }
+	local d = sl.facing(c, east, { x = 50, y = 300 })
+	t.eq(d.x, 1, "town to the north (left of east): kept")
+	d = sl.facing(c, east, { x = 50, y = -300 })
+	t.eq(d.x, -1, "town to the south: turned round") t.eq(d.y, -0, "still along the axis")
+end)
+
+t.test("stationlayout: turned round, a station's track ends are the same four points", function()
+	for __, length in ipairs({ 160, 200, 120 }) do
+		local a = sl.layout({ x = 100, y = 200 }, { x = 0.6, y = 0.8 }, length, ERA)
+		local b = sl.layout({ x = 100, y = 200 }, { x = -0.6, y = -0.8 }, length, ERA)
+		for __, p in ipairs(a.ends) do
+			local matched = false
+			for __, q in ipairs(b.ends) do
+				matched = matched or (math.abs(p.x - q.x) < 1e-6 and math.abs(p.y - q.y) < 1e-6)
+			end
+			t.ok(matched, ("%d m: end (%.2f %.2f) is an end turned round too"):format(length, p.x, p.y))
+		end
+	end
+end)

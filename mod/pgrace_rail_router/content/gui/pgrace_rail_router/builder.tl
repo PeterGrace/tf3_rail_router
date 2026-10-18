@@ -159,7 +159,12 @@ function builder.stationProposal(plan : Plan, index : integer, settings : Settin
 		return nil, "station not found: " .. STATION_FILE
 	end
 	local station = plan.stations[index]
-	local layout = sl.layout(station.site.centre, station.site.dir, plan.platformLength, settings.era)
+	-- Turned so its main building faces the town (the track ends are the same either way).
+	local dir = station.site.dir
+	if station.town ~= nil and station.town.pos ~= nil then
+		dir = sl.facing(station.site.centre, dir, station.town.pos)
+	end
+	local layout = sl.layout(station.site.centre, dir, plan.platformLength, settings.era)
 	if not (finite(layout.angle) and finite(layout.origin.x) and finite(layout.origin.y) and finite(station.z)) then
 		return nil, "the station's place isn't a number"
 	end

@@ -196,6 +196,26 @@ local function stepStation(b : Build)
 			end
 		end
 		log(("station %d built (construction %d), %d track ends joined"):format(b.station, con, matched))
+		-- PROBE (remove before release): the station's street ends (its entrance, to join to the town's roads).
+		pcall(function() : boolean
+			local c2 = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+			local seen : {integer : boolean} = {}
+			for __, e in ipairs(c2.frozenEdges or {}) do
+				if api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) ~= nil then
+					local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+					for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
+						if not seen[node] then
+							seen[node] = true
+							local p = nodePos(node)
+							log(("station %d street node %d at (%.1f %.1f %.1f): %d street pieces, %d in all"):format(b.station,
+								node, p.x, p.y, p.z, #api.engine.system.streetSystem.getNodeStreetSegments(node),
+								#api.engine.system.streetSystem.getNodeSegments(node)))
+						end
+					end
+				end
+			end
+			return true
+		end)
 		b.station = b.station + 1
 	end)
 end

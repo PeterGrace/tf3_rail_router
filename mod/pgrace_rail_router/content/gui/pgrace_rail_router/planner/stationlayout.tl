@@ -125,4 +125,14 @@ function sl.layout(centre : Pt, dir : Pt, platformLength : number, era : Era) : 
 	}
 end
 
+function sl.facing(centre : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt,
+		towards : PgraceRailRouterGeo.Pt) : PgraceRailRouterGeo.Pt
+	-- Left of dir is (-dir.y, dir.x).
+	local side = -dir.y * (towards.x - centre.x) + dir.x * (towards.y - centre.y)
+	if side >= 0 then
+		return dir
+	end
+	return { x = -dir.x, y = -dir.y }
+end
+
 return sl
