@@ -803,11 +803,13 @@ function probe.joinStation(settings : Settings) : {function()}
 			return
 		end
 		local ends = freeEnds(station)
-		log("P11", ("station %d: %d free track ends"):format(station, #ends))
+		log("P11", ("station %d: %d free track ends; track %s, year %d"):format(station, #ends, tostring(settings.track),
+			settings.year or 0))
 		if #ends < 2 then
 			return
 		end
-		-- The station's axis: between its two farthest-apart ends. Take the two ends on the +axis side.
+		-- The station's axis: from the mean of the ends on one side to the mean of the other's (the sides split by the
+		-- direction between the two farthest-apart ends).
 		local a, b = ends[1], ends[2]
 		local far = 0.0
 		for i = 1, #ends do
@@ -818,23 +820,43 @@ function probe.joinStation(settings : Settings) : {function()}
 				end
 			end
 		end
-		local axis = geo.scale(geo.sub({ x = a.x, y = a.y }, { x = b.x, y = b.y }), 1 / far)
-		local mid : Pt = { x = (a.x + b.x) / 2, y = (a.y + b.y) / 2 }
-		local side : {Pt3} = {}
+		local rough = geo.sub({ x = a.x, y = a.y }, { x = b.x, y = b.y })
+		local centre : Pt = { x = 0, y = 0 }
 		for __, e in ipairs(ends) do
-			if geo.dot(geo.sub({ x = e.x, y = e.y }, mid), axis) > 0 then
+			centre = geo.add(centre, geo.scale({ x = e.x, y = e.y }, 1 / #ends))
+		end
+		local side : {Pt3} = {}
+		local plus : Pt = { x = 0, y = 0 }
+		for __, e in ipairs(ends) do
+			if geo.dot(geo.sub({ x = e.x, y = e.y }, centre), rough) > 0 then
 				table.insert(side, e)
+				plus = geo.add(plus, { x = e.x, y = e.y })
 			end
 		end
-		log("P11", ("axis (%.3f %.3f), %d ends on its + side"):format(axis.x, axis.y, #side))
-		-- Variant b first, for the log only: new nodes at the ends' places, cleanupStreetGraph merging them.
-		local loose : {Pt3} = {}
-		for __, e in ipairs(side) do
-			table.insert(loose, { x = e.x, y = e.y, z = e.z })
+		plus = geo.scale(plus, 1 / #side)
+		local axis = geo.sub(plus, centre)
+		axis = geo.scale(axis, 1 / geo.len(axis))
+		log("P11", ("axis (%.4f %.4f), %d ends on its + side"):format(axis.x, axis.y, #side))
+		-- Variants for the log: new nodes at the ends and 10 m and 30 m beyond them; then joined to the ends.
+		for __, gap in ipairs({ 30, 10, 0 }) do
+			local loose : {Pt3} = {}
+			for __, e in ipairs(side) do
+				table.insert(loose, { x = e.x + axis.x * gap, y = e.y + axis.y * gap, z = e.z })
+			end
+			local pv = builder.chunkProposal(straightNet(loose, axis, 100), 1, #side, settings)
+			if pv ~= nil then
+				tryProposal(("P11 new nodes %d m beyond"):format(gap), pv, builder.newContext())
+			end
 		end
-		local pb = builder.chunkProposal(straightNet(loose, axis, 100), 1, #side, settings)
-		if pb ~= nil then
-			tryProposal("P11 new nodes, cleanup", pb, builder.newContext(true))
+		do
+			local loose : {Pt3} = {}
+			for __, e in ipairs(side) do
+				table.insert(loose, { x = e.x, y = e.y, z = e.z })
+			end
+			local pb = builder.chunkProposal(straightNet(loose, axis, 100), 1, #side, settings)
+			if pb ~= nil then
+				tryProposal("P11 new nodes at the ends, cleanup", pb, builder.newContext(true))
+			end
 		end
 		local net = straightNet(side, axis, 100)
 		local proposal, why = builder.chunkProposal(net, 1, #side, settings)
