@@ -42,6 +42,8 @@ global record PgraceRailRouterBuild
 		start : PgraceRailRouterNetwork.Pt3
 		turn : number
 		mid : number
+		-- Its length plus a metre a degree it turns: shapes are tried cheapest first.
+		cost : number
 	end
 
 	record Build

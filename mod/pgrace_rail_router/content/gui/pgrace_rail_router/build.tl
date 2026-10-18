@@ -624,14 +624,87 @@ local function roadProposal(e : Pt3, t : PgraceRailRouterBuild.RoadTarget) : Sim
 	return proposal
 end
 
--- Every target in every shape: leaving the entrance straight out or up to ROAD_TURN off it (the road the player
--- built, which the game linked, came in 15° off), and a dead end also by way of a point ROAD_MIDS before it.
+-- The shapes a road may take, cheapest first. First straight roads: out of the building square, or turned by up to
+-- 30°, to the first street they meet, as a T there (a straight road looks like a road; curves forced to leave square
+-- and arrive along a street made hairpins: Bangor - Imperial Beach, 2026-10-18). Then curves to every target,
+-- leaving square or up to 60° off (the road the player built, which the game linked, came in 15° off), and to a
+-- dead end also by way of a point ROAD_MIDS before it, none turning more than ROAD_MAX_TURN in all. Each costs its
+-- length plus a metre a degree it turns.
+local ROAD_RAYS : {number} = { 0, 15, -15, 30, -30 }
 local ROAD_TURNS : {number} = { 0, 30, -30, 60, -60 }
 local ROAD_MIDS : {number} = { 20, 40 }
+local ROAD_MAX_TURN = 120.0
+-- A straight road meets a street at least this far off parallel (degrees).
+local ROAD_MIN_ANGLE = 30.0
 
-local function roadShapes(targets : {PgraceRailRouterBuild.RoadTarget}, out : Pt3) : {PgraceRailRouterBuild.RoadTarget}
+local function turned(out : Pt3, deg : number) : Pt3
+	local a = math.rad(deg)
+	return { x = out.x * math.cos(a) - out.y * math.sin(a), y = out.x * math.sin(a) + out.y * math.cos(a), z = 0 }
+end
+
+-- How far a curve leaving a along `from` and arriving at b along `into` turns in all (degrees).
+local function turning(a : Pt3, from : Pt3, b : Pt3, into : Pt3) : number
+	local l = dist2(a, b)
+	local h : Hermite = { p0 = a, p1 = b, t0 = { x = from.x * l, y = from.y * l, z = 0 }, t1 = { x = into.x * l, y = into.y * l, z = 0 } }
+	-- The angle between successive chords (acos of their unit vectors' dot: the game's Lua has no two-argument atan).
+	local total = 0.0
+	local last = network.hermiteAt(h, 0)
+	local px, py = 0.0, 0.0
+	for k = 1, 32 do
+		local p = network.hermiteAt(h, k / 32)
+		local dx, dy = unit(p.x - last.x, p.y - last.y)
+		if k > 1 then
+			total = total + math.acos(math.max(-1.0, math.min(1.0, px * dx + py * dy)))
+		end
+		px, py, last = dx, dy, p
+	end
+	return math.deg(total)
+end
+
+-- Straight roads from the entrance: for each ray, the first street piece it meets, well clear of its ends and not
+-- too near parallel to it.
+local function rayShapes(e : Pt3, out : Pt3, reach : number) : {PgraceRailRouterBuild.RoadTarget}
 	local shapes : {PgraceRailRouterBuild.RoadTarget} = {}
-	for __, t in ipairs(targets) do
+	local pieces = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(e.x, e.y), reach,
+		api.type.ComponentType.BASE_EDGE)
+	for __, deg in ipairs(ROAD_RAYS) do
+		local dir = turned(out, deg)
+		local ray : Hermite = { p0 = e, p1 = { x = e.x + dir.x * reach, y = e.y + dir.y * reach, z = e.z },
+			t0 = { x = dir.x * reach, y = dir.y * reach, z = 0 }, t1 = { x = dir.x * reach, y = dir.y * reach, z = 0 } }
+		local best : PgraceRailRouterBuild.RoadTarget = nil
+		local bestS = math.huge
+		for __, ent in ipairs(pieces) do
+			local edge = isStreet(ent as integer)
+			if edge ~= nil and #api.engine.system.streetSystem.getNodeTrackSegments(edge.node0) == 0 then
+				local h : Hermite = { p0 = p3(edge.position0), p1 = p3(edge.position1), t0 = p3(edge.tangent0),
+					t1 = p3(edge.tangent1) }
+				for __, c in ipairs(network.crossings(ray, h)) do
+					if c.s < bestS then
+						local before = network.hermiteAt(h, math.max(0, c.u - 0.01))
+						local after = network.hermiteAt(h, math.min(1, c.u + 0.01))
+						local sx, sy = unit(after.x - before.x, after.y - before.y)
+						local sine = math.abs(sx * dir.y - sy * dir.x)
+						bestS = c.s
+						best = nil
+						if dist2(c.p, h.p0) >= SPLIT_END and dist2(c.p, h.p1) >= SPLIT_END
+								and sine >= math.sin(math.rad(ROAD_MIN_ANGLE)) then
+							best = { kind = "split", p = c.p, arrive = dir, piece = ent as integer, u = c.u, start = dir,
+								mid = 0, turn = deg, cost = dist2(e, c.p) + math.abs(deg) }
+						end
+					end
+				end
+			end
+		end
+		if best ~= nil then
+			table.insert(shapes, best)
+		end
+	end
+	return shapes
+end
+
+local function roadShapes(e : Pt3, out : Pt3, reach : number) : {PgraceRailRouterBuild.RoadTarget}
+	local shapes = rayShapes(e, out, reach)
+	for __, t in ipairs(roadTargets(e, out, reach)) do
 		local mids : {number} = { 0 }
 		if t.kind == "dead end" then
 			for __, d in ipairs(ROAD_MIDS) do
@@ -639,15 +712,21 @@ local function roadShapes(targets : {PgraceRailRouterBuild.RoadTarget}, out : Pt
 			end
 		end
 		for __, deg in ipairs(ROAD_TURNS) do
-			local a = math.rad(deg)
-			local start : Pt3 = { x = out.x * math.cos(a) - out.y * math.sin(a), y = out.x * math.sin(a) + out.y * math.cos(a),
-				z = 0 }
+			local start = turned(out, deg)
 			for __, mid in ipairs(mids) do
-				table.insert(shapes, { kind = t.kind, p = t.p, arrive = t.arrive, node = t.node, piece = t.piece, u = t.u,
-					start = start, mid = mid, turn = deg })
+				local into = t.arrive
+				local m = mid > 0 and { x = t.p.x - into.x * mid, y = t.p.y - into.y * mid, z = t.p.z } or t.p
+				local turn = turning(e, start, m, into)
+				if turn <= ROAD_MAX_TURN then
+					table.insert(shapes, { kind = t.kind, p = t.p, arrive = into, node = t.node, piece = t.piece, u = t.u,
+						start = start, mid = mid, turn = deg, cost = dist2(e, m) + mid + turn })
+				end
 			end
 		end
 	end
+	table.sort(shapes, function(x : PgraceRailRouterBuild.RoadTarget, y : PgraceRailRouterBuild.RoadTarget) : boolean
+		return x.cost < y.cost
+	end)
 	return shapes
 end
 
@@ -729,7 +808,7 @@ local function stepRoad(b : Build)
 	end
 	-- The shapes to try, nearest target first, ROAD_STEP_TRIES dry runs a step (a few ms each).
 	if b.roadShapes == nil then
-		b.roadShapes = roadShapes(roadTargets(e, out, ROAD_REACH), out)
+		b.roadShapes = roadShapes(e, out, ROAD_REACH)
 		b.roadNext = 1
 	end
 	local tried = 0
