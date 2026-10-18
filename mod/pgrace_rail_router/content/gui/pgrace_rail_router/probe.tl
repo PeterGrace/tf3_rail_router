@@ -1242,60 +1242,87 @@ local function branchSide(list : {P15Piece}, what : string, node : integer)
 end
 
 -- Stage 3, step 2: with every cut made, one proposal of the new track.
+-- Stage 3's crossing track: its angle to track 1 at the crossing (degrees) and its straight each side (metres).
+local CROSS_ANGLE = 8.0
+local CROSS_STRAIGHT = 25.0
+
+-- Where the crossing track leaves track 2: an arc from there onto the crossing line (see p15Junction).
+local function crossSwitchX() : number
+	local theta = math.rad(CROSS_ANGLE)
+	local rise = CROSS_STRAIGHT * math.sin(theta)
+	local radius = (2 * p15.off - rise) / (1 - math.cos(theta))
+	return 200 - CROSS_STRAIGHT * math.cos(theta) - radius * math.sin(theta)
+end
+
 local function p15Junction(settings : Settings)
 	local o = p15.origin
 	local off = p15.off
 	local list = scanPieces()
 	local n1, p1 = findNodeAt(list, o.x + 60, o.y + off)
-	local n4, p4 = findNodeAt(list, o.x + 120, o.y - off)
+	local n4, p4 = findNodeAt(list, o.x + crossSwitchX(), o.y - off)
 	local n5, p5 = findNodeAt(list, o.x + 200, o.y + off)
 	if n1 == nil or n4 == nil or n5 == nil then
-		log("P15", ("cut nodes missing: x=60 %s, x=120 %s, x=200 %s"):format(tostring(n1), tostring(n4), tostring(n5)))
+		log("P15", ("cut nodes missing: x=60 %s, track 2 switch %s, x=200 %s"):format(tostring(n1), tostring(n4), tostring(n5)))
 		return p15Done(3, false)
 	end
-	log("P15", ("cut nodes: x=60 -> %d, x=120 -> %d, crossing x=200 -> %d"):format(n1, n4, n5))
+	log("P15", ("cut nodes: x=60 -> %d, track 2 switch -> %d, crossing x=200 -> %d"):format(n1, n4, n5))
 	branchSide(list, "switch at x=60 (track 1)", n1)
-	branchSide(list, "switch at x=120 (track 2)", n4)
+	branchSide(list, "switch on track 2", n4)
 	local z = p1.z
 	local function at(x : number, y : number, node ?: integer) : Pt3
 		return { x = o.x + x, y = o.y + y, z = z, entity = node }
 	end
+	-- The crossing track is shaped as the game's own diamond (P16): straight through the crossing node for
+	-- CROSS_STRAIGHT each side, at CROSS_ANGLE to track 1; an arc off track 2's switch onto that line, and an arc from
+	-- it onto our near track's line. (An S-curve, straight only at the crossing, was refused.)
+	local theta = math.rad(CROSS_ANGLE)
+	local rise = CROSS_STRAIGHT * math.sin(theta)
+	local radius = (2 * off - rise) / (1 - math.cos(theta))
+	local run = radius * math.sin(theta)
+	local cx = 200.0
 	local nodes : {Pt3} = {
 		{ x = p1.x, y = p1.y, z = p1.z, entity = n1 },
 		at(170, 5 * off),
 		at(330, 5 * off),
 		{ x = p4.x, y = p4.y, z = p4.z, entity = n4 },
+		at(cx - CROSS_STRAIGHT * math.cos(theta), off - rise),
 		{ x = p5.x, y = p5.y, z = p5.z, entity = n5 },
-		at(280, 3 * off),
+		at(cx + CROSS_STRAIGHT * math.cos(theta), off + rise),
+		at(cx + CROSS_STRAIGHT * math.cos(theta) + run, 3 * off),
 		at(330, 3 * off),
 	}
+	log("P15", ("crossing track: %.1f degrees, straight %.0f m each side, arcs of radius %.0f m over %.1f m; its switch at x = %.1f"):format(
+		CROSS_ANGLE, CROSS_STRAIGHT, radius, run, p4.x - o.x))
 	local function dir(dx : number) : Pt3
 		return { x = dx, y = 0, z = 0 }
 	end
+	local function along(l : number) : Pt3
+		return { x = math.cos(theta) * l, y = math.sin(theta) * l, z = 0 }
+	end
 	local edges : {PgraceRailRouterNetwork.Edge} = {}
-	local function add(a : integer, b : integer, h : Hermite)
-		table.insert(edges, { node0 = a, node1 = b, p0 = h.p0, p1 = h.p1, t0 = h.t0, t1 = h.t1, kind = "ground", track = 0,
+	local function add(a_ : integer, b_ : integer, h : Hermite)
+		table.insert(edges, { node0 = a_, node1 = b_, p0 = h.p0, p1 = h.p1, t0 = h.t0, t1 = h.t1, kind = "ground", track = 0,
 			leg = 1, s0 = 0, s1 = 0 })
 	end
-	-- All edges run east from their first node, as they leave an existing node there (a switch's branch leaves
-	-- the node on the side the main track continues on).
+	local function edge(a_ : integer, b_ : integer, from : Pt3, into : Pt3)
+		local p, q = nodes[a_], nodes[b_]
+		local l = math.sqrt((q.x - p.x) ^ 2 + (q.y - p.y) ^ 2)
+		local function scaled(v : Pt3) : Pt3
+			local n = math.sqrt(v.x * v.x + v.y * v.y)
+			return { x = v.x / n * l, y = v.y / n * l, z = 0 }
+		end
+		add(a_, b_, { p0 = p, p1 = q, t0 = scaled(from), t1 = scaled(into) })
+	end
+	-- All edges run east from their first node, as they leave an existing node there.
 	add(1, 2, { p0 = nodes[1], p1 = nodes[2], t0 = dir(nodes[2].x - nodes[1].x), t1 = dir(nodes[2].x - nodes[1].x) })
 	add(2, 3, { p0 = nodes[2], p1 = nodes[3], t0 = dir(nodes[3].x - nodes[2].x), t1 = dir(nodes[3].x - nodes[2].x) })
-	local whole : Hermite = { p0 = nodes[4], p1 = nodes[6], t0 = dir(nodes[6].x - nodes[4].x),
-		t1 = dir(nodes[6].x - nodes[4].x) }
-	local first, second = network.splitHermite(whole, 0.5)
-	log("P15", ("cross S-curve midpoint %s against the crossing node %s"):format(rel(first.p1), rel(nodes[5])))
-	log("P15", ("crossing angle at x=200: %.2f degrees between the cross curve and track 1"):format(
-		math.deg(math.atan(first.t1.y / first.t1.x))))
-	first.p1, second.p0 = nodes[5], nodes[5]
-	add(4, 5, first)
-	add(5, 6, second)
-	add(6, 7, { p0 = nodes[6], p1 = nodes[7], t0 = dir(nodes[7].x - nodes[6].x), t1 = dir(nodes[7].x - nodes[6].x) })
+	edge(4, 5, dir(1), along(1))
+	edge(5, 6, along(1), along(1))
+	edge(6, 7, along(1), along(1))
+	edge(7, 8, along(1), dir(1))
+	edge(8, 9, dir(1), dir(1))
 	local net : PgraceRailRouterNetwork.Network = { nodes = nodes, edges = edges, chunks = {} }
-	-- Which part the game refuses: the merge alone (edges 1-2), the crossing track alone (3-5), its first half alone
-	-- (the switch at x=120 to the crossing node), then everything.
-	for __, part in ipairs({ { "merge only", 1, 2 }, { "crossing track only", 3, 5 }, { "switch to crossing node only", 3, 3 },
-			{ "crossing node onwards only", 4, 5 } }) do
+	for __, part in ipairs({ { "merge only", 1, 2 }, { "crossing track only", 3, 7 } }) do
 		local pr, whyNot = builder.chunkProposal(net, part[2] as integer, part[3] as integer, settings)
 		if pr == nil then
 			log("P15", ("%s: no proposal: %s"):format(part[1], tostring(whyNot)))
@@ -1307,44 +1334,6 @@ local function p15Junction(settings : Settings)
 			end
 			log("P15", ("%s dry run: %s, %d %s"):format(part[1], okP and "clean" or table.concat(messagesP, "; "), costP,
 				table.concat(hits, ", ")))
-		end
-	end
-	-- The crossing track as one curve over track 1, with no node there: does the engine make the crossing itself
-	-- (cleanupStreetGraph), or only collide?
-	do
-		local wholeNet : PgraceRailRouterNetwork.Network = { nodes = { nodes[4], nodes[6], nodes[7] }, edges = {
-			{ node0 = 1, node1 = 2, p0 = whole.p0, p1 = whole.p1, t0 = whole.t0, t1 = whole.t1, kind = "ground", track = 0,
-				leg = 1, s0 = 0, s1 = 0 },
-			{ node0 = 2, node1 = 3, p0 = nodes[6], p1 = nodes[7], t0 = dir(nodes[7].x - nodes[6].x),
-				t1 = dir(nodes[7].x - nodes[6].x), kind = "ground", track = 0, leg = 1, s0 = 0, s1 = 0 },
-		}, chunks = {} }
-		for __, cleanup in ipairs({ false, true }) do
-			local pr, whyNot = builder.chunkProposal(wholeNet, 1, 2, settings)
-			if pr == nil then
-				log("P15", "whole crossing curve: no proposal: " .. tostring(whyNot))
-			else
-				local okP, costP, messagesP, ___, dataP = builder.dryRun(pr, builder.newContext(cleanup))
-				local hits : {string} = {}
-				for __, h in ipairs(builder.collisions(dataP)) do
-					table.insert(hits, ("%s %d"):format(h.what, h.entity))
-				end
-				log("P15", ("whole crossing curve over track 1, cleanup %s: %s, %d %s"):format(tostring(cleanup),
-					okP and "clean" or table.concat(messagesP, "; "), costP, table.concat(hits, ", ")))
-				-- PROBE: the proposal the engine made of it, when it cleaned up (new nodes where it crosses?).
-				if cleanup then
-					pcall(function() : boolean
-						local pd = dataP as any as {string : any}
-						local pp = (pd.proposal as {string : any}).proposal as {string : any}
-						log("P15", ("cleaned-up proposal: %d added segments, %d added nodes, %d removed segments"):format(
-							#(pp.addedSegments as {any}), #(pp.addedNodes as {any}), #(pp.removedSegments as {any})))
-						for __, n in ipairs(pp.addedNodes as {{string : any}}) do
-							local comp = n.comp as {string : any}
-							log("P15", ("  added node %s at %s"):format(tostring(n.entity), rel(p3of(comp.position as Vec3f))))
-						end
-						return true
-					end)
-				end
-			end
 		end
 	end
 	local proposal, why = builder.chunkProposal(net, 1, #edges, settings)
@@ -1366,7 +1355,7 @@ local function p15Junction(settings : Settings)
 			return p15Done(3, false)
 		end
 		logAdded("junction", res)
-		for __, pair in ipairs({ { "x=60 switch", n1 }, { "x=120 switch", n4 }, { "x=200 crossing", n5 } }) do
+		for __, pair in ipairs({ { "x=60 switch", n1 }, { "track 2 switch", n4 }, { "x=200 crossing", n5 } }) do
 			local okS, segs = pcall(function() : {any}
 				return api.engine.system.streetSystem.getNodeTrackSegments(pair[2] as integer) as {any}
 			end)
@@ -1401,9 +1390,10 @@ local function p15Cuts(settings : Settings)
 		return p15Done(3, false)
 	end
 	-- The crossing is at track 1's existing node at x = 200 (stage 1's piece end), so no cut there. The crossing
-	-- track's switch is at x = 120 on track 2, 80 m short of its next node: from x = 180, 20 m short of it, the
+	-- track's switch is on track 2 where its arc onto the crossing line begins (x ≈ 153.5): from x = 180, 20 m short of
+	-- the next node, the
 	-- branch was refused ("Construction Not Possible"; it had pulled only 0.6 m clear of the main track there).
-	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 2, x = 120 } }
+	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 2, x = crossSwitchX() } }
 	local function nextCut(attempt : integer)
 		if attempt > 8 then
 			log("P15", "too many cuts")
