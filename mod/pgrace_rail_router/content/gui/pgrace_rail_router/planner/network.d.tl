@@ -64,6 +64,27 @@ global record PgraceRailRouterNetwork
 		t1 : Pt3
 	end
 
+	-- Where a track edge crosses a street: the parameters along each, and the point on the street.
+	record Crossing
+		s : number
+		u : number
+		p : Pt3
+	end
+
+	-- A point where a chunk's edge is cut (network.cut): the parameter along the edge, and the node there.
+	record Cut
+		s : number
+		node : Pt3
+	end
+
+	-- Where the track curve crosses the street curve in plan, in order along the track (both sampled into 64 chords;
+	-- touching ends don't count).
+	crossings : function(track : Hermite, street : Hermite) : {Crossing}
+	-- Edges first..last of net as a network of their own, with each edge that has cuts split at them (sorted by s),
+	-- the pieces meeting at each cut's node (the piece ends moved onto it). Nodes that aren't cuts are net's own
+	-- tables, so an entity set on one is seen by both. One chunk spans every edge.
+	cut : function(net : Network, first : integer, last : integer, cuts : {integer : {Cut}}) : Network
+
 	-- The point at parameter s (0..1) along h.
 	hermiteAt : function(h : Hermite, s : number) : Pt3
 	-- h split at parameter s into the two curves either side (de Casteljau on its Bézier form), which together

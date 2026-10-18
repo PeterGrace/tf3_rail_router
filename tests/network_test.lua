@@ -286,3 +286,58 @@ t.test("network: the nearest parameter on a curve", function()
 	t.near(network.nearestParam(h, { x = 37, y = 20 }), 0.37, 1e-3, "a straight line")
 	t.near(network.nearestParam(h, { x = -5, y = 0 }), 0, 1e-9, "before the start")
 end)
+
+local function line(x0, y0, x1, y1)
+	return { p0 = { x = x0, y = y0, z = 0 }, p1 = { x = x1, y = y1, z = 0 },
+		t0 = { x = x1 - x0, y = y1 - y0, z = 0 }, t1 = { x = x1 - x0, y = y1 - y0, z = 0 } }
+end
+
+t.test("network: a straight track square across a straight street crosses once", function()
+	local c = network.crossings(line(0, 0, 100, 0), line(30, -50, 30, 50))
+	t.eq(#c, 1, "one crossing")
+	t.near(c[1].s, 0.3, 1e-6, "30% along the track")
+	t.near(c[1].u, 0.5, 1e-6, "halfway along the street")
+	t.near(c[1].p.x, 30, 1e-6, "x") t.near(c[1].p.y, 0, 1e-6, "y")
+end)
+
+t.test("network: no crossing where the track runs parallel or stops short", function()
+	t.eq(#network.crossings(line(0, 0, 100, 0), line(0, 10, 100, 10)), 0, "parallel")
+	t.eq(#network.crossings(line(0, 0, 20, 0), line(30, -50, 30, 50)), 0, "short of it")
+end)
+
+t.test("network: a street crossed twice gives both crossings in order along the track", function()
+	-- A street bowing across the track and back: from (20, 50) down to y -50 and back up at x 80.
+	local street = { p0 = { x = 20, y = 50, z = 0 }, p1 = { x = 80, y = 50, z = 0 },
+		t0 = { x = 0, y = -300, z = 0 }, t1 = { x = 0, y = 300, z = 0 } }
+	local c = network.crossings(line(0, 0, 100, 0), street)
+	t.eq(#c, 2, "two crossings")
+	t.ok(c[1].s < c[2].s, "in order along the track")
+	t.ok(math.abs(c[1].p.y) < 0.5 and math.abs(c[2].p.y) < 0.5, "both on the track's line")
+end)
+
+local function oneEdgeNet()
+	local n0, n1 = { x = 0, y = 0, z = 5 }, { x = 100, y = 0, z = 5 }
+	return { nodes = { n0, n1 }, edges = { { node0 = 1, node1 = 2, p0 = n0, p1 = n1, t0 = { x = 100, y = 0, z = 0 },
+		t1 = { x = 100, y = 0, z = 0 }, kind = "ground", track = 1, leg = 1, s0 = 0, s1 = 100 } }, chunks = {} }
+end
+
+t.test("network: a cut edge becomes pieces through the cut nodes, in order", function()
+	local net = oneEdgeNet()
+	local a, b = { x = 30, y = 0, z = 5, entity = 77 }, { x = 70, y = 0.5, z = 5, entity = 78 }
+	local out = network.cut(net, 1, 1, { [1] = { { s = 0.7, node = b }, { s = 0.3, node = a } } })
+	t.eq(#out.edges, 3, "three pieces")
+	t.ok(out.nodes[out.edges[1].node0] == net.nodes[1], "starts at the original node (same table)")
+	t.ok(out.nodes[out.edges[1].node1] == a and out.nodes[out.edges[2].node0] == a, "first cut joins pieces 1 and 2")
+	t.ok(out.nodes[out.edges[2].node1] == b and out.nodes[out.edges[3].node0] == b, "second cut joins pieces 2 and 3")
+	t.ok(out.nodes[out.edges[3].node1] == net.nodes[2], "ends at the original node")
+	t.near(out.edges[1].t0.x, 30, 1e-9, "tangents scaled to the piece")
+	t.near(out.edges[2].s0, 30, 1e-9, "s0") t.near(out.edges[2].s1, 70, 1e-9, "s1")
+	t.eq(#out.chunks, 1, "one chunk") t.eq(out.chunks[1].last, 3, "spanning all")
+end)
+
+t.test("network: edges without cuts pass through untouched", function()
+	local net = oneEdgeNet()
+	local out = network.cut(net, 1, 1, {})
+	t.eq(#out.edges, 1, "one edge")
+	t.ok(out.nodes[1] == net.nodes[1] and out.nodes[2] == net.nodes[2], "same node tables")
+end)

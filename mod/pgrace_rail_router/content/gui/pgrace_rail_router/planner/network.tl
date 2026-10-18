@@ -63,6 +63,87 @@ function network.nearestParam(h : Hermite, p : Pt) : number
 	return best
 end
 
+local CROSSING_CHORDS = 64
+
+function network.crossings(track : Hermite, street : Hermite) : {PgraceRailRouterNetwork.Crossing}
+	local a, b : {Pt3}, {Pt3} = {}, {}
+	for k = 0, CROSSING_CHORDS do
+		a[k + 1] = network.hermiteAt(track, k / CROSSING_CHORDS)
+		b[k + 1] = network.hermiteAt(street, k / CROSSING_CHORDS)
+	end
+	local result : {PgraceRailRouterNetwork.Crossing} = {}
+	for i = 1, CROSSING_CHORDS do
+		local p, r = a[i], a[i + 1]
+		local rx, ry = r.x - p.x, r.y - p.y
+		for j = 1, CROSSING_CHORDS do
+			local q, w = b[j], b[j + 1]
+			local sx, sy = w.x - q.x, w.y - q.y
+			local den = rx * sy - ry * sx
+			if den ~= 0 then
+				local qpx, qpy = q.x - p.x, q.y - p.y
+				local t = (qpx * sy - qpy * sx) / den
+				local v = (qpx * ry - qpy * rx) / den
+				-- Half-open on each chord, so a crossing exactly at a shared chord end counts once; the curves' own
+				-- ends don't count.
+				local tOk = t >= 0 and t < 1 and not (i == 1 and t == 0)
+				local vOk = v >= 0 and v < 1 and not (j == 1 and v == 0)
+				if tOk and vOk then
+					local u = (j - 1 + v) / CROSSING_CHORDS
+					table.insert(result, { s = (i - 1 + t) / CROSSING_CHORDS, u = u, p = network.hermiteAt(street, u) })
+				end
+			end
+		end
+	end
+	table.sort(result, function(x : PgraceRailRouterNetwork.Crossing, y : PgraceRailRouterNetwork.Crossing) : boolean
+		return x.s < y.s
+	end)
+	return result
+end
+
+local MAX_CUT_OFFSET = 1.0
+
+function network.cut(net : PgraceRailRouterNetwork.Network, first : integer, last : integer,
+		cuts : {integer : {PgraceRailRouterNetwork.Cut}}) : PgraceRailRouterNetwork.Network
+	local out : PgraceRailRouterNetwork.Network = { nodes = {}, edges = {}, chunks = {} }
+	local index : {Pt3 : integer} = {}
+	local function nodeIndex(p : Pt3) : integer
+		if index[p] == nil then
+			table.insert(out.nodes, p)
+			index[p] = #out.nodes
+		end
+		return index[p]
+	end
+	local function piece(e : Edge, h : Hermite, n0 : Pt3, n1 : Pt3, s0 : number, s1 : number)
+		table.insert(out.edges, { node0 = nodeIndex(n0), node1 = nodeIndex(n1), p0 = n0, p1 = n1, t0 = h.t0, t1 = h.t1,
+			kind = e.kind, track = e.track, leg = e.leg, s0 = e.s0 + (e.s1 - e.s0) * s0,
+			s1 = e.s0 + (e.s1 - e.s0) * s1 })
+	end
+	for i = first, last do
+		local e = net.edges[i]
+		local n0, n1 = net.nodes[e.node0], net.nodes[e.node1]
+		local list : {PgraceRailRouterNetwork.Cut} = {}
+		for __, c in ipairs(cuts[i] or {}) do
+			table.insert(list, c)
+		end
+		table.sort(list, function(x : PgraceRailRouterNetwork.Cut, y : PgraceRailRouterNetwork.Cut) : boolean
+			return x.s < y.s
+		end)
+		local rest : Hermite = { p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }
+		local from, fromS = n0, 0.0
+		for __, c in ipairs(list) do
+			local here, after = network.splitHermite(rest, (c.s - fromS) / (1 - fromS))
+			local off = math.sqrt((here.p1.x - c.node.x) ^ 2 + (here.p1.y - c.node.y) ^ 2)
+			assert(off <= MAX_CUT_OFFSET, ("a cut's node is %.2f m off the edge"):format(off))
+			piece(e, here, from, c.node, fromS, c.s)
+			rest = after
+			from, fromS = c.node, c.s
+		end
+		piece(e, rest, from, n1, fromS, 1)
+	end
+	table.insert(out.chunks, { first = 1, last = #out.edges, leg = net.edges[first].leg, length = 0 })
+	return out
+end
+
 function network.defaults() : Options
 	return { offset = 2.5, maxEdge = 250.0, chunkLength = 1000.0, tangent = "circle" }
 end
