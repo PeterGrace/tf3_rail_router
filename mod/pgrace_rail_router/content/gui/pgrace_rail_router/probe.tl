@@ -728,23 +728,34 @@ local function stationNear(p : Pt) : integer
 	return best
 end
 
--- The station's free track ends: its frozen nodes with one track piece.
+-- The station's free track ends: the nodes of its frozen edges with one track piece. (They aren't among its frozen
+-- nodes, probe P10: those are the 46 inside it, each with two pieces.)
 local function freeEnds(station : integer) : {Pt3}
 	local ends : {Pt3} = {}
+	local seen : {integer : boolean} = {}
 	local con = api.engine.getComponent(station, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
-	for __, node in ipairs(con.frozenNodes or {}) do
-		local n = node as integer
-		local track = -1
-		pcall(function() : boolean
-			track = #api.engine.system.streetSystem.getNodeTrackSegments(n)
-			return true
-		end)
-		local p = nodePos(n)
-		log("P10", ("frozen %s at (%.2f %.2f %.2f)"):format(segmentCounts(n), p.x, p.y, p.z))
-		if track == 1 then
-			table.insert(ends, p)
+	for __, e in ipairs(con.frozenEdges or {}) do
+		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if edge ~= nil then
+			for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
+				if not seen[node] then
+					seen[node] = true
+					local track = -1
+					pcall(function() : boolean
+						track = #api.engine.system.streetSystem.getNodeTrackSegments(node)
+						return true
+					end)
+					if track == 1 then
+						local p = nodePos(node)
+						log("P10", ("free end %s at (%.2f %.2f %.2f)"):format(segmentCounts(node), p.x, p.y, p.z))
+						table.insert(ends, p)
+					end
+				end
+			end
 		end
 	end
+	log("P10", ("%d frozen nodes, %d frozen edges, %d free ends"):format(#(con.frozenNodes or {}),
+		#(con.frozenEdges or {}), #ends))
 	return ends
 end
 
