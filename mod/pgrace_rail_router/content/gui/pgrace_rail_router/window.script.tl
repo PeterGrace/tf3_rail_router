@@ -76,7 +76,7 @@ local EXTRA_STOPS = 5
 local BLOCK_SPACING = 500.0
 
 -- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
-local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, ticked = {} }
+local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 320, ticked = {} }
 
 -- The plan shown, its check with the game and its build, kept the same way: closing the window mid-build and opening
 -- it again carries on with the same plan. Planning again wouldn't: the new plan avoids the track already built.
