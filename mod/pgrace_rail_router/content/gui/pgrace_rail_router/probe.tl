@@ -810,7 +810,9 @@ local function findNodeAt(list : {P15Piece}, x : number, y : number) : integer, 
 	return nil, nil
 end
 
+-- The piece of a track holding x, metres east of the probe's origin (pieces are in world coordinates).
 local function findPiece(list : {P15Piece}, track : integer, x : number) : P15Piece
+	x = x + p15.origin.x
 	for __, p in ipairs(list) do
 		if p.track == track and math.min(p.h.p0.x, p.h.p1.x) <= x and x <= math.max(p.h.p0.x, p.h.p1.x) then
 			return p
