@@ -139,3 +139,14 @@ t.test("stationlayout: turned round, a station's track ends are the same four po
 		end
 	end
 end)
+
+t.test("stationlayout: a road to the main building ends 38 m left of the axis, level with the platforms' middle", function()
+	-- Facing north: the building is on the left (west), the side away from the tracks is -x.
+	for __, length in ipairs({ 160, 120 }) do
+		local l = sl.layout({ x = 100, y = 200 }, { x = 0, y = 1 }, length, ERA)
+		t.near(l.entrance.x, 100 - 38, 1e-9, length .. " m: 7.5 m to the frame's x = 0, 30.5 m beyond")
+		t.near(l.entrance.y, 200, 1e-9, length .. " m: level with the middle")
+		t.near(l.outward.x, -1, 1e-9, length .. " m: outward is west")
+		t.near(l.outward.y, 0, 1e-9, length .. " m: and only west")
+	end
+end)

@@ -573,6 +573,12 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		if b.phase == "done" then
 			table.insert(rows, textRow(fill(_("Built: {money}, {count} level crossings."), { money = formatMoney(b.charged),
 				count = tostring(b.levelCrossings) }), "font-scale-body"))
+			table.insert(rows, textRow(fill(_("Roads to {count} of {total} stations."), { count = tostring(b.roads),
+				total = tostring(#checked.plan.stations) }), "font-scale-annotation"))
+			if #b.roadsMissing > 0 then
+				table.insert(rows, textRow(fill(_("No road could be built to: {towns}"), {
+					towns = table.concat(b.roadsMissing, ", ") }), "font-scale-annotation"))
+			end
 		elseif b.phase == "failed" then
 			local f = b.failure
 			local what : string
@@ -944,6 +950,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.dryRunCrossing(settings)
 			elseif work.name == "P8" then
 				work.tasks = probe.bridgeClearance(settings)
+			elseif work.name == "P13" then
+				work.tasks = probe.stationStreets()
 			else
 				work.tasks = probe.dryRunStation(settings, data.tracks)
 			end
@@ -1366,6 +1374,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P4", "Probe P4: dry-run across a street" },
 			{ "P8", "Probe P8: bridge clearance over track and street" },
 			{ "P6", "Probe P6: dry-run a station" },
+			{ "P13", "Probe P13: streets around the station" },
 		}) do
 			table.insert(body, builtin.Button{
 				content = builtin.TextView{ text = p[2] },

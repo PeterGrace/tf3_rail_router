@@ -1,5 +1,6 @@
 -- Builds a checked plan (milestone 3): the stations, then the track chunk by chunk, each joined to the station ends
--- and chunks built before it, with level crossings where a chunk crosses a street. One command in flight at a time,
+-- and chunks built before it, with level crossings where a chunk crosses a street, then a road from each station's
+-- main building to the town's streets. One command in flight at a time,
 -- each dry-run clean before it's sent (a street split, which can't be, aside); stepped from the window's join, and
 -- advanced by the commands' callbacks. Main thread only.
 global record PgraceRailRouterBuild
@@ -26,13 +27,26 @@ global record PgraceRailRouterBuild
 		nodeTrack : {integer : integer}
 	end
 
+	-- A way for a station's road to reach the streets: "dead end" (continued straight on), "node" (a T at a node
+	-- along a street) or "split" (a T partway along a piece, at parameter u, split there first; node is set once it is).
+	record RoadTarget
+		kind : string
+		p : PgraceRailRouterNetwork.Pt3
+		-- The way the road runs as it arrives.
+		arrive : PgraceRailRouterNetwork.Pt3
+		node : PgraceRailRouterNetwork.Pt3
+		piece : integer
+		u : number
+	end
+
 	record Build
 		check : PgraceRailRouterBuilder.Check
-		-- "stations", "track", "done" or "failed"
+		-- "stations", "track", "roads", "done" or "failed"
 		phase : string
-		-- The next station and chunk to build.
+		-- The next station, chunk, and station to build a road to.
 		station : integer
 		chunk : integer
+		road : integer
 		-- A command was sent and its callback hasn't come yet.
 		waiting : boolean
 		crossings : Crossings
@@ -40,6 +54,15 @@ global record PgraceRailRouterBuild
 		-- Level crossings made, and the money the game charged.
 		levelCrossings : integer
 		charged : integer
+		-- Stations given a road (or found with one), the towns of those left without, and street pieces still to send
+		-- again for their lanes (at the junctions the roads made).
+		roads : integer
+		roadsMissing : {string}
+		roadRepair : {integer}
+		-- The street node a road was just joined to: its pieces are queued for repair on the next step.
+		roadJunction : integer
+		-- A street split for the current station's road: the road to its new node comes next.
+		roadTarget : RoadTarget
 	end
 
 	start : function(check : PgraceRailRouterBuilder.Check) : Build

@@ -22,6 +22,10 @@ global record PgraceRailRouterStationLayout
 		-- Track ends: {left track's start, right track's start, left's end, right's end} in the direction of travel
 		-- (left/right as network.tl's tracks 1 and 2).
 		ends : {PgraceRailRouterGeo.Pt}
+		-- Where a road to the main building ends (its dead end; the game paves the rest and links the sidewalks),
+		-- and the way out from the building, away from the tracks.
+		entrance : PgraceRailRouterGeo.Pt
+		outward : PgraceRailRouterGeo.Pt
 	end
 
 	-- What the base station menu adds to a 2-track through station besides its platforms and tracks (module files).

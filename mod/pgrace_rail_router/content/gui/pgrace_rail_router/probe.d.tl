@@ -16,4 +16,7 @@ global record PgraceRailRouterProbe
 	-- P6: a 160 m station at the camera facing east, without and with the main building and stairs (and roofs), with
 	-- its bounding box's length along the axis; the module names.
 	dryRunStation : function(settings : PgraceRailRouterBuilder.Settings, tracks : {PgraceRailRouterModes.TrackType}) : {function()}
+	-- P13: the modular station nearest the camera: its transform, building modules, and every street piece within 200 m
+	-- in its local frame (where the road the player builds to its main building goes).
+	stationStreets : function() : {function()}
 end
