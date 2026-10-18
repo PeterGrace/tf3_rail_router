@@ -411,10 +411,8 @@ t.test("network: no crossovers where a leg's end isn't 100 m of straight ground"
 	for __, e in ipairs(net.edges) do
 		if e.track == 0 then
 			t.ok(e.s0 > 900, "none at the bridge end")
-			-- A crossover's first piece leaves a track (2.5 m off the centre line).
-			if math.abs(math.abs(net.nodes[e.node0].y) - 2.5) < 1e-9 and math.abs(net.nodes[e.node1].y) < 2.5 - 1e-9 then
-				starts = starts + 1
-			end
+			starts = starts + 1
+			t.near(math.abs(net.nodes[e.node0].y - net.nodes[e.node1].y), 5, 1e-9, "one edge from track to track")
 		end
 	end
 	t.eq(starts, 2, "a pair at the end on the ground")

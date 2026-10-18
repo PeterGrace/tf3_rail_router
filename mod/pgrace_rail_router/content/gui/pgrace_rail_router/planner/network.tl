@@ -549,9 +549,10 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				previous = e.node1
 			end
 		end
-		-- The crossovers: S-curves between the two tracks' nodes at their places, along the track's direction there. In
-		-- plan one cubic; cut at the samples inside it (where the tracks are cut too: stretches), each piece at the
-		-- track's height and grade there, so it follows the profile as the tracks do.
+		-- The crossovers: S-curves between the two tracks' nodes at their places, along the track's direction there, at
+		-- the track's grade at each end. One edge each: a switch's branch must run some way before it ends (probe:
+		-- every switch whose crossover piece was 16 m or shorter was refused, 18 m and longer passed), so a crossover
+		-- isn't cut at the samples inside it, and follows the profile less closely than the tracks.
 		local crossovers : {Edge} = {}
 		local function gradeAt(list : {Edge}, n : integer) : number
 			local e = edgeFrom(list, n)
@@ -569,47 +570,11 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				local a, b = net.nodes[na], net.nodes[nb]
 				local d = math.sqrt(along.t0.x ^ 2 + along.t0.y ^ 2)
 				local L = p[4] - p[2]
-				local t : Pt3 = { x = along.t0.x / d * L, y = along.t0.y / d * L, z = 0 }
-				local whole : Hermite = { p0 = { x = a.x, y = a.y, z = 0 }, p1 = { x = b.x, y = b.y, z = 0 }, t0 = t, t1 = t }
-				-- The cut points: the samples strictly inside, with the track's node there for its height and grade.
-				local stops : {{number, integer}} = {}
-				for __, sample in ipairs(leg.samples) do
-					if sample.s > p[2] + MIN_EDGE and sample.s < p[4] - MIN_EDGE then
-						local n = nodeAtS(fromTrack, sample.s)
-						if n ~= nil then
-							table.insert(stops, { sample.s, n })
-						end
-					end
-				end
-				table.insert(stops, { p[4], nb })
-				local rest = whole
-				local fromS, fromNode = p[2], na
-				local fromZ, fromGrade = a.z, gradeAt(fromTrack, na)
-				for k, stop in ipairs(stops) do
-					local piece, after : Hermite, Hermite = rest, nil
-					local last = k == #stops
-					if not last then
-						piece, after = network.splitHermite(rest, (stop[1] - fromS) / (p[4] - fromS))
-					end
-					local toNode : integer
-					local toZ, toGrade : number, number
-					if last then
-						toNode, toZ, toGrade = nb, b.z, gradeAt(toTrack, nb)
-					else
-						toZ, toGrade = net.nodes[stop[2]].z, gradeAt(fromTrack, stop[2])
-						table.insert(net.nodes, { x = piece.p1.x, y = piece.p1.y, z = toZ })
-						toNode = #net.nodes
-					end
-					local l0 = math.sqrt(piece.t0.x ^ 2 + piece.t0.y ^ 2)
-					local l1 = math.sqrt(piece.t1.x ^ 2 + piece.t1.y ^ 2)
-					local p0, p1 = net.nodes[fromNode], net.nodes[toNode]
-					table.insert(crossovers, { node0 = fromNode, node1 = toNode, p0 = { x = p0.x, y = p0.y, z = fromZ },
-						p1 = { x = p1.x, y = p1.y, z = toZ },
-						t0 = { x = piece.t0.x, y = piece.t0.y, z = fromGrade * l0 },
-						t1 = { x = piece.t1.x, y = piece.t1.y, z = toGrade * l1 },
-						kind = "ground", track = 0, leg = li, s0 = fromS, s1 = stop[1] })
-					rest, fromS, fromNode, fromZ, fromGrade = after, stop[1], toNode, toZ, toGrade
-				end
+				local t0 : Pt3 = { x = along.t0.x / d * L, y = along.t0.y / d * L, z = gradeAt(fromTrack, na) * L }
+				local t1 : Pt3 = { x = t0.x, y = t0.y, z = gradeAt(toTrack, nb) * L }
+				table.insert(crossovers, { node0 = na, node1 = nb, p0 = { x = a.x, y = a.y, z = a.z },
+					p1 = { x = b.x, y = b.y, z = b.z }, t0 = t0, t1 = t1, kind = "ground", track = 0, leg = li,
+					s0 = p[2], s1 = p[4] })
 			end
 		end
 		local added : {boolean} = {}

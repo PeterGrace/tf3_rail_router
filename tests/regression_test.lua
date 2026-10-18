@@ -343,6 +343,8 @@ local function check(rt, planFn, name)
 	-- edge with no sample inside (one the network can't split further) may go over by up to GRADE_OVERSHOOT (2.4
 	-- points at worst on these maps).
 	local GRADE_OVERSHOOT = 0.03
+	-- How far a crossover (one 45 m edge between the tracks, over one or two samples) may stray from the profile.
+	local CROSSOVER_STRAY = 1.0
 	local net = network.build(plan, network.defaults())
 	local maxEdge = network.defaults().maxEdge
 	local tooHigh, tooSteep, worstOver, worstAt = 0, 0, 0, ""
@@ -359,7 +361,8 @@ local function check(rt, planFn, name)
 				local u2, u3 = u * u, u * u * u
 				local z = (2 * u3 - 3 * u2 + 1) * e.p0.z + (u3 - 2 * u2 + u) * e.t0.z + (-2 * u3 + 3 * u2) * e.p1.z
 					+ (u3 - u2) * e.t1.z
-				if math.abs(z - leg.z[k]) > 0.25 + 1e-6 then
+				-- A crossover is one edge (a switch's branch must be long): it may stray more.
+				if math.abs(z - leg.z[k]) > (e.track == 0 and CROSSOVER_STRAY or 0.25) + 1e-6 then
 					tooHigh = tooHigh + 1
 				end
 			end
@@ -372,7 +375,7 @@ local function check(rt, planFn, name)
 			local dy = dh00 * e.p0.y + dh10 * e.t0.y + dh01 * e.p1.y + dh11 * e.t1.y
 			local dz = dh00 * e.p0.z + dh10 * e.t0.z + dh01 * e.p1.z + dh11 * e.t1.z
 			local over = math.abs(dz) / math.sqrt(dx * dx + dy * dy) - leg.maxGrade
-			if over > (inside and 0.002 or GRADE_OVERSHOOT) then
+			if over > ((inside and e.track ~= 0) and 0.002 or GRADE_OVERSHOOT) then
 				tooSteep = tooSteep + 1
 				if over > worstOver then
 					worstOver, worstAt = over, ("leg %d, s %.0f-%.0f"):format(e.leg, e.s0, e.s1)
