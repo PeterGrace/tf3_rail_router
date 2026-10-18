@@ -59,7 +59,9 @@ global record PgraceRailRouterExisting
 	-- node that isn't plain, a bridge or tunnel, a piece that isn't straight (tangents within 0.5% of the axis), or
 	-- where the tracks stop being the only two, 4.5–5.5 m apart, with midline and height within 0.5 m of the start's
 	-- (checked every 5 m and at each node). Past a short stretch the scan reads on only after a bridge or tunnel,
-	-- such a drift, or a crossover; any other switch, the track's end or single track stops it.
+	-- such a drift, or a crossover; any other switch, the track's end or single track stops it. A stretch's tracks
+	-- must also lead back only to the station's end nodes (through the fan's merges and crossovers), so a stretch
+	-- past a siding, branch or another line's switch stops the scan too.
 	-- `side[k]`: which side of end k our line comes from (+1 left of outward, −1 right; nil +1).
 	analyse : function(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 end

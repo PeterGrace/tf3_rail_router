@@ -291,14 +291,89 @@ end
 
 t.test("existing: the stretch must be level", function()
 	local b, station = plain()
-	grade(b, 0.02)
+	grade(b, 0.003)
 	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
-	t.eq(r.ends[1], nil, "a 2% grade climbs 0.5 m in 25 m")
+	t.eq(r.ends[1], nil, "a 0.3% grade climbs 0.5 m in 167 m")
 	t.eq(r.why[1], "short", "short")
 	local b2, station2 = plain()
-	grade(b2, 0.0005)
+	grade(b2, 0.02)
 	local r2 = existing.analyse(station2, b2.snapshot(), { [1] = 1 }, R)
-	t.ok(r2.ends[1] ~= nil, "0.05% climbs 0.41 m over 820 m: " .. tostring(r2.why[1]))
+	t.eq(r2.ends[1], nil, "a 2% grade isn't level")
+	local b3, station3 = plain()
+	grade(b3, 0.0005)
+	local r3 = existing.analyse(station3, b3.snapshot(), { [1] = 1 }, R)
+	t.ok(r3.ends[1] ~= nil, "0.05% climbs 0.41 m over 820 m: " .. tostring(r3.why[1]))
+end)
+
+t.test("existing: a hump between level ends breaks the stretch", function()
+	local b, station, L, Rt = plain()
+	-- The 280–380 pieces rise and fall again: level ends, tangents 30% up and down.
+	for __, p in ipairs({ L[2], Rt[2] }) do
+		p.t0 = { x = 100, y = 0, z = 30 }
+		p.t1 = { x = 100, y = 0, z = -30 }
+	end
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.ok(r.ends[1] ~= nil, "usable beyond the hump: " .. tostring(r.why[1]))
+	t.near(r.ends[1].origin.x, 380, 1e-9, "starts past the hump")
+	t.near(r.ends[1].length, 620, 1e-9, "to the track's end")
+end)
+
+-- A 2-track station at (0, 0) facing +x, half 80, its end nodes at the platform end (frame x = 0).
+local function twoTrack(b)
+	return { entity = 1, centre = { x = 0, y = 0 }, dir = { x = 1, y = 0 }, half = 80,
+		ends = { b.node(80, 2.5), b.node(80, -2.5) } }
+end
+
+t.test("existing: a branch switch just past a crossover stops the reading", function()
+	local b = builder()
+	local station = twoTrack(b)
+	-- Frame x: a crossover from 52 on the right track to 103 on the left, a branch off the left at 106.
+	b.track(2.5, cat({ 80, 183, 186 }, steps(286, 1000, 100)))
+	b.track(-2.5, cat({ 80, 132 }, steps(232, 1000, 100)))
+	b.piece(132, -2.5, 183, 2.5)
+	b.piece(186, 2.5, 286, 20)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.eq(r.ends[1], nil, "not usable")
+	t.eq(r.why[1], "short", "short: the branch is another line's")
+end)
+
+t.test("existing: a siding coming into the corridor and joining a track stops the reading", function()
+	local b = builder()
+	local station = twoTrack(b)
+	b.track(2.5, steps(80, 1000, 100))
+	b.track(-2.5, steps(80, 1000, 100))
+	-- Frame x: from outside the corridor to (100, 11), then down to the left track at 400 (world 480).
+	b.piece(130, 30, 180, 11)
+	b.piece(180, 11, 480, 2.5)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.eq(r.ends[1], nil, "not usable")
+	t.eq(r.why[1], "short", "short: the stretch past the siding's switch isn't the station's")
+end)
+
+t.test("existing: a branch line joining the right track stops the reading", function()
+	local b = builder()
+	local station = twoTrack(b)
+	b.track(2.5, steps(80, 1000, 100))
+	b.track(-2.5, steps(80, 1000, 100))
+	-- Frame x: in from the right at 150, joining the right track at a switch at 300 (world 380).
+	b.piece(180, -40, 230, -10)
+	b.piece(230, -10, 380, -2.5)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.eq(r.ends[1], nil, "not usable")
+	t.eq(r.why[1], "short", "short")
+end)
+
+t.test("existing: a crossover's far switch must be towards the other track", function()
+	local b = builder()
+	local station = twoTrack(b)
+	-- The left track's switch at 280 leads to a switch on a third line further left, not to the right track.
+	b.track(2.5, cat({ 80, 180 }, steps(280, 1000, 100)))
+	b.track(-2.5, steps(80, 1000, 100))
+	b.track(7.5, { 300, 330, 400 })
+	b.piece(280, 2.5, 330, 7.5)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.eq(r.ends[1], nil, "not usable")
+	t.eq(r.why[1], "short", "short (100 to 200), and not read on")
 end)
 
 t.test("existing: a bridge ends a stretch, and a long enough one beyond it is used", function()

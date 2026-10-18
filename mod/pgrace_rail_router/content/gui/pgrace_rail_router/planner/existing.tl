@@ -17,7 +17,7 @@ local EPS = 1e-6
 local GAP_MIN = 4.5
 local GAP_MAX = 5.5
 local DRIFT = 0.5
--- A straight piece: each tangent's sideways share (|t × outward| / |t|) at most this.
+-- A straight, level piece: each tangent's sideways share (|t × outward| / |t|) and upward share at most this.
 local SIDEWAYS = 0.005
 -- A node on the track's line: within this of it across the axis.
 local ON_LINE = 1.0
@@ -36,17 +36,18 @@ local record Span
 	dir : number
 end
 
--- The pieces near one end's axis, and the pieces at each node.
+-- The pieces near one end's axis, the pieces at each node, and the station's end nodes.
 local record Corridor
 	spans : {Span}
 	atNode : {integer : {Span}}
+	ends : {integer : boolean}
 	ox : number
 	oy : number
 end
 
 -- A stretch of double track: its start (x), midline (y) and height there, its length, each track's spans in order
--- outward (left: left of outward), and why it ended ("stop", or "structure", "drift" or "crossover", past which
--- the scan reads on).
+-- outward (left: left of outward) and the two pieces it starts on, and why it ended ("stop", or "structure",
+-- "drift" or "crossover", past which the scan reads on).
 local record Stretch
 	start : number
 	mid : number
@@ -54,6 +55,7 @@ local record Stretch
 	length : number
 	left : {Span}
 	right : {Span}
+	firsts : {Span}
 	why : string
 end
 
@@ -138,7 +140,7 @@ local function corridor(station : Station, snap : Snapshot, ox : number, oy : nu
 			table.insert(reached[n], s)
 		end
 	end
-	return { spans = out, atNode = reached, ox = ox, oy = oy }, lo
+	return { spans = out, atNode = reached, ends = isEnd, ox = ox, oy = oy }, lo
 end
 
 -- The span's y and z at x, along its chord (the stretch's pieces are straight).
@@ -158,11 +160,12 @@ local function crossing(spans : {Span}, x : number) : {Span}
 	return out
 end
 
--- Both tangents along the axis: a piece that bulges or kinks sideways isn't straight, whatever its chord.
+-- Both tangents along the axis and level: a piece that bulges or kinks, sideways or up, isn't straight, whatever its
+-- chord.
 local function straight(p : Piece, ox : number, oy : number) : boolean
 	for __, tg in ipairs({ p.t0, p.t1 }) do
-		local len = math.sqrt(tg.x * tg.x + tg.y * tg.y)
-		if len < EPS or math.abs(tg.x * oy - tg.y * ox) / len > SIDEWAYS then
+		local len = math.sqrt(tg.x * tg.x + tg.y * tg.y + tg.z * tg.z)
+		if len < EPS or math.abs(tg.x * oy - tg.y * ox) / len > SIDEWAYS or math.abs(tg.z) / len > SIDEWAYS then
 			return false
 		end
 	end
@@ -206,30 +209,15 @@ local function walk(c : Corridor, snap : Snapshot, first : Span) : {Span}, numbe
 	end
 end
 
--- Whether the switch where `came` ends is one side of a crossover: of its other two pieces, one carries on along
--- the track's line, and the other leads (through plain nodes, within the corridor) to a switch on the other track.
-local function crossover(c : Corridor, snap : Snapshot, came : Span) : boolean
-	local n, y = came.nodeB, came.yb
-	local on, off = 0, {}
-	for __, o in ipairs(c.atNode[n] or {}) do
-		if o ~= came then
-			local yo = o.nodeA == n and o.yb or o.ya
-			if math.abs(yo - y) <= ON_LINE then
-				on = on + 1
-			else
-				table.insert(off, o)
-			end
-		end
-	end
-	if on ~= 1 or #off ~= 1 then
-		return false
-	end
-	local s, from = off[1], n
+-- Whether piece `o`, leaving node n (at y across the axis), leads through plain nodes within the corridor to a
+-- switch 4.5–5.5 m across, towards the midline `mid`: the other side of a crossover.
+local function across(c : Corridor, snap : Snapshot, n : integer, o : Span, y : number, mid : number) : boolean
+	local s, from = o, n
 	for __ = 1, 10 do
 		local m = s.nodeA == from and s.nodeB or s.nodeA
 		if snap.degree[m] == 3 then
-			local gap = math.abs((s.nodeA == from and s.yb or s.ya) - y)
-			return gap >= GAP_MIN and gap <= GAP_MAX
+			local d = (s.nodeA == from and s.yb or s.ya) - y
+			return math.abs(d) >= GAP_MIN and math.abs(d) <= GAP_MAX and d * (mid - y) > 0
 		end
 		if snap.degree[m] ~= 2 then
 			return false
@@ -243,6 +231,63 @@ local function crossover(c : Corridor, snap : Snapshot, came : Span) : boolean
 	return false
 end
 
+-- Whether the switch where `came` ends is one side of a crossover: of its other two pieces, one carries on along
+-- the track's line, and the other leads across (see `across`) to the other track.
+local function crossover(c : Corridor, snap : Snapshot, came : Span, mid : number) : boolean
+	local n, y = came.nodeB, came.yb
+	local on, off = 0, {}
+	for __, o in ipairs(c.atNode[n] or {}) do
+		if o ~= came then
+			local yo = o.nodeA == n and o.yb or o.ya
+			if math.abs(yo - y) <= ON_LINE then
+				on = on + 1
+			else
+				table.insert(off, o)
+			end
+		end
+	end
+	return on == 1 and #off == 1 and across(c, snap, n, off[1], y, mid)
+end
+
+-- Whether the track behind the pieces `firsts` comes only from the station: walking inward from them through the
+-- corridor, every way back ends at a station end node. On the way, a node may join two inward pieces (a fan's
+-- merge), or split towards the station only where one of its outward pieces leads across to the other track (a
+-- crossover). A piece leaving the corridor (a branch, a siding or another line coming in), a dead end or any other
+-- switch means the stretch belongs to more than the station's own tracks.
+local function fromStation(c : Corridor, snap : Snapshot, firsts : {Span}, mid : number) : boolean
+	local seen : {integer : boolean} = {}
+	local stack : {Span} = {}
+	for __, s in ipairs(firsts) do
+		table.insert(stack, s)
+	end
+	while #stack > 0 do
+		local s = table.remove(stack)
+		local n = s.nodeA
+		if not seen[n] and not c.ends[n] then
+			seen[n] = true
+			local here = c.atNode[n] or {}
+			if #here ~= snap.degree[n] or #here > 3 then
+				return false
+			end
+			local inward, outward : {Span}, {Span} = {}, {}
+			for __, o in ipairs(here) do
+				table.insert(o.nodeB == n and inward or outward, o)
+			end
+			if #inward == 0 or #outward > 2 then
+				return false
+			end
+			if #outward == 2 and not across(c, snap, n, outward[1], s.ya, mid)
+					and not across(c, snap, n, outward[2], s.ya, mid) then
+				return false
+			end
+			for __, o in ipairs(inward) do
+				table.insert(stack, o)
+			end
+		end
+	end
+	return true
+end
+
 -- The span of a track's list at x (the inner one at a node).
 local function onTrack(list : {Span}, x : number) : Span
 	for __, s in ipairs(list) do
@@ -254,9 +299,10 @@ local function onTrack(list : {Span}, x : number) : Span
 end
 
 -- A stretch starting at x, if one does: exactly two pieces cross x, on the ground, straight and 4.5–5.5 m apart.
--- Each track is walked outward through plain nodes (see `walk`); the stretch ends where the first track does. Then every STEP and at every node on the way,
--- the two tracks must stay the only ones crossing, 4.5–5.5 m apart, with midline and height within DRIFT of the
--- start's; where that fails, the stretch ends at the point checked before ("drift").
+-- Each track is walked outward through plain nodes (see `walk`); the stretch ends where the first track does. Then
+-- every STEP and at every node on the way, the two tracks must stay the only ones crossing, 4.5–5.5 m apart, with
+-- midline and height within DRIFT of the start's; where that fails, the stretch ends at the point checked before
+-- ("drift").
 local function stretchAt(c : Corridor, snap : Snapshot, x : number) : Stretch
 	local cross = crossing(c.spans, x)
 	if #cross ~= 2 then
@@ -285,7 +331,7 @@ local function stretchAt(c : Corridor, snap : Snapshot, x : number) : Stretch
 		local list, e, w = track[1] as {Span}, track[2] as number, track[3] as string
 		if e <= stop + EPS then
 			if w == "switch" then
-				w = crossover(c, snap, list[#list]) and "crossover" or "stop"
+				w = crossover(c, snap, list[#list], mid) and "crossover" or "stop"
 			end
 			if not why or w == "stop" then
 				why = w
@@ -332,7 +378,8 @@ local function stretchAt(c : Corridor, snap : Snapshot, x : number) : Stretch
 		end
 		return out
 	end
-	return { start = x, mid = mid, z = z0, length = stop - x, left = upTo(left), right = upTo(right), why = why }
+	return { start = x, mid = mid, z = z0, length = stop - x, left = upTo(left), right = upTo(right),
+		firsts = { leftFirst, rightFirst }, why = why }
 end
 
 -- The usable end along a stretch, or nil and why: its one-way signals must keep right-hand running (the track
@@ -368,7 +415,9 @@ end
 -- Per end, scans outward from the end nodes for the first stretch at least junction.needed(radius) long. Until two
 -- tracks are the only ones (the station's fan) nothing starts. Past a stretch that's too short the scan reads on
 -- only if it ended at a bridge or tunnel, a drift (a bend, a grade, a third track) or a crossover; any other
--- switch, the track's end or single track stop it ("short").
+-- switch, the track's end or single track stop it ("short"). Every stretch's tracks must come only from the station
+-- (see `fromStation`), so one past a switch the scan stepped over (between stretches, or a track joining before
+-- the first) stops it too ("short").
 function existing.analyse(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 	local result : Result = { ends = {}, why = {} }
 	local needed = junction.needed(radius)
@@ -383,6 +432,9 @@ function existing.analyse(station : Station, snap : Snapshot, side : {integer : 
 			local st = stretchAt(c, snap, x)
 			if st then
 				found = found + 1
+				if not fromStation(c, snap, st.firsts, st.mid) then
+					break
+				end
 				if st.length >= needed then
 					chosen = st
 					break

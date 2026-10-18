@@ -357,7 +357,8 @@ global record PgraceRailRouterExisting
 		t1 : PgraceRailRouterNetwork.Pt3
 		-- "ground", "bridge" or "tunnel"
 		kind : string
-		-- One-way signals: param along the piece, and +1 facing node0 → node1 trains, −1 the other way.
+		-- One-way signals only (the survey leaves out two-way path signals, type 0): param along the piece, and +1
+		-- facing node0 → node1 trains, −1 the other way.
 		signals : {{number}}
 	end
 
@@ -367,7 +368,8 @@ global record PgraceRailRouterExisting
 		degree : {integer : integer}
 	end
 
-	-- A station: its platforms' centre and direction, half their length, and its track end nodes.
+	-- A station: its platforms' centre and direction (a unit vector; normalised anyway), half their length, and its
+	-- track end nodes.
 	record Station
 		entity : integer
 		centre : PgraceRailRouterGeo.Pt
@@ -376,9 +378,10 @@ global record PgraceRailRouterExisting
 		ends : {integer}
 	end
 
-	-- A usable end: the straight double-track stretch's start on the axis, outward direction, length, the axis
-	-- offset (the two tracks' midline from the station's axis, metres to the left of outward), each track's pieces
-	-- along it, and its signals as positions along the stretch.
+	-- A usable end: the straight double-track stretch's start on the two tracks' midline (and its height), the unit
+	-- outward direction, the stretch's length (metres), each track's pieces along it ("near": the track on our
+	-- line's side, "far"), ordered outward, and each track's signals as positions along the stretch (metres from its
+	-- start).
 	record End
 		origin : PgraceRailRouterGeo.Pt
 		z : number
@@ -388,12 +391,24 @@ global record PgraceRailRouterExisting
 		signals : {string : {number}}
 	end
 
-	-- Both ends: [1] the end at +dir, [-1] the one at −dir; nil where not usable (and why, in `why`).
+	-- Both ends: [1] the end at +dir, [-1] the one at −dir; nil where not usable, and why in `why` ("no double
+	-- track", "short": none long enough before something that stops the reading, or "left-hand").
 	record Result
 		ends : {integer : End}
 		why : {integer : string}
 	end
 
+	-- Each end's first straight, level, plain double-track stretch at least junction.needed(radius) long. Frame: x
+	-- outward from the platform end, y to the left; the scan starts at the station's end nodes and reads up to
+	-- 1.5 km out, 12 m either side. A stretch starts where exactly two straight ground pieces 4.5–5.5 m apart cross
+	-- x. Each track is then walked piece by piece through plain nodes (degree 2), and the stretch ends at the first
+	-- node that isn't plain, a bridge or tunnel, a piece that isn't straight (tangents within 0.5% of the axis), or
+	-- where the tracks stop being the only two, 4.5–5.5 m apart, with midline and height within 0.5 m of the start's
+	-- (checked every 5 m and at each node). Past a short stretch the scan reads on only after a bridge or tunnel,
+	-- such a drift, or a crossover; any other switch, the track's end or single track stops it. A stretch's tracks
+	-- must also lead back only to the station's end nodes (through the fan's merges and crossovers), so a stretch
+	-- past a siding, branch or another line's switch stops the scan too.
+	-- `side[k]`: which side of end k our line comes from (+1 left of outward, −1 right; nil +1).
 	analyse : function(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 end
 ```
@@ -401,25 +416,35 @@ end
 `side[k]` is which side of end k our line will come from (+1 left of outward, −1 right). The route supplies it
 (Task 6). The analyser uses it to label the tracks "near" and "far".
 
-**Algorithm, per end k (±1):**
-1. **Frame.** Outward is k × dir. x is the distance along outward from the platform end (centre + outward × half).
-   y is the distance to the left.
-2. **Pieces near the axis.** Take the pieces whose both ends lie at 0 ≤ x ≤ 1500 and |y| ≤ 12, and that are
-   reachable from the station's end nodes over such pieces. Use a BFS over node → pieces.
-3. **The stretch's start.** Scan x from 0 in 5 m steps. At each x, find the pieces that cross the line x (one sample
-   per piece: linear in x between its ends). The stretch starts at the first x where exactly two pieces cross, at
-   y within 1 m of ±2.5 around a common midline, 4.5–5.5 m apart, and both have degree 2 at their nodes beyond x.
-4. **The stretch's length.** Carry on while all of these hold: exactly two pieces cross, both are "ground", the
-   midline stays within 0.5 m of where it started (straight along the axis), and every node passed has degree 2 (no
-   switches). The length is from the start to where any of these breaks.
-5. **Usable** if the length ≥ `junction.needed(radius)` (the radius is passed in). Otherwise
-   `why[k] = "short"`, `"no double track"` or `"switches"`.
-6. **Running directions.** For each signal on the stretch's pieces, get the direction it faces along outward
-   (+ outward, − inward) from its facing and the piece's direction. Right-hand running wants the track to the right
-   of outward (y < midline) facing outward, and the left one facing inward. Any signal against that sets
-   `why[k] = "left-hand"`.
-7. **Near and far.** The near track is the one on `side[k]`. Record signal positions as x − start along the
-   stretch, per near/far.
+**Algorithm, per end k (±1)** (as built; `existing.tl`):
+1. **Frame.** Outward is k × dir (dir normalised). x is the distance along outward from the platform end
+   (centre + outward × half), y the distance to the left.
+2. **The corridor.** The pieces with |y| ≤ 12 at both ends, x ≤ 1500, and x no further back than the station's end
+   nodes on this end (less 1 m), that the end nodes reach over such pieces (a BFS over node → pieces). The scan
+   starts at the end nodes' smallest x.
+3. **A stretch's start.** Scan x in 5 m steps. A stretch starts where exactly two pieces cross x (a piece starting at
+   x counts, one ending there doesn't; y and z along the chord), both "ground", both straight (each tangent's
+   sideways and upward share ≤ 0.005), 4.5–5.5 m apart. Until the fan has merged to two tracks nothing starts.
+4. **Its tracks must come from the station.** Walking inward from the two start pieces, every way back must end at a
+   station end node. A node may merge two inward pieces (the fan), or split towards the station only where one of
+   its outward pieces leads across to the other track (a crossover: through plain nodes to a degree-3 node
+   4.5–5.5 m across, towards the midline). A piece leaving the corridor (a siding, a branch, another line), a dead
+   end or any other switch fails it: the scan stops, `why[k] = "short"`.
+5. **Its length.** Each track is walked outward piece by piece through plain (degree 2) nodes. A track ends at a
+   switch (degree 3), any other non-plain node, a next piece that leaves the corridor or turns back, a bridge or
+   tunnel, or a piece that isn't straight. The stretch ends where the first track does. Then every 5 m and at each
+   node on the way, the two tracks must stay the only ones crossing, 4.5–5.5 m apart, with midline and height
+   within 0.5 m of the start's; where that fails it ends at the point checked before (a drift). Piece lists hold
+   each track's pieces that start before the end, ordered outward.
+6. **Usable** if the length ≥ `junction.needed(radius)`. If shorter, the scan reads on from its end only if it
+   ended at a bridge or tunnel, a drift or a crossover (a switch whose other piece leads across, as in 4); any other
+   switch, the track's end or single track stops it. `why[k]` is `"short"` if any stretch was found, else
+   `"no double track"`.
+7. **Running directions.** For each one-way signal on the stretch's pieces, its direction along outward comes from
+   its facing and the piece's direction. Right-hand running wants the track right of outward governing outward
+   trains and the left one inward trains. Any signal against that: `why[k] = "left-hand"`, no end.
+8. **Near and far.** The near track is the one on `side[k]` (nil: +1). Signal positions are x − start along the
+   stretch, per near/far, sorted; those on listed pieces are kept even outside 0..length.
 
 - [ ] **Step 1: Write the failing tests.** Build snapshots in `tests/existing_test.lua` with a helper
   `straightPiece(id, n0, n1, x0, y0, x1, y1)` (z 0, tangents (x1 − x0, y1 − y0, 0), kind "ground", signals {}).
