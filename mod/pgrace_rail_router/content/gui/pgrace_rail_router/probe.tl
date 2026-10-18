@@ -886,6 +886,11 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 	log("P15", ("replaceSegment(%d): %d added segments, %d added nodes, %d removed segments, %d edge objects to add, %d node configs, template objects %d"):format(
 		piece.entity, #sp.addedSegments, #sp.addedNodes, #(sp.removedSegments or {}), #edgeObjects,
 		#(sp.nodeConfigsToAdd or {}), #objs))
+	if #edgeObjects > 0 and #edgeObjects ~= #objs then
+		log("P15", ("REFUSED split of %d: %d edge objects to add against %d objects on the piece"):format(piece.entity,
+			#edgeObjects, #objs))
+		return nil
+	end
 	-- What the engine says about the objects, to compare with what we send.
 	for i, eo in ipairs(edgeObjects) do
 		local okE, text = pcall(function() : string
@@ -984,7 +989,15 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 			end)
 			log("P15", ("edgeObjectsToAdd[%d] rewritten to edge %d param %.3f: %s"):format(i, pieces[objJ[i]].entity,
 				objU[i], okW and "ok" or tostring(err)))
+			if not okW then
+				log("P15", ("REFUSED split of %d: edge object %d couldn't be rewritten"):format(piece.entity, i))
+				return nil
+			end
 		end
+	end
+	-- The list read from the proposal may be a copy: hand the rewritten one back.
+	if #edgeObjects > 0 then
+		sp.edgeObjectsToAdd = edgeObjects as any as {Proposal.EdgeObject}
 	end
 	sp.addedNodes = nodes
 	sp.addedSegments = pieces
@@ -1057,6 +1070,10 @@ local function repairNodes(what : string, nodes : {integer}, done : function())
 				log("P15", ("%s: node %d after repair: %s"):format(what, n, hasConfig(n)))
 			end
 			return done()
+		end
+		if not api.engine.entityExists(seg) then
+			log("P15", ("%s: piece %d is gone: skipped"):format(what, seg))
+			return step()
 		end
 		local ok, rep = pcall(function() : Proposal
 			return api.engine.util.proposal.replaceSegment(seg)
