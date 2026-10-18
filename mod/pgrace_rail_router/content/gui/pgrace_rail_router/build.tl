@@ -226,6 +226,27 @@ local function recordNodes(net : Network, res : WorldBuildProposalCommandData) :
 	return matched
 end
 
+-- PROBE (remove before release): after a chunk's dry run failed, each of its edges dry-run alone, and the edges
+-- without any joined to an existing node, logged: which the game refuses.
+local function diagnose(b : Build, net : Network, first : integer, last : integer)
+	local settings = b.check.settings
+	local function fmt(p : Pt3) : string
+		return ("(%.2f %.2f %.2f%s)"):format(p.x, p.y, p.z, p.entity ~= nil and (" #" .. p.entity) or "")
+	end
+	for i = first, last do
+		local e = net.edges[i]
+		local proposal = builder.chunkProposal(net, i, i, settings)
+		if proposal ~= nil then
+			local ok, __, messages = builder.dryRun(proposal)
+			if not ok or net.nodes[e.node0].entity ~= nil or net.nodes[e.node1].entity ~= nil then
+				log(("diagnose edge %d (%s, track %d): %s; %s %s -> %s %s, t0 (%.2f %.2f %.3f) t1 (%.2f %.2f %.3f)"):format(i,
+					e.kind, e.track, ok and "clean" or table.concat(messages, "; "), fmt(net.nodes[e.node0]), fmt(e.p0),
+					fmt(net.nodes[e.node1]), fmt(e.p1), e.t0.x, e.t0.y, e.t0.z, e.t1.x, e.t1.y, e.t1.z))
+			end
+		end
+	end
+end
+
 local function sendChunk(b : Build, net : Network, first : integer, last : integer, x : number, y : number)
 	local proposal, why = builder.chunkProposal(net, first, last, b.check.settings)
 	if proposal == nil then
@@ -234,6 +255,10 @@ local function sendChunk(b : Build, net : Network, first : integer, last : integ
 	end
 	local ok, cost, messages, __, data = builder.dryRun(proposal)
 	if not ok then
+		pcall(function() : boolean
+			diagnose(b, net, first, last)
+			return true
+		end)
 		fail(b, messages, x, y)
 		return
 	end
@@ -367,8 +392,15 @@ local function stepStreet(b : Build, first : integer, last : integer)
 			end
 			addCut(cr.cuts, sp_[1], sp_[2], best)
 			cr.count = cr.count + 1
+			-- A piece between two new nodes is at both: send it once.
 			for __, sg in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(best.entity)) do
-				table.insert(cr.repair, sg as integer)
+				local seen = false
+				for __, r in ipairs(cr.repair) do
+					seen = seen or r == sg as integer
+				end
+				if not seen then
+					table.insert(cr.repair, sg as integer)
+				end
 			end
 		end
 		log(("street %d split at %d crossings"):format(entity, #splits))
