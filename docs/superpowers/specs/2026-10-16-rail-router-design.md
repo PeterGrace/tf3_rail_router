@@ -547,7 +547,7 @@ Rules carried over from Bus Loops: never send a proposal that didn't dry-run cle
 exception, a shape the engine made); copy positions out of engine data; don't keep engine components across a
 `sendCommand`.
 
-## Milestone 4a: Halt 2+2 (design draft, 2026-10-18; not yet reviewed with the player)
+## Milestone 4a: Halt 2+2 (done 2026-10-18)
 
 Reference: the Express & Local Rail Stations mod (`express_local_stations_1`, read in full; we copy its geometry, not
 its code, and don't depend on it).
@@ -584,6 +584,13 @@ its code, and don't depend on it).
   line from Bangor turning back at Mercer Island (an intermediate station) had no path when only the ends had them
   (Rail Doctor: stuck 251 m after Mercer Island), and lines may later be joined into one network.
 - **Not in 4a:** using existing stations (4b), the 4-track main option, left-hand running.
+
+**Built in-game:** Bangor → Imperial Beach (5 stations, 320 m platforms, standard and high-speed track): roads to
+every station, a line through all of them and one turning back at Mercer Island both ran. Fixes on the way: signals
+15 m clear of an edge's ends (a block signal 3 m before a chunk's end collided with the next chunk), and a chunk
+takes the right track's edges by distance (a switch window keeps one track whole only, so the tracks can be cut
+differently). Station roads: straight out of the building to a T on the first street first, curves after, ranked by
+length and turning (the nearest target with any shape gave hairpins).
 
 Settled with the player (2026-10-18): blocks every 500 m; Halt 2+2 the default. Termini are Halt 2+2 too, with the
 crossovers (a line may later be extended or joined to others).
