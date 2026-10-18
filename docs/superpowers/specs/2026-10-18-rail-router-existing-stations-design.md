@@ -1,0 +1,180 @@
+# Rail Router Milestone 4b: using existing stations (design)
+
+Agreed with the player on 2026-10-18. This extends the main design (`2026-10-16-rail-router-design.md`).
+
+## Goal
+
+Where a town on the route already has a rail station, the new line can run into that station instead of
+placing its own. The existing station is usually already on other lines, so the new line **branches into the
+existing double track outside the station**, and the lines share its platforms. Lines can then grow into one
+network.
+
+The player chose these, in order:
+- **Branch into the existing tracks.** Don't widen the station, and don't build an interchange beside it.
+- **Any double track.** Player-built track counts, not only lines Rail Router built.
+- **A flat junction, or a flying one where it fits.**
+
+## Staging
+
+Each step ends with an in-game test.
+
+1. **Probe P15.** Splitting existing track, a track-over-track level crossing, and a switch into signalled track,
+   all from a script (see "Unknowns").
+2. **4b-1:** finding the stations, the window option, and the flat junction.
+3. **4b-2:** the flying junction where the straight stretch is long enough. Otherwise the junction stays flat.
+
+## What the player sees
+
+- Before planning, each stop town is checked for a usable rail station (below). A town that has one shows
+  **"use the existing station in X"** in the stop list, ticked by default. Unticked, the stop gets its own Halt 2+2
+  station as now.
+- If an existing station turns out not to fit, the stop falls back to a new station. This happens when the
+  approach is too short for a junction, or when the legs can't reach opposite ends. The window then says why:
+  "The station in X has no room for a junction (needs N m of straight double track); a new station was planned."
+- The plan's summary and the check count the junctions ("Junctions: 2"). The built line's summary does too.
+
+## Usable stations
+
+A station is usable if all of these hold:
+- It's a construction with rail station terminals, within 1.5 km of the town's centre (the station-site reach).
+- It's a **through station**. Track leaves both ends of its platforms.
+- At an end the line uses, the track running out from the platforms becomes a plain **double track**: two parallel
+  tracks 4.5–5.5 m apart. This counts only past the station's own switches, which also means past its fans if it
+  is a Halt 2+2.
+- That double track then runs **straight, on the ground, with no switches**, for at least the junction's length
+  (below).
+- Signals on that straight stretch are allowed. We never move or remove them. The junction's points must stay at
+  least 15 m from them, the same clearance as our own signals.
+
+**Running directions.** Each existing track's direction comes from its one-way signals, read through
+`signalSystem.getSignal` as Rail Doctor does. A track with no one-way signals is taken as right-hand running for the
+line's direction. If the two tracks' signals point the same way, the end is not usable.
+
+A record per usable end, `ExistingStation.ends[k]`, holds:
+- the point where the straight stretch starts and its direction outward;
+- its length;
+- each track's offset from the axis and the direction it runs;
+- the entities of the existing pieces along the stretch;
+- the positions of its signals.
+
+## Junction geometry (flat)
+
+The frame for one junction:
+- **x** runs along the existing axis, outward from the station.
+- **y** runs across it. The new line comes from the +y side.
+- The existing tracks sit at y = ±2.5. "Near" means the existing track at +2.5.
+
+The pieces, from the station outward:
+1. **The merge.** Our far track, at y = +12.5, joins the existing near track (+2.5) with an S-curve: a switch on
+   the near track at x = m. Its length is L₁₀ = max(40, √(4 R × 10)), where R is the turnout radius
+   (`turnoutLength` for a 10 m offset: standard track 110 m).
+2. **The crossing.** Further out than the merge, our near track, at y = +7.5, runs in to the existing far track
+   (−2.5) with an S-curve of 10 m offset, from x = c₁ (outer) to x = c₀ = c₁ − L₁₀ (inner). It ends in a switch on
+   the far track at c₀. On the way it crosses the existing near track where the S-curve passes y = +2.5, which is a
+   level crossing. Its x range lies wholly outside the merge's, so our far track (+12.5, straight there) is never
+   crossed, and by the time the merge brings our far track down across y = +7.5, our near track has already left.
+3. **Our approach.** Two parallel tracks at y = +7.5 and +12.5, straight for 30 m, then the leg proper.
+
+**Order.** Which of our tracks crosses and which merges is set by the running directions:
+- Our track that runs **towards** the station must end on the existing track that runs towards it.
+- Our track that runs **away** must start from the existing track that runs away.
+
+With right-hand running and the line arriving from +y, the existing near track runs away from the station. So
+our far track (+12.5) is the "away" track and merges into the near existing track. Our near track (+7.5) is the
+"towards" track and crosses to the far one.
+
+The crossing S-curve sits further out than the merge, so the two never cross each other. If the station is
+mirrored, or the existing directions are swapped, the frame is mirrored to match.
+
+**Length needed:** 15 m clear of the station's last switch or signal, plus L₁₀ for the merge, plus 20 m between,
+plus L₁₀ for the crossing, plus 30 m of approach, plus 15 m of signal clearance. On standard track that is
+2 × 110 + 80 = 300 m. On high-speed track, with R = 600 and L₁₀ = 155, it is 390 m.
+
+**Signals of ours:**
+- one-way home signals on our two approach tracks before the junction, facing trains coming in;
+- starters and blocks on the rest of our line, as now.
+
+The existing line's signals are left alone. Path signals reserve the route through the junction, so trains on
+the two lines wait for each other at the level crossing.
+
+## Flying junction (4b-2)
+
+The crossing track runs over the existing near track on a bridge, 9 m above it (the planner's CLEARANCE). Its ramps
+are graded at the mode's grade limit, so the crossing piece becomes longer: 2 × 9 m ÷ grade, plus the bridge. That
+is about 2 × 360 m at 2.5% (Fastest) and 2 × 106 m at 8.5% (Cheapest).
+
+It is used where the straight stretch is long enough. Otherwise the junction is flat. The merge stays as it is.
+
+## Planner
+
+- **Survey.** Read each stop town's stations. For each end, follow the track from the platform ends through the
+  station's switches until a plain double track begins, then measure its straight, switch-free stretch and read its
+  signals. The result is `ExistingStation` records, as pure data. The map capture is extended with station
+  terminals and signals, so this can be tested offline.
+- **Choosing ends.** For a stop with an existing station:
+  - A station in the middle of the route uses the end facing the previous town for the leg in, and the end facing
+    the next town for the leg out. These must be different ends, so the line runs through the station.
+  - A station at an end of the line uses the end facing its one neighbour.
+  - If the needed ends aren't usable, the stop falls back to a new station.
+- **Legs.** The leg's fixed end is the junction's approach start, at x = junction length out from the station end,
+  on y = +10 (the axis of our two tracks), facing along x. It replaces the site's platform end and approach. The
+  grid search ends there, as it does at a station's approach today. Cells holding the existing line stay blocked as
+  they are now, and our parallel approach is fixed geometry outside the search.
+- **No station of ours** is placed at that stop, and it gets no road.
+
+## Network
+
+- Junction pieces are edges, as the fans are: `Edge.track` 4 for a junction piece. Their ends that land on existing
+  track are marked as **cuts in existing pieces**: `{piece entity, parameter, kind}`, where kind is "switch" or
+  "crossing". The edge's end node there is filled in after the split.
+- Junction pieces go in the chunk with the leg's end that they join.
+
+## Builder
+
+**Before a chunk with junction pieces**, split each affected existing piece at its cuts, sorted along it, as for
+level crossings:
+- Edit the engine's `replaceSegment` proposal into pieces with new nodes, keeping the piece's track type, its
+  `distance`, its owner and its signals.
+- Send it. It can't be dry-run, as with the street splits.
+- Record the new nodes by place.
+
+The level-crossing point becomes a node where four pieces meet.
+
+**Then the chunk**, joined to those nodes, is dry-run and sent. Our home signals are part of the chunk.
+
+**The check** dry-runs the junction chunk before any split. Collisions only with the existing pieces at the planned
+cut points count as junction joints, not errors, as level crossings are counted today. Anything else stays an
+error.
+
+**A failure** stops the build with Show and "Retry from here", as now. A split already made is harmless: it leaves
+extra nodes on the existing track.
+
+## Unknowns, for probe P15 (test map)
+
+P15 builds a short straight double track with one-way signals, places a train on it if the player likes, and then:
+1. Splits one of its pieces from the script, keeping its signal, and logs whether the signal survives and stays on
+   its side.
+2. Builds a flat junction into it, with a switch on each track and a level crossing over the near one. It logs the
+   dry run, the build, the pieces at the crossing node, and whether the game drew a track crossing.
+
+The player then runs a train through each route of the junction, and along the existing line across the
+crossing.
+
+## Testing
+
+- **Unit tests:**
+  - junction geometry: the pieces' ends, offsets and tangents, the order set by the running directions, mirroring,
+    and the length needed;
+  - choosing ends;
+  - falling back when the stretch is too short.
+- **Offline:** survey records from the extended capture. PottstownTown's existing station is the first case (its
+  station boxed in the new site in milestone 1). We also need a test map line built by Rail Router, captured after
+  the build.
+- **In-game, 4b-1:** on the test map, build Bangor → Imperial Beach. Then plan a second line that stops at one of
+  its stations, for example a new town pair through Aloha. Build it and run trains on both lines.
+
+## Out of scope
+
+- Single-track lines, termini, approaches with switches or curves where the junction would go, and left-hand
+  running beyond what the signals show.
+- Changing the existing station or its signals.
