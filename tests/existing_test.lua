@@ -413,6 +413,23 @@ t.test("existing: a bridge ends a stretch, and a long enough one beyond it is us
 	t.near(r.ends[1].length, 520, 1e-9, "to the track's end")
 end)
 
+t.test("existing: a station's outer tracks beyond 12 m widen the corridor", function()
+	local b = builder()
+	-- T P T T P T: tracks at ±2.5 and ±12.5, the outer ones merging into the inner ones at x = 200 (world 280).
+	b.piece(80, 12.5, 180, 12.5)
+	b.piece(180, 12.5, 280, 2.5)
+	b.piece(80, -12.5, 180, -12.5)
+	b.piece(180, -12.5, 280, -2.5)
+	b.track(2.5, cat({ 80 }, steps(280, 1000, 100)))
+	b.track(-2.5, cat({ 80 }, steps(280, 1000, 100)))
+	local station = { entity = 1, centre = { x = 0, y = 0 }, dir = { x = 1, y = 0 }, half = 80,
+		ends = { b.node(80, 12.5), b.node(80, 2.5), b.node(80, -2.5), b.node(80, -12.5) } }
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.ok(r.ends[1] ~= nil, "usable: " .. tostring(r.why[1]))
+	t.near(r.ends[1].origin.x, 280, 1e-9, "past the merge at frame x = 200")
+	t.near(r.ends[1].length, 720, 1e-9, "to the track's end")
+end)
+
 t.test("existing: station end nodes a little behind the platform end still lead out", function()
 	local b = builder()
 	b.track(2.5, steps(77, 1000, 100))

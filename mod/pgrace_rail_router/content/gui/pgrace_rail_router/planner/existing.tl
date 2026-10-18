@@ -8,7 +8,8 @@ local type Station = PgraceRailRouterExisting.Station
 local type End = PgraceRailRouterExisting.End
 local type Result = PgraceRailRouterExisting.Result
 
--- How far out from the platform end, and how far across the axis, the approach is looked for (metres).
+-- How far out from the platform end, and how far across the axis (at least; a station's outer tracks widen it),
+-- the approach is looked for (metres).
 local REACH = 1500.0
 local WIDE = 12.0
 local STEP = 5.0
@@ -65,8 +66,9 @@ local record Stretch
 end
 
 -- The pieces near end k's axis that the station's end nodes reach over such pieces, in the frame: x outward from
--- the platform end, y to the left. Near means |y| ≤ WIDE, x up to REACH and no further back than the end nodes
--- (less 1 m); returns the corridor and the end nodes' smallest x, where the scan starts.
+-- the platform end, y to the left. Near means |y| ≤ WIDE, or 1 m past the station's outermost end node if that's
+-- wider, x up to REACH and no further back than the end nodes (less 1 m); returns the corridor and the end nodes'
+-- smallest x, where the scan starts.
 local function corridor(station : Station, snap : Snapshot, ox : number, oy : number, ex : number,
 		ey : number) : Corridor, number
 	local all : {Span} = {}
@@ -74,14 +76,23 @@ local function corridor(station : Station, snap : Snapshot, ox : number, oy : nu
 	for __, n in ipairs(station.ends) do
 		isEnd[n] = true
 	end
+	local wide = WIDE
+	for __, p in ipairs(snap.pieces) do
+		if isEnd[p.node0] then
+			wide = math.max(wide, math.abs((p.p0.y - ey) * ox - (p.p0.x - ex) * oy) + 1)
+		end
+		if isEnd[p.node1] then
+			wide = math.max(wide, math.abs((p.p1.y - ey) * ox - (p.p1.x - ex) * oy) + 1)
+		end
+	end
 	local lo = math.huge
 	for __, p in ipairs(snap.pieces) do
 		local x0 = (p.p0.x - ex) * ox + (p.p0.y - ey) * oy
 		local y0 = (p.p0.y - ey) * ox - (p.p0.x - ex) * oy
 		local x1 = (p.p1.x - ex) * ox + (p.p1.y - ey) * oy
 		local y1 = (p.p1.y - ey) * ox - (p.p1.x - ex) * oy
-		if math.min(x0, x1) >= -station.half and math.max(x0, x1) <= REACH and math.abs(y0) <= WIDE
-				and math.abs(y1) <= WIDE then
+		if math.min(x0, x1) >= -station.half and math.max(x0, x1) <= REACH and math.abs(y0) <= wide
+				and math.abs(y1) <= wide then
 			local s : Span
 			if x1 >= x0 then
 				s = { piece = p, xa = x0, ya = y0, za = p.p0.z, xb = x1, yb = y1, zb = p.p1.z,
@@ -267,7 +278,8 @@ end
 -- corridor, every way back ends at a station end node. On the way, a node may join two inward pieces (a fan's
 -- merge), or split towards the station only where one of its outward pieces leads across to the other track (a
 -- crossover). A piece leaving the corridor (a branch, a siding or another line coming in), a dead end or any other
--- switch means the stretch belongs to more than the station's own tracks.
+-- switch means the stretch belongs to more than the station's own tracks. A node with four pieces (a level crossing
+-- or a scissors crossover in the throat) fails it too, which may be overcautious.
 local function fromStation(c : Corridor, snap : Snapshot, firsts : {Span}, mid : number) : boolean
 	local seen : {integer : boolean} = {}
 	local stack : {Span} = {}
@@ -290,9 +302,15 @@ local function fromStation(c : Corridor, snap : Snapshot, firsts : {Span}, mid :
 			if #inward == 0 or #outward > 2 then
 				return false
 			end
-			if #outward == 2 and not across(c, snap, n, outward[1], s.ya, mid)
-					and not across(c, snap, n, outward[2], s.ya, mid) then
-				return false
+			if #outward == 2 then
+				-- The other outward piece leads across; or the trace came in along the crossover's leg itself
+				-- (which led across from the other track), and the other piece carries on along this track.
+				local other = outward[1] == s and outward[2] or outward[1]
+				local otherY = other.nodeA == n and other.yb or other.ya
+				if not across(c, snap, n, other, s.ya, mid)
+						and not (math.abs(otherY - s.ya) <= ON_LINE and across(c, snap, n, s, s.ya, mid)) then
+					return false
+				end
 			end
 			for __, o in ipairs(inward) do
 				table.insert(stack, o)
