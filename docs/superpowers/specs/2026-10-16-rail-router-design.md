@@ -276,7 +276,10 @@ in-game.
 **Crossings:** samples over existing track, road junctions (nodes joining three or more pieces, and 30 m round them:
 a level crossing can't go through one; the grid search prices crossing one as crossing track), and over roads in
 Fastest mode (`Weights.bridgeRoads`), are bridges and
-are never merged away. The track there is lifted to at least 9 m above the ground, ramping up and down within the
+are never merged away. So are roads crossed within 10 m of a joint between two of their pieces (the game refused level
+crossings 1.8 and 7 m from one, `Grid.joints`), and samples on or by water (any of the four 25 m points round them;
+shore cells are sampled 4 × 4 by the survey, `Grid.shore`: the game refuses ground track over water, "Place on
+Land"). The track there is lifted to at least 9 m above the ground, ramping up and down within the
 grade limit (probe P8: a double-track bridge square across existing track collided with it 7 m above, rail to rail,
 and was clean from 8 m; over a street 6 m was clean); the station heights pinned at a leg's ends win if a crossing is too close to them. In Cheapest mode
 roads are crossed on the level.
@@ -452,6 +455,12 @@ line, as cubic Hermite edges between nodes:
 - **Edges** end at every span boundary (ground, bridge, tunnel), are at most 250 m along the centre line, and are
   split further wherever the cubic strays more than 0.25 m from the height profile or steeper than the grade; each
   node's grade comes from the profile around it. None is shorter than 0.5 m.
+- **Crossovers** (milestone 3): a pair in the 100 m straight at each end of a leg (a station's approach), track 1 to 2
+  from 4 m out and 2 to 1 from 52 m, each one 45 m S-curve edge (tightest radius about 67 m) at the track's grade at
+  each end, its ends moved onto samples within 1 m. A switch's branch must be one long edge, and so must the main
+  track beside it: the tracks aren't broken within 20 m of a switch on its branch side (the game refused 16.6 m and
+  less, passed 18 m and more). An end that isn't 100 m of straight ground gets none. Without crossovers the game's
+  choice of platform stranded trains on the other track (Rail Doctor).
 - **Chunks** of about 1 km of centre line (both tracks) are one dry run each, never splitting a bridge or tunnel.
   Probe P2: a 1 km double-track piece took 12 ms to dry-run, 2 km about 49 ms.
 
@@ -488,7 +497,9 @@ What the probes found:
   30 ms each but the first about 100 ms, chunks 3–40 ms.
 
 **Milestone 3: Build** (`build.tl`). After a clean check, **Build** builds the line one command at a time, each
-waiting for the game's callback before the next:
+waiting for the game's callback before the next. Built in-game: Bangor → Imperial Beach (5 stations, 16 chunks,
+crossovers at every station end, 29.0 million), and a train ran the whole line. Each station is turned so its main
+building (on the left of its direction) faces its town; turning it round keeps its track ends.
 
 1. **Stations first**, each dry-run again just before it's sent (the map may have changed since the check). Once
    built, its free track ends (the nodes of its frozen edges with one track piece; probe P10: they aren't among its
