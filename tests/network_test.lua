@@ -208,8 +208,14 @@ local function plan(legs)
 	return { ok = true, legs = legs, stations = {}, platformLength = 160 }
 end
 
+local function noCrossovers()
+	local o = network.defaults()
+	o.crossovers = false
+	return o
+end
+
 t.test("network: both tracks, edges joined through shared nodes", function()
-	local net = network.build(plan({ leg({ straight(0, 0, 600, 0) }) }), network.defaults())
+	local net = network.build(plan({ leg({ straight(0, 0, 600, 0) }) }), noCrossovers())
 	t.eq(#net.edges, 6, "three edges a track")
 	t.eq(#net.nodes, 8, "four nodes a track")
 	for k = 1, #net.edges - 1 do
@@ -340,4 +346,76 @@ t.test("network: edges without cuts pass through untouched", function()
 	local out = network.cut(net, 1, 1, {})
 	t.eq(#out.edges, 1, "one edge")
 	t.ok(out.nodes[1] == net.nodes[1] and out.nodes[2] == net.nodes[2], "same node tables")
+end)
+
+t.test("network: a pair of crossovers at each end of a leg, joined to both tracks' nodes", function()
+	local net = network.build(plan({ leg({ straight(0, 0, 1000, 0) }) }), network.defaults())
+	local uses = {}
+	local pieces = {}
+	for __, e in ipairs(net.edges) do
+		uses[e.node0] = (uses[e.node0] or 0) + 1
+		uses[e.node1] = (uses[e.node1] or 0) + 1
+		if e.track == 0 then
+			table.insert(pieces, e)
+		end
+	end
+	-- The switches: crossover ends on a track (three edges there); between them, joints of two crossover pieces.
+	local switches, starts = 0, {}
+	for __, e in ipairs(pieces) do
+		for __, n in ipairs({ e.node0, e.node1 }) do
+			if uses[n] == 3 then
+				switches = switches + 1
+			else
+				t.eq(uses[n], 2, "a joint inside a crossover")
+			end
+		end
+		if uses[e.node0] == 3 then
+			table.insert(starts, e)
+		end
+		t.ok(math.abs(e.t0.y) < 1e-9 or uses[e.node0] == 2, "leaves a track along it")
+	end
+	t.eq(switches, 8, "two switches a crossover, four crossovers")
+	-- Each crossover from one track to the other, CROSSOVER_LENGTH along.
+	local crossovers = {}
+	for __, e in ipairs(starts) do
+		local s0, y0 = e.s0, net.nodes[e.node0].y
+		local cur = e
+		while uses[cur.node1] ~= 3 do
+			for __, f in ipairs(pieces) do
+				if f.node0 == cur.node1 then
+					cur = f
+					break
+				end
+			end
+		end
+		table.insert(crossovers, s0)
+		t.near(math.abs(net.nodes[cur.node1].y - y0), 5, 1e-9, "from one track to the other")
+		t.near(cur.s1 - s0, network.CROSSOVER_LENGTH, 1, "its length along the track (its ends moved onto samples within 1 m)")
+	end
+	t.ok(network.CROSSOVER_LENGTH ^ 2 / 30 >= 55, "its tightest radius over the game's 55 m minimum")
+	table.sort(crossovers)
+	t.eq(#crossovers, 4, "two at each end")
+	t.near(crossovers[1], 4, 1e-9, "the first 4 m from the platforms") t.near(crossovers[4], 1000 - 49, 1, "the last mirrored")
+	-- Every edge, crossovers included, in exactly one chunk.
+	local inChunks = 0
+	for __, c in ipairs(net.chunks) do
+		inChunks = inChunks + (c.last - c.first + 1)
+	end
+	t.eq(inChunks, #net.edges, "every edge in a chunk")
+end)
+
+t.test("network: no crossovers where a leg's end isn't 100 m of straight ground", function()
+	local l = leg({ straight(0, 0, 1000, 0) }, { { "bridge", 0, 150 }, { "ground", 150, 1000 } })
+	local net = network.build(plan({ l }), network.defaults())
+	local starts = 0
+	for __, e in ipairs(net.edges) do
+		if e.track == 0 then
+			t.ok(e.s0 > 900, "none at the bridge end")
+			-- A crossover's first piece leaves a track (2.5 m off the centre line).
+			if math.abs(math.abs(net.nodes[e.node0].y) - 2.5) < 1e-9 and math.abs(net.nodes[e.node1].y) < 2.5 - 1e-9 then
+				starts = starts + 1
+			end
+		end
+	end
+	t.eq(starts, 2, "a pair at the end on the ground")
 end)

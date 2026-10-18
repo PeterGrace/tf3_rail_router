@@ -145,7 +145,7 @@ function network.cut(net : PgraceRailRouterNetwork.Network, first : integer, las
 end
 
 function network.defaults() : Options
-	return { offset = 2.5, maxEdge = 250.0, chunkLength = 1000.0, tangent = "circle" }
+	return { offset = 2.5, maxEdge = 250.0, chunkLength = 1000.0, tangent = "circle", crossovers = true }
 end
 
 -- The grade at a node where the profile's grade changes from a to b. Each edge's cubic leaves the node at this grade
@@ -332,9 +332,28 @@ end
 
 -- Where the edges along a leg start and end (metres of centre line, as {s0, s1} pairs in order). They don't depend on
 -- the track, so the two tracks' edges pair up index by index.
-local function stretches(leg : Leg, starts : {number}, total : number, options : Options, limit : number) : {{number}}
-	-- Where edges must break: where one piece meets the next, and the spans' ends.
+local function stretches(leg : Leg, starts : {number}, total : number, options : Options, limit : number,
+		extra : {number}) : {{number}}
+	-- Where edges must break: where one piece meets the next, the spans' ends, and the crossovers' ends (extra), each
+	-- with the samples either side of it, so no edge runs from it over a change of grade at a sample.
 	local cuts : {number} = {}
+	for __, c in ipairs(extra or {}) do
+		table.insert(cuts, c)
+		local before, after : number, number = nil, nil
+		for __, sample in ipairs(leg.samples) do
+			if sample.s < c and (before == nil or sample.s > before) then
+				before = sample.s
+			elseif sample.s > c and (after == nil or sample.s < after) then
+				after = sample.s
+			end
+		end
+		if before ~= nil then
+			table.insert(cuts, before)
+		end
+		if after ~= nil then
+			table.insert(cuts, after)
+		end
+	end
 	for i = 2, #starts do
 		table.insert(cuts, starts[i])
 	end
@@ -393,7 +412,7 @@ local function stretches(leg : Leg, starts : {number}, total : number, options :
 	return list
 end
 
-function network.trackEdges(leg : Leg, legIndex : integer, side : number, options : Options) : {Edge}
+function network.trackEdges(leg : Leg, legIndex : integer, side : number, options : Options, cuts ?: {number}) : {Edge}
 	-- Where each piece starts along the leg, and where the leg ends.
 	local starts : {number} = {}
 	local total = 0.0
@@ -411,7 +430,7 @@ function network.trackEdges(leg : Leg, legIndex : integer, side : number, option
 		return "ground"
 	end
 	local edges : {Edge} = {}
-	for __, st in ipairs(stretches(leg, starts, total, options, limit)) do
+	for __, st in ipairs(stretches(leg, starts, total, options, limit, cuts)) do
 		local e = edgeOver(leg, starts, st[1], st[2], side * options.offset, options, limit)
 		e.kind, e.track, e.leg = kindAt((st[1] + st[2]) / 2), side > 0 and 1 or 2, legIndex
 		table.insert(edges, e)
@@ -419,12 +438,104 @@ function network.trackEdges(leg : Leg, legIndex : integer, side : number, option
 	return edges
 end
 
+network.CROSSOVER_LENGTH = 45.0
+-- The straight a leg's end needs for its crossovers (a station's approach, route.tl's APPROACH), and how far from
+-- the platforms the first starts.
+local CROSSOVER_STRAIGHT = 100.0
+local CROSSOVER_START = 4.0
+-- How far a crossover's end moves to sit on a sample (more than MIN_EDGE, under half the 3 m between the pair's
+-- inner ends, so two ends never land on one sample), and the shortest a crossover may then be (its tightest radius
+-- 42² / 30 = 59 m, over the game's 55 m).
+local CROSSOVER_SNAP = 1.0
+local CROSSOVER_MIN = 42.0
+
+-- A leg's crossovers as {from track, s on it, to track, s on that}: a pair at each end whose first (last) piece is a
+-- straight of CROSSOVER_STRAIGHT on the ground.
+local function crossoverPlaces(leg : Leg, total : number) : {{number}}
+	local places : {{number}} = {}
+	if #leg.pieces == 0 or total < 2 * CROSSOVER_STRAIGHT + 1 then
+		return places
+	end
+	local function groundOver(s0 : number, s1 : number) : boolean
+		for __, span in ipairs(leg.spans) do
+			if span.kind ~= "ground" and span.s0 < s1 and span.s1 > s0 then
+				return false
+			end
+		end
+		return true
+	end
+	local L, a = network.CROSSOVER_LENGTH, CROSSOVER_START
+	local first, last = leg.pieces[1], leg.pieces[#leg.pieces]
+	-- A place within CROSSOVER_SNAP of a sample moves onto it: a cut that close to one would be merged away
+	-- (MIN_EDGE), leaving an edge over the sample's change of grade.
+	local function snap(s : number) : number
+		for __, sample in ipairs(leg.samples) do
+			if math.abs(sample.s - s) <= CROSSOVER_SNAP then
+				return sample.s
+			end
+		end
+		return s
+	end
+	local function add(fromTrack : number, s0 : number, toTrack : number, s1 : number)
+		local a0, a1 = snap(s0), snap(s1)
+		if a1 - a0 >= CROSSOVER_MIN then
+			table.insert(places, { fromTrack, a0, toTrack, a1 })
+		end
+	end
+	if first.kind == "straight" and first.length >= CROSSOVER_STRAIGHT - 1e-6 and groundOver(0, CROSSOVER_STRAIGHT) then
+		add(1, a, 2, a + L)
+		add(2, CROSSOVER_STRAIGHT - a - L + 1, 1, CROSSOVER_STRAIGHT - a + 1)
+	end
+	if last.kind == "straight" and last.length >= CROSSOVER_STRAIGHT - 1e-6
+			and groundOver(total - CROSSOVER_STRAIGHT, total) then
+		add(1, total - CROSSOVER_STRAIGHT + a - 1, 2, total - CROSSOVER_STRAIGHT + a + L - 1)
+		add(2, total - a - L, 1, total - a)
+	end
+	return places
+end
+
+-- The node at s along a track's edges, or nil.
+local function nodeAtS(list : {Edge}, s : number) : integer
+	for __, e in ipairs(list) do
+		if math.abs(e.s0 - s) < 1e-6 then
+			return e.node0
+		elseif math.abs(e.s1 - s) < 1e-6 then
+			return e.node1
+		end
+	end
+	return nil
+end
+
+-- The edge starting at node n in list, or nil.
+local function edgeFrom(list : {Edge}, n : integer) : Edge
+	for __, e in ipairs(list) do
+		if e.node0 == n then
+			return e
+		end
+	end
+	return nil
+end
+
 function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : PgraceRailRouterNetwork.Network
 	local net : PgraceRailRouterNetwork.Network = { nodes = {}, edges = {}, chunks = {} }
 	for li, leg in ipairs(plan.legs) do
+		local total = 0.0
+		for __, piece in ipairs(leg.pieces) do
+			total = total + piece.length
+		end
+		local places : {{number}} = {}
+		if options.crossovers then
+			places = crossoverPlaces(leg, total)
+		end
+		local cuts : {number} = {}
+		for __, p in ipairs(places) do
+			table.insert(cuts, p[2])
+			table.insert(cuts, p[4])
+		end
 		-- Each track's edges, then grouped by stretch: a chunk takes both tracks' edges between two cut points along
 		-- the centre line, so the two tracks of a bridge are in one proposal (one parallel strip, probe P3).
-		local tracks : {{Edge}} = { network.trackEdges(leg, li, 1, options), network.trackEdges(leg, li, -1, options) }
+		local tracks : {{Edge}} = { network.trackEdges(leg, li, 1, options, cuts),
+			network.trackEdges(leg, li, -1, options, cuts) }
 		for __, list in ipairs(tracks) do
 			local previous : integer = nil
 			for __, e in ipairs(list) do
@@ -438,6 +549,70 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				previous = e.node1
 			end
 		end
+		-- The crossovers: S-curves between the two tracks' nodes at their places, along the track's direction there. In
+		-- plan one cubic; cut at the samples inside it (where the tracks are cut too: stretches), each piece at the
+		-- track's height and grade there, so it follows the profile as the tracks do.
+		local crossovers : {Edge} = {}
+		local function gradeAt(list : {Edge}, n : integer) : number
+			local e = edgeFrom(list, n)
+			if e == nil then
+				return 0
+			end
+			return e.t0.z / math.sqrt(e.t0.x ^ 2 + e.t0.y ^ 2)
+		end
+		for __, p in ipairs(places) do
+			local fromTrack, toTrack = tracks[p[1] as integer], tracks[p[3] as integer]
+			local na = nodeAtS(fromTrack, p[2])
+			local nb = nodeAtS(toTrack, p[4])
+			local along = na ~= nil and edgeFrom(fromTrack, na) or nil
+			if na ~= nil and nb ~= nil and along ~= nil then
+				local a, b = net.nodes[na], net.nodes[nb]
+				local d = math.sqrt(along.t0.x ^ 2 + along.t0.y ^ 2)
+				local L = p[4] - p[2]
+				local t : Pt3 = { x = along.t0.x / d * L, y = along.t0.y / d * L, z = 0 }
+				local whole : Hermite = { p0 = { x = a.x, y = a.y, z = 0 }, p1 = { x = b.x, y = b.y, z = 0 }, t0 = t, t1 = t }
+				-- The cut points: the samples strictly inside, with the track's node there for its height and grade.
+				local stops : {{number, integer}} = {}
+				for __, sample in ipairs(leg.samples) do
+					if sample.s > p[2] + MIN_EDGE and sample.s < p[4] - MIN_EDGE then
+						local n = nodeAtS(fromTrack, sample.s)
+						if n ~= nil then
+							table.insert(stops, { sample.s, n })
+						end
+					end
+				end
+				table.insert(stops, { p[4], nb })
+				local rest = whole
+				local fromS, fromNode = p[2], na
+				local fromZ, fromGrade = a.z, gradeAt(fromTrack, na)
+				for k, stop in ipairs(stops) do
+					local piece, after : Hermite, Hermite = rest, nil
+					local last = k == #stops
+					if not last then
+						piece, after = network.splitHermite(rest, (stop[1] - fromS) / (p[4] - fromS))
+					end
+					local toNode : integer
+					local toZ, toGrade : number, number
+					if last then
+						toNode, toZ, toGrade = nb, b.z, gradeAt(toTrack, nb)
+					else
+						toZ, toGrade = net.nodes[stop[2]].z, gradeAt(fromTrack, stop[2])
+						table.insert(net.nodes, { x = piece.p1.x, y = piece.p1.y, z = toZ })
+						toNode = #net.nodes
+					end
+					local l0 = math.sqrt(piece.t0.x ^ 2 + piece.t0.y ^ 2)
+					local l1 = math.sqrt(piece.t1.x ^ 2 + piece.t1.y ^ 2)
+					local p0, p1 = net.nodes[fromNode], net.nodes[toNode]
+					table.insert(crossovers, { node0 = fromNode, node1 = toNode, p0 = { x = p0.x, y = p0.y, z = fromZ },
+						p1 = { x = p1.x, y = p1.y, z = toZ },
+						t0 = { x = piece.t0.x, y = piece.t0.y, z = fromGrade * l0 },
+						t1 = { x = piece.t1.x, y = piece.t1.y, z = toGrade * l1 },
+						kind = "ground", track = 0, leg = li, s0 = fromS, s1 = stop[1] })
+					rest, fromS, fromNode, fromZ, fromGrade = after, stop[1], toNode, toZ, toGrade
+				end
+			end
+		end
+		local added : {boolean} = {}
 		-- Chunk cut points: after chunkLength of centre line, at the next edge end that isn't inside a bridge or tunnel.
 		local left, right = tracks[1], tracks[2]
 		local k, startS = 1, 0.0
@@ -457,6 +632,14 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			for m = k, j do
 				table.insert(net.edges, right[m])
 				length = length + (right[m].s1 - right[m].s0)
+			end
+			-- The crossovers that end by this cut (their nodes are in this chunk or one before).
+			for m, x in ipairs(crossovers) do
+				if not added[m] and math.max(x.s0, x.s1) <= left[j].s1 + 1e-6 then
+					added[m] = true
+					table.insert(net.edges, x)
+					length = length + (x.s1 - x.s0)
+				end
 			end
 			table.insert(net.chunks, { first = first, last = #net.edges, leg = li, length = length })
 			startS = left[j].s1
