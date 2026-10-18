@@ -559,3 +559,20 @@ t.test("network: every track edge is in exactly one chunk, each track's in order
 		end
 	end
 end)
+
+t.test("network: Halt 2+2 signals stay 15 m from their edges' ends", function()
+	local o = halt()
+	o.fan = network.turnoutLength(600)
+	o.blockSpacing = 500
+	local net = network.build(plan({ leg({ straight(0, 0, 2060, 0) }), leg({ straight(0, 0, 2756, 0) }) }), o)
+	local count = 0
+	for __, e in ipairs(net.edges) do
+		local length = e.s1 - e.s0
+		for __, sg in ipairs(e.signals or {}) do
+			count = count + 1
+			t.ok(sg.param * length >= 15 - 1e-6 and (1 - sg.param) * length >= 15 - 1e-6,
+				("signal on track %d at %.1f of %.1f m"):format(e.track, sg.param * length, length))
+		end
+	end
+	t.ok(count > 10, "block signals too")
+end)

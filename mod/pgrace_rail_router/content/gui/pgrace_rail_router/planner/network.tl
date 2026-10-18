@@ -561,13 +561,25 @@ local function addSignal(e : Edge, param : number, forward : boolean)
 	table.insert(e.signals, { param = math.max(0.02, math.min(0.98, param)), forward = forward })
 end
 
--- A signal at s along a track's edges.
+-- How far a signal stays from its edge's ends (metres): track joined later at a node beside a signal collided with it
+-- (Bangor - Imperial Beach: a block signal 3 m before the end of a chunk; "Collision" with the next chunk's edge).
+local SIGNAL_CLEAR = 15.0
+
+-- A signal at s along a track's edges, moved at least SIGNAL_CLEAR from its edge's ends: within the edge if it's long
+-- enough, else onto the nearest edge that is.
 local function signalAt(list : {Edge}, s : number, forward : boolean)
+	local best : Edge = nil
+	local bestS = 0.0
 	for __, e in ipairs(list) do
-		if s >= e.s0 and s < e.s1 then
-			addSignal(e, (s - e.s0) / (e.s1 - e.s0), forward)
-			return
+		if e.s1 - e.s0 >= 2 * SIGNAL_CLEAR then
+			local at = math.max(e.s0 + SIGNAL_CLEAR, math.min(e.s1 - SIGNAL_CLEAR, s))
+			if best == nil or math.abs(at - s) < math.abs(bestS - s) then
+				best, bestS = e, at
+			end
 		end
+	end
+	if best ~= nil then
+		addSignal(best, (bestS - best.s0) / (best.s1 - best.s0), forward)
 	end
 end
 
