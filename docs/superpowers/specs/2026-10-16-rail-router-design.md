@@ -577,11 +577,12 @@ its code, and don't depend on it).
   Signals go into the same proposals as the track: `edgeObjectsToAdd` (edge, param, oneWay, left, model) with the
   edge's `comp.objects` listing them (the mod numbers new edge objects from −400000000). Probe P14 checks the model
   name, which way `left` and the edge's direction make a signal face, and that a dry run takes them.
-- **Turning at the line's ends.** With one-way signals a train can't go back the way it came, and the mod leaves
-  out-and-back lines stranded (its notes say a turning loop is needed). At the first and last stations' line-side
-  ends our crossover pair stays, after the fan and before the home signal: a train reversing in the platform leaves
-  on its arrival track, crosses to the leaving track, and only then meets one-way signals, all facing its way.
-  Intermediate stations get no crossovers (a train keeps its side).
+- **Turning back.** With one-way signals a train can't go back the way it came, and the mod leaves out-and-back
+  lines stranded (its notes say a turning loop is needed). At every station end our crossover pair stays, after the
+  fan and before the home signal: a train reversing in the platform leaves on its arrival track, crosses to the
+  leaving track, and only then meets one-way signals, all facing its way. Every station, not only the line's ends: a
+  line from Bangor turning back at Mercer Island (an intermediate station) had no path when only the ends had them
+  (Rail Doctor: stuck 251 m after Mercer Island), and lines may later be joined into one network.
 - **Not in 4a:** using existing stations (4b), the 4-track main option, left-hand running.
 
 Settled with the player (2026-10-18): blocks every 500 m; Halt 2+2 the default. Termini are Halt 2+2 too, with the

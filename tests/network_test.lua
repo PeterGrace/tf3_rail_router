@@ -493,10 +493,10 @@ t.test("network: Halt 2+2 fans run each local track into the line's track on its
 	for __, e in ipairs(net.edges) do
 		crossovers = crossovers + (e.track == 0 and 1 or 0)
 	end
-	t.eq(crossovers, 4, "one leg: both its ends are the line's ends, a pair each")
+	t.eq(crossovers, 4, "a pair at each end")
 end)
 
-t.test("network: Halt 2+2 crossovers only at the line's ends, after the fans", function()
+t.test("network: Halt 2+2 crossovers at every station end, after the fans, so a train can turn back anywhere", function()
 	local net = network.build(plan({ leg({ straight(0, 0, 3000, 0) }), leg({ straight(0, 0, 3000, 0) }) }), halt())
 	local byLeg = { {}, {} }
 	for __, e in ipairs(net.edges) do
@@ -504,13 +504,11 @@ t.test("network: Halt 2+2 crossovers only at the line's ends, after the fans", f
 			table.insert(byLeg[e.leg], e.s0)
 		end
 	end
-	t.eq(#byLeg[1], 2, "leg 1: a pair at its start only")
-	t.eq(#byLeg[2], 2, "leg 2: a pair at its end only")
-	for __, s in ipairs(byLeg[1]) do
-		t.ok(s >= 125, "after the fan")
-	end
-	for __, s in ipairs(byLeg[2]) do
-		t.ok(s <= 3000 - 125 - 45, "after the fan")
+	for li = 1, 2 do
+		t.eq(#byLeg[li], 4, "leg " .. li .. ": a pair at each end")
+		for __, s in ipairs(byLeg[li]) do
+			t.ok(s >= 125 and s <= 3000 - 125 - 45, "after the fans")
+		end
 	end
 end)
 

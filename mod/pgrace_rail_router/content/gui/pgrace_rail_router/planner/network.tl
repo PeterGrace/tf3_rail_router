@@ -590,12 +590,14 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 		for __, piece in ipairs(leg.pieces) do
 			total = total + piece.length
 		end
-		-- Halt 2+2 (options.fan set): a fan at each end, crossovers only at the line's ends, after the fan.
+		-- Halt 2+2 (options.fan set): a fan at each end, then the crossovers, so a train can turn back at any station:
+		-- reversing in the platform, it leaves on the track it came in on and crosses over before any signal faces it
+		-- the wrong way (with crossovers at the line's ends only, a line turning back at Mercer Island had no path).
 		local halt = options.fan ~= nil
 		local fanZone = halt and network.fanLength(options.fan) or 0
 		local places : {{number}} = {}
 		if options.crossovers then
-			places = crossoverPlaces(leg, total, fanZone, not halt or li == 1, not halt or li == #plan.legs)
+			places = crossoverPlaces(leg, total, fanZone, true, true)
 		end
 		local cuts : {number} = {}
 		-- Each track's switch windows: the main track beside a switch's branch, kept in one edge (SWITCH_CLEAR).
@@ -706,8 +708,8 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				end
 			end
 			-- Starters on the line's leaving tracks, home signals on its arriving ones, facing their trains.
-			local startZone = fanZone + (li == 1 and CROSSOVER_STRAIGHT or 0)
-			local endZone = fanZone + (li == #plan.legs and CROSSOVER_STRAIGHT or 0)
+			local startZone = fanZone + CROSSOVER_STRAIGHT
+			local endZone = fanZone + CROSSOVER_STRAIGHT
 			signalAt(tracks[2], STARTER, true)
 			signalAt(tracks[1], startZone + HOME_BEYOND, false)
 			signalAt(tracks[1], total - STARTER, false)

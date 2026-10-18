@@ -63,7 +63,7 @@ global record PgraceRailRouterNetwork
 		-- that isn't straight ground for 100 m gets none.
 		crossovers : boolean
 		-- Halt 2+2 stations: the turnout length L of their fans (network.turnoutLength), nil for 2-track stations. With
-		-- it, each leg gets a fan at both ends, crossovers only at the line's ends (after the fan), and one-way signals:
+		-- it, each leg gets a fan at both ends, crossovers after each fan (a train can turn back at any station), and one-way signals:
 		-- starters, home signals, and (blockSpacing) block signals along the line, every so many metres.
 		fan : number
 		blockSpacing : number
