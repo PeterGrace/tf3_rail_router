@@ -1309,6 +1309,44 @@ local function p15Junction(settings : Settings)
 				table.concat(hits, ", ")))
 		end
 	end
+	-- The crossing track as one curve over track 1, with no node there: does the engine make the crossing itself
+	-- (cleanupStreetGraph), or only collide?
+	do
+		local wholeNet : PgraceRailRouterNetwork.Network = { nodes = { nodes[4], nodes[6], nodes[7] }, edges = {
+			{ node0 = 1, node1 = 2, p0 = whole.p0, p1 = whole.p1, t0 = whole.t0, t1 = whole.t1, kind = "ground", track = 0,
+				leg = 1, s0 = 0, s1 = 0 },
+			{ node0 = 2, node1 = 3, p0 = nodes[6], p1 = nodes[7], t0 = dir(nodes[7].x - nodes[6].x),
+				t1 = dir(nodes[7].x - nodes[6].x), kind = "ground", track = 0, leg = 1, s0 = 0, s1 = 0 },
+		}, chunks = {} }
+		for __, cleanup in ipairs({ false, true }) do
+			local pr, whyNot = builder.chunkProposal(wholeNet, 1, 2, settings)
+			if pr == nil then
+				log("P15", "whole crossing curve: no proposal: " .. tostring(whyNot))
+			else
+				local okP, costP, messagesP, ___, dataP = builder.dryRun(pr, builder.newContext(cleanup))
+				local hits : {string} = {}
+				for __, h in ipairs(builder.collisions(dataP)) do
+					table.insert(hits, ("%s %d"):format(h.what, h.entity))
+				end
+				log("P15", ("whole crossing curve over track 1, cleanup %s: %s, %d %s"):format(tostring(cleanup),
+					okP and "clean" or table.concat(messagesP, "; "), costP, table.concat(hits, ", ")))
+				-- PROBE: the proposal the engine made of it, when it cleaned up (new nodes where it crosses?).
+				if cleanup then
+					pcall(function() : boolean
+						local pd = dataP as any as {string : any}
+						local pp = (pd.proposal as {string : any}).proposal as {string : any}
+						log("P15", ("cleaned-up proposal: %d added segments, %d added nodes, %d removed segments"):format(
+							#(pp.addedSegments as {any}), #(pp.addedNodes as {any}), #(pp.removedSegments as {any})))
+						for __, n in ipairs(pp.addedNodes as {{string : any}}) do
+							local comp = n.comp as {string : any}
+							log("P15", ("  added node %s at %s"):format(tostring(n.entity), rel(p3of(comp.position as Vec3f))))
+						end
+						return true
+					end)
+				end
+			end
+		end
+	end
 	local proposal, why = builder.chunkProposal(net, 1, #edges, settings)
 	if proposal == nil then
 		log("P15", "no junction proposal: " .. tostring(why))
