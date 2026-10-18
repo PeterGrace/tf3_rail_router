@@ -950,6 +950,15 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	end
 
 	react.onStep(function()
+		-- A build's callbacks change it between frames (a failure among them): show what it is now.
+		local current = buildRef:get()
+		if current ~= nil then
+			local done = build.progress(current)
+			local view = current.phase .. ":" .. tostring(done)
+			if buildViewState:old() ~= view then
+				buildViewState:set(view)
+			end
+		end
 		if joinQueuedRef:get() then
 			return
 		end

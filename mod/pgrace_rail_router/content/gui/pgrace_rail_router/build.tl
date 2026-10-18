@@ -74,6 +74,31 @@ local function send(b : Build, proposal : any, x : number, y : number,
 					end
 					return true
 				end)
+				pcall(function() : boolean
+					local es = res.resultProposalData.errorState
+					log(("refused: critical %s, messages %d, warnings %s, infos %s"):format(tostring(es.critical),
+						#(es.messages or {}), table.concat(es.warnings or {}, "; "), table.concat(es.infos or {}, "; ")))
+					local hits : {string} = {}
+					for __, c in ipairs(builder.collisions(res.resultProposalData)) do
+						table.insert(hits, ("%s %d%s"):format(c.what, c.entity,
+							c.components ~= nil and (" [" .. c.components .. "]") or ""))
+					end
+					log("refused: collisions " .. table.concat(hits, ", "))
+					return true
+				end)
+				-- PROBE (remove before release): the water level, from any entity with a TERRAIN or WATER_MESH component.
+				pcall(function() : boolean
+					for __, kind in ipairs({ "TERRAIN", "WATER_MESH" }) do
+						local ct = (api.type.ComponentType as {string : Engine.ComponentType})[kind]
+						if ct ~= nil then
+							api.engine.forEachEntityWithComponent(function(e : integer)
+								local comp = api.engine.getComponent(e, ct) as {string : any}
+								log(("refused: %s entity %d, waterLevel %s"):format(kind, e, tostring(comp ~= nil and comp.waterLevel)))
+							end, ct)
+						end
+					end
+					return true
+				end)
 				if #messages == 0 then
 					messages = { "the game refused it" }
 				end
@@ -206,10 +231,17 @@ local function sendChunk(b : Build, net : Network, first : integer, last : integ
 		fail(b, { tostring(why) }, x, y)
 		return
 	end
-	local ok, cost, messages = builder.dryRun(proposal)
+	local ok, cost, messages, __, data = builder.dryRun(proposal)
 	if not ok then
 		fail(b, messages, x, y)
 		return
+	end
+	local hits : {string} = {}
+	for __, c in ipairs(builder.collisions(data)) do
+		table.insert(hits, ("%s %d%s"):format(c.what, c.entity, c.components ~= nil and (" [" .. c.components .. "]") or ""))
+	end
+	if #hits > 0 then
+		log(("chunk %d: dry run clean, but lists %s"):format(b.chunk, table.concat(hits, ", ")))
 	end
 	send(b, proposal, x, y, function(res : WorldBuildProposalCommandData)
 		local matched = recordNodes(net, res)

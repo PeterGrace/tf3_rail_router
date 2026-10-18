@@ -294,6 +294,16 @@ function builder.collisions(data : ProposalData) : {Collision}
 				seen[e] = true
 				local x, y = whereIs(e)
 				local c : Collision = { entity = e, what = whatIs(e), x = x, y = y }
+				if c.what == "other" then
+					local names : {string} = {}
+					for name, ct in pairs(api.type.ComponentType as {string : any}) do
+						if type(ct) == "number" and has(e, ct as Engine.ComponentType) then
+							table.insert(names, name)
+						end
+					end
+					table.sort(names)
+					c.components = table.concat(names, ",")
+				end
 				pcall(function() : boolean
 					local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
 					if edge ~= nil then
@@ -443,7 +453,8 @@ function builder.step(check : Check) : boolean
 	end
 	local hits : {string} = {}
 	for __, c in ipairs(collisions) do
-		table.insert(hits, ("%s %d at (%.0f %.0f)"):format(c.what, c.entity, c.x or 0, c.y or 0))
+		table.insert(hits, ("%s %d at (%.0f %.0f)%s"):format(c.what, c.entity, c.x or 0, c.y or 0,
+			c.components ~= nil and (" [" .. c.components .. "]") or ""))
 	end
 	debugPrint(LOG_PREFIX .. ("dry run %s %d%s: %s, cost %d, %d us%s%s"):format(item.kind, item.index, extra,
 		ok and (crossings > 0 and ("clean but for %d level crossings"):format(crossings) or "clean") or "errors", cost,

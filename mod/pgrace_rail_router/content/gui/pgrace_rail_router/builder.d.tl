@@ -17,6 +17,8 @@ global record PgraceRailRouterBuilder
 		-- Where it is (its bounding box's centre, or an edge's middle); nil where it can't be read.
 		x : number
 		y : number
+		-- For "other": the names of the component types it has (to find out what it is).
+		components : string
 		-- An edge's end nodes (streets and track); nil for anything else.
 		node0 : integer
 		node1 : integer
