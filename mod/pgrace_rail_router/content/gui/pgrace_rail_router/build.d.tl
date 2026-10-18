@@ -63,8 +63,6 @@ global record PgraceRailRouterBuild
 		roadJunction : integer
 		-- A street split for the current station's road: the road to its new node comes next.
 		roadTarget : RoadTarget
-		-- PROBE (remove before release): the junction just repaired, its lane connections logged on the next step.
-		roadRepaired : integer
 	end
 
 	start : function(check : PgraceRailRouterBuilder.Check) : Build

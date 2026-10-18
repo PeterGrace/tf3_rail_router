@@ -450,21 +450,6 @@ local ROAD_SQUARE = -0.3
 -- A street piece is split for a T no closer than this to its ends (metres; the joint rule for level crossings).
 local SPLIT_END = 12.0
 
--- PROBE (remove before release): a node's lane connections (BASE_NODE_CONFIG), as Bus Loops logged them.
-local function laneConnections(node : integer) : string
-	local ok, n = pcall(function() : integer
-		local c = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG) as {string : any}
-		if c == nil then
-			return -1
-		end
-		return #(c.laneConnections as {any})
-	end)
-	if not ok then
-		return "unreadable"
-	end
-	return n as integer < 0 and "none" or tostring(n)
-end
-
 local function unit(x : number, y : number) : number, number
 	local l = math.sqrt(x * x + y * y)
 	if l < 1e-9 then
@@ -764,8 +749,7 @@ function build.step(b : Build) : boolean
 	if b.phase == "track" and b.chunk > #b.check.net.chunks then
 		b.phase = "roads"
 	end
-	if b.phase == "roads" and b.road > #b.check.plan.stations and #b.roadRepair == 0 and b.roadJunction == nil
-			and b.roadRepaired == nil then
+	if b.phase == "roads" and b.road > #b.check.plan.stations and #b.roadRepair == 0 and b.roadJunction == nil then
 		b.phase = "done"
 		log(("done: %d level crossings, roads to %d of %d stations, charged %d"):format(b.levelCrossings, b.roads,
 			#b.check.plan.stations, b.charged))
@@ -780,28 +764,9 @@ function build.step(b : Build) : boolean
 			-- Every piece at the junction, the new road among them, sent again unedited for its lanes.
 			for __, sg in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(b.roadJunction)) do
 				table.insert(b.roadRepair, sg as integer)
-				local edge = api.engine.getComponent(sg, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-				if edge ~= nil then
-					log(("road junction %d: piece %d, nodes %d (%s lane connections) / %d (%s)"):format(b.roadJunction,
-						sg as integer, edge.node0 as integer, laneConnections(edge.node0 as integer), edge.node1 as integer,
-						laneConnections(edge.node1 as integer)))
-				end
 			end
 			log(("road junction %d: %d pieces to repair"):format(b.roadJunction, #b.roadRepair))
-			b.roadRepaired = b.roadJunction
 			b.roadJunction = nil
-		elseif #b.roadRepair == 0 and b.roadRepaired ~= nil then
-			log(("road junction %d after the repair: %s lane connections"):format(b.roadRepaired,
-				laneConnections(b.roadRepaired)))
-			for __, sg in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(b.roadRepaired)) do
-				local edge = api.engine.getComponent(sg, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-				if edge ~= nil then
-					log(("road junction %d after: piece %d, nodes %d (%s) / %d (%s)"):format(b.roadRepaired, sg as integer,
-						edge.node0 as integer, laneConnections(edge.node0 as integer), edge.node1 as integer,
-						laneConnections(edge.node1 as integer)))
-				end
-			end
-			b.roadRepaired = nil
 		elseif #b.roadRepair > 0 then
 			stepRepair(b, b.roadRepair)
 		else

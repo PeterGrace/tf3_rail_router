@@ -526,7 +526,19 @@ building (on the left of its direction) faces its town; turning it round keeps i
 5. Track type and electrification come from the settings. No signals, lines or vehicles.
 6. **Track 1 and 2 edges carry `distance` 5** (the spacing of the pair) and the player as owner, as track the player
    lays does: without them the overhead wire of both tracks hung over one of them (P12). Crossovers carry 0.
-7. **Closing the window** pauses the build; the plan, its check and the build are kept (module-level, like the
+7. **A road to each station** (after the track; never fails the build, a station without one is listed). The game
+   links a main building's sidewalks to a road that dead-ends in front of it: a road the player built, which it
+   linked, ended 30.5 m out from the station's frame on the building's side, level with the platforms' middle (P13;
+   the building's slot is at x = −10, `sl.layout` gives `entrance` and `outward`). The road leaves there outward and
+   meets the town's streets without a kink: a dead end continued straight on, a T at a node along a street, or a T
+   partway along a street piece (at least 12 m from its ends), split there first as for a level crossing (dry-run
+   beforehand as a road to a new node on the street, which may hit that street only). Up to 16 ways within 300 m,
+   nearest first, none behind the station. Then every piece at the junction is sent again unedited for its lanes,
+   on the step after the road is built (in its callback the node listed only some of its pieces). A corner joint,
+   or a road arriving at an angle, got a no-entry sign at the junction; arriving at an angle at a dead end also
+   overlapped the street (Collision). Built in-game: Mercer Island → Imperial Beach via Antelope and Aloha, roads to
+   all 4 stations (each a dead end continued; the split T is untested in-game).
+8. **Closing the window** pauses the build; the plan, its check and the build are kept (module-level, like the
    settings), so opening it again carries on by itself. Planning again wouldn't: the new plan avoids the track
    already built and goes elsewhere. A restart or loading a save loses them; the check and build still skip a
    station or chunk already there at the same place (`builder.builtStation`, `builtChunk`).
