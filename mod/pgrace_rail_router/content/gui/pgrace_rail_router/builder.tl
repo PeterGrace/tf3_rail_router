@@ -22,13 +22,43 @@ local function logOnce(key : string, message : string)
 	end
 end
 
+-- How far the track may be above or below the street where it crosses it, for a level crossing (metres).
+local LEVEL = 1.5
+
+function builder.crossesOnLevel(net : Network, first : integer, last : integer, street : integer) : boolean
+	local e = api.engine.getComponent(street, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+	if e == nil then
+		return false
+	end
+	local function pt(v : Vec3f) : Pt3
+		return { x = v.x, y = v.y, z = v.z }
+	end
+	local h : PgraceRailRouterNetwork.Hermite = { p0 = pt(e.position0), p1 = pt(e.position1), t0 = pt(e.tangent0),
+		t1 = pt(e.tangent1) }
+	for i = first, last do
+		local t = net.edges[i]
+		if t.kind == "ground" then
+			local th : PgraceRailRouterNetwork.Hermite = { p0 = t.p0, p1 = t.p1, t0 = t.t0, t1 = t.t1 }
+			for __, c in ipairs(network.crossings(th, h)) do
+				if math.abs(network.hermiteAt(th, c.s).z - c.p.z) <= LEVEL then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
 local function v3(p : Pt3) : Vec3f
 	return api.type.Vec3f.new(p.x, p.y, p.z)
 end
 
-local function newContext() : Context
+function builder.newContext(cleanup ?: boolean) : Context
 	local context = api.type.Context.new()
 	context.player = api.engine.util.getPlayer()
+	if cleanup then
+		context.cleanupStreetGraph = true
+	end
 	return context
 end
 
@@ -78,6 +108,10 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 	local nodeIds : {integer : integer} = {}
 	local nodes : {Proposal.NodeAndEntity} = {}
 	local function node(index : integer) : integer
+		local p = net.nodes[index]
+		if p.entity ~= nil then
+			return p.entity
+		end
 		if nodeIds[index] == nil then
 			local n = api.type.NodeAndEntity.new()
 			n.entity = -(edgeCount + #nodes + 1)
@@ -110,6 +144,24 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 			seg.comp.typeIndex = settings.normalTypeIndex
 		end
 		seg.comp.laneConfigs = template.laneConfigs
+		-- The distance between parallel tracks, as the game's own track carries it (probe P1: 5 on a double track the
+		-- player built; left at 0, the game took the two tracks for one in their parallel strip, and drew overhead wire
+		-- over one of them only).
+		-- A crossover (track 0) isn't one of a pair: left at 0.
+		if e.track ~= 0 then
+			seg.comp.distance = 2 * settings.network.offset
+		end
+		-- Owned by the player, as the game's own track is (P1: ours had no owner). The constructor isn't in the
+		-- tealdefs: used only if it's there.
+		local PlayerOwned = (api.type as any as {string : {string : function() : Engine.Component.PlayerOwned}})
+			["PlayerOwned"]
+		if PlayerOwned ~= nil and PlayerOwned.new ~= nil then
+			local owned = PlayerOwned.new()
+			owned.player = api.engine.util.getPlayer()
+			seg.playerOwned = owned
+		else
+			logOnce("playerOwned", "api.type.PlayerOwned isn't there: track built without an owner")
+		end
 		seg.comp.roadTemplate = settings.track
 		seg.comp.roadStyle = template.streetStyle
 		seg.comp.roadType = api.type["enum"].RoadType.TRACK
@@ -152,7 +204,12 @@ function builder.stationProposal(plan : Plan, index : integer, settings : Settin
 		return nil, "station not found: " .. STATION_FILE
 	end
 	local station = plan.stations[index]
-	local layout = sl.layout(station.site.centre, station.site.dir, plan.platformLength, settings.era)
+	-- Turned so its main building faces the town (the track ends are the same either way).
+	local dir = station.site.dir
+	if station.town ~= nil and station.town.pos ~= nil then
+		dir = sl.facing(station.site.centre, dir, station.town.pos)
+	end
+	local layout = sl.layout(station.site.centre, dir, plan.platformLength, settings.era)
 	if not (finite(layout.angle) and finite(layout.origin.x) and finite(layout.origin.y) and finite(station.z)) then
 		return nil, "the station's place isn't a number"
 	end
@@ -182,7 +239,8 @@ function builder.stationProposal(plan : Plan, index : integer, settings : Settin
 	return proposal
 end
 
-function builder.levelCrossings(messages : {string}, collisions : {Collision}) : integer
+function builder.levelCrossings(messages : {string}, collisions : {Collision},
+		onLevel ?: function(street : integer) : boolean) : integer
 	for __, m in ipairs(messages) do
 		if m:lower() ~= "collision" then
 			return 0
@@ -203,6 +261,21 @@ function builder.levelCrossings(messages : {string}, collisions : {Collision}) :
 			local ra, rb = root(c.node0 or -i), root(c.node1 or -i)
 			if ra ~= rb then
 				parent[rb] = ra
+			end
+		end
+	end
+	-- Each road hit must be crossed on the level by some piece of it: one the track only runs into is no crossing.
+	if onLevel ~= nil then
+		local level : {integer : boolean} = {}
+		for i, c in ipairs(collisions) do
+			if c.what == "street" then
+				local r = root(c.node0 or -i)
+				level[r] = level[r] or onLevel(c.entity)
+			end
+		end
+		for __, crossed in pairs(level) do
+			if not crossed then
+				return 0
 			end
 		end
 	end
@@ -287,6 +360,16 @@ function builder.collisions(data : ProposalData) : {Collision}
 				seen[e] = true
 				local x, y = whereIs(e)
 				local c : Collision = { entity = e, what = whatIs(e), x = x, y = y }
+				if c.what == "other" then
+					local names : {string} = {}
+					for name, ct in pairs(api.type.ComponentType as {string : any}) do
+						if type(ct) == "number" and has(e, ct as Engine.ComponentType) then
+							table.insert(names, name)
+						end
+					end
+					table.sort(names)
+					c.components = table.concat(names, ",")
+				end
 				pcall(function() : boolean
 					local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
 					if edge ~= nil then
@@ -302,11 +385,16 @@ function builder.collisions(data : ProposalData) : {Collision}
 	return result
 end
 
-function builder.dryRun(proposal : SimpleProposal) : boolean, integer, {string}, integer, ProposalData
+-- Notes (errorState.infos) a dry run gives that the build is then refused for: "Place on Land" came with ground track
+-- over a lake's edge (Bangor - Imperial Beach), clean otherwise.
+local REFUSING_INFOS : {string : boolean} = { ["Place on Land"] = true }
+
+function builder.dryRun(proposal : SimpleProposal, context ?: Context) : boolean, integer, {string}, integer,
+		ProposalData
 	local clock = api.type.Clock.new()
 	-- makeProposalData takes a SimpleProposal, despite the tealdef (AGENTS.md).
 	local ok, data = pcall(function() : ProposalData
-		return api.engine.util.proposal.makeProposalData(proposal as any as Proposal, newContext())
+		return api.engine.util.proposal.makeProposalData(proposal as any as Proposal, context or builder.newContext())
 	end)
 	local us = math.floor(clock:getTime())
 	if not ok or data == nil then
@@ -323,6 +411,15 @@ function builder.dryRun(proposal : SimpleProposal) : boolean, integer, {string},
 	if not read then
 		table.insert(messages, "couldn't read the dry run's errors")
 	end
+	-- Notes the game only refuses on at build time (a clean dry run that the build then refused: track over water).
+	pcall(function() : boolean
+		for __, m in ipairs(pd.errorState.infos or {}) do
+			if REFUSING_INFOS[tostring(m)] then
+				table.insert(messages, tostring(m))
+			end
+		end
+		return true
+	end)
 	local cost = 0
 	pcall(function() : boolean
 		cost = math.floor(tonumber(pd.costs) or 0)
@@ -358,6 +455,188 @@ function builder.pricePerMetre(settings : Settings, at : Pt3, dir : PgraceRailRo
 	return cost / PRICE_LENGTH
 end
 
+function builder.diagnose(net : Network, first : integer, last : integer, settings : Settings)
+	pcall(function() : boolean
+		local function fmt(p : Pt3) : string
+			return ("(%.2f %.2f %.2f%s)"):format(p.x, p.y, p.z, p.entity ~= nil and (" #" .. p.entity) or "")
+		end
+		-- Edges at each node of the chunk.
+		local at : {integer : {integer}} = {}
+		for i = first, last do
+			for __, n in ipairs({ net.edges[i].node0, net.edges[i].node1 }) do
+				at[n] = at[n] or {}
+				table.insert(at[n], i)
+			end
+		end
+		local logged = 0
+		for i = first, last do
+			local e = net.edges[i]
+			local proposal = builder.chunkProposal(net, i, i, settings)
+			if proposal ~= nil then
+				local ok, __, messages = builder.dryRun(proposal)
+				if not ok and logged < 12 then
+					logged = logged + 1
+					debugPrint(LOG_PREFIX .. ("diagnose edge %d (%s, track %d, s %.1f-%.1f): %s; %s -> %s, t0 (%.2f %.2f %.3f) t1 (%.2f %.2f %.3f)")
+						:format(i, e.kind, e.track, e.s0, e.s1, table.concat(messages, "; "), fmt(e.p0), fmt(e.p1), e.t0.x, e.t0.y,
+						e.t0.z, e.t1.x, e.t1.y, e.t1.z))
+				end
+			end
+		end
+		-- The switches (nodes with three edges): those three alone.
+		local switches = 0
+		for n, list in pairs(at) do
+			if #list >= 3 and switches < 6 then
+				switches = switches + 1
+				local sub : Network = { nodes = net.nodes, edges = {}, chunks = {} }
+				for __, i in ipairs(list) do
+					table.insert(sub.edges, net.edges[i])
+				end
+				local proposal = builder.chunkProposal(sub, 1, #sub.edges, settings)
+				if proposal ~= nil then
+					local ok, __, messages = builder.dryRun(proposal)
+					local parts : {string} = {}
+					for __, i in ipairs(list) do
+						local e = net.edges[i]
+						table.insert(parts, ("%d (track %d, s %.1f-%.1f, t0 %.2f %.2f, t1 %.2f %.2f)"):format(i, e.track, e.s0, e.s1,
+							e.t0.x, e.t0.y, e.t1.x, e.t1.y))
+					end
+					debugPrint(LOG_PREFIX .. ("diagnose switch at node %d %s: %s; edges %s"):format(n, fmt(net.nodes[n]),
+						ok and "clean" or table.concat(messages, "; "), table.concat(parts, ", ")))
+				end
+			end
+		end
+		debugPrint(LOG_PREFIX .. ("diagnose: %d of %d edges refused alone (at most 12 logged), %d switches tried")
+			:format(logged, last - first + 1, switches))
+		return true
+	end)
+end
+
+local STATION_FILE_NAME = "modular_station.con"
+-- A station's track end matches a network node this close, and a chunk's node an existing track node this close (m).
+local END_MATCH = 1.0
+local NODE_MATCH = 0.5
+
+local function nodeAt(n : integer) : Pt3
+	local node = api.engine.getComponent(n, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+	if node == nil then
+		return nil
+	end
+	return { x = node.position.x, y = node.position.y, z = node.position.z, entity = n }
+end
+
+-- The modular station nearest (x, y) within 200 m, or nil.
+local function stationNear(x : number, y : number) : integer
+	local best : integer = nil
+	local bestD = math.huge
+	for __, e in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), 200,
+			api.type.ComponentType.CONSTRUCTION)) do
+		pcall(function() : boolean
+			local con = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+			if con ~= nil and tostring(con.fileName):find(STATION_FILE_NAME, 1, true) ~= nil then
+				local bv = api.engine.getComponent(e, api.type.ComponentType.BOUNDING_VOLUME) as Engine.Component.BoundingVolume
+				local d = math.sqrt(((bv.bbox.min.x + bv.bbox.max.x) / 2 - x) ^ 2 + ((bv.bbox.min.y + bv.bbox.max.y) / 2 - y) ^ 2)
+				if d < bestD then
+					best, bestD = e, d
+				end
+			end
+			return true
+		end)
+	end
+	return best
+end
+
+-- A station's track ends: the nodes of its frozen edges that aren't among its frozen nodes (probe P10: those are the
+-- ones inside it; the ends, free or joined since, aren't).
+local function trackEnds(station : integer) : {Pt3}
+	local con = api.engine.getComponent(station, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+	local frozen : {integer : boolean} = {}
+	for __, n in ipairs(con.frozenNodes or {}) do
+		frozen[n as integer] = true
+	end
+	local ends : {Pt3} = {}
+	local seen : {integer : boolean} = {}
+	for __, e in ipairs(con.frozenEdges or {}) do
+		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if edge ~= nil and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) == nil then
+			for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
+				if not seen[node] and not frozen[node] then
+					seen[node] = true
+					local p = nodeAt(node)
+					if p ~= nil then
+						table.insert(ends, p)
+					end
+				end
+			end
+		end
+	end
+	return ends
+end
+
+local function dist2(a : Pt3, b : Pt3) : number
+	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+end
+
+function builder.builtStation(plan : Plan, i : integer, net : Network) : boolean
+	local c = plan.stations[i].site.centre
+	local con = stationNear(c.x, c.y)
+	if con == nil then
+		return false
+	end
+	local matches : {{Pt3, integer}} = {}
+	for __, e in ipairs(trackEnds(con)) do
+		for __, n in ipairs(net.nodes) do
+			if dist2(n, e) <= END_MATCH and (n.entity == nil or n.entity == e.entity) then
+				table.insert(matches, { n, e.entity })
+			end
+		end
+	end
+	if #matches < 2 then
+		return false
+	end
+	for __, m in ipairs(matches) do
+		m[1].entity = m[2]
+	end
+	debugPrint(LOG_PREFIX .. ("station %d: construction %d, %d track ends joined"):format(i, con, #matches))
+	return true
+end
+
+-- An existing track node within NODE_MATCH of p (and 1.5 m in height), or nil.
+local function trackNodeAt(p : Pt3) : integer
+	local best : integer = nil
+	local bestD = NODE_MATCH
+	for __, n in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(p.x, p.y), 2,
+			api.type.ComponentType.BASE_NODE)) do
+		local q = nodeAt(n as integer)
+		if q ~= nil and math.abs(q.z - p.z) <= 1.5 and dist2(p, q) <= bestD
+				and #api.engine.system.streetSystem.getNodeTrackSegments(n) > 0 then
+			best, bestD = n as integer, dist2(p, q)
+		end
+	end
+	return best
+end
+
+function builder.builtChunk(net : Network, c : integer) : boolean
+	local chunk = net.chunks[c]
+	local found : {Pt3 : integer} = {}
+	for i = chunk.first, chunk.last do
+		local e = net.edges[i]
+		for __, k in ipairs({ e.node0, e.node1 }) do
+			local n = net.nodes[k]
+			if n.entity == nil and found[n] == nil then
+				local entity = trackNodeAt(n)
+				if entity == nil then
+					return false
+				end
+				found[n] = entity
+			end
+		end
+	end
+	for n, entity in pairs(found) do
+		n.entity = entity
+	end
+	return true
+end
+
 function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) : Check
 	local clock = api.type.Clock.new()
 	local net = network.build(plan, settings.network)
@@ -373,7 +652,7 @@ function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) 
 		settings.bridge ~= nil and settings.bridge.name or "none", settings.tunnel ~= nil and settings.tunnel.name or "none",
 		settings.year or 0, settingsUs or 0, math.floor(clock:getTime())))
 	return { plan = plan, settings = settings, net = net, items = items, next = 1, outcomes = {}, total = 0,
-		failures = 0, crossings = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
+		failures = 0, crossings = 0, built = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
 end
 
 function builder.step(check : Check) : boolean
@@ -384,6 +663,24 @@ function builder.step(check : Check) : boolean
 	check.next = check.next + 1
 	check.done = check.next > #check.items
 	local x, y = 0.0, 0.0
+	-- Already built (a build stopped earlier, then the game restarted): not dry-run; Build skips it.
+	local builtOk, isBuilt = pcall(function() : boolean
+		if item.kind == "station" then
+			return builder.builtStation(check.plan, item.index, check.net)
+		end
+		return builder.builtChunk(check.net, item.index)
+	end)
+	if builtOk and isBuilt then
+		table.insert(check.outcomes, { item = item, ok = true, cost = 0, messages = {}, x = x, y = y, us = 0,
+			collisions = {}, crossings = 0, built = true })
+		check.built = check.built + 1
+		debugPrint(LOG_PREFIX .. ("dry run %s %d: already built"):format(item.kind, item.index))
+		if check.done then
+			debugPrint(LOG_PREFIX .. ("check done: %d items, %d already built, %d with errors"):format(#check.items,
+				check.built, check.failures))
+		end
+		return check.done
+	end
 	local made, proposal, why = pcall(function() : SimpleProposal, string
 		if item.kind == "station" then
 			local c = check.plan.stations[item.index].site.centre
@@ -407,7 +704,11 @@ function builder.step(check : Check) : boolean
 		ok, cost, messages, us, data = builder.dryRun(proposal as SimpleProposal)
 		collisions = builder.collisions(data)
 		if not ok and item.kind == "chunk" and check.settings.levelCrossings then
-			crossings = builder.levelCrossings(messages, collisions)
+			local chunk = check.net.chunks[item.index]
+			crossings = builder.levelCrossings(messages, collisions, function(street : integer) : boolean
+				local okLevel, level = pcall(builder.crossesOnLevel, check.net, chunk.first, chunk.last, street)
+				return okLevel and level as boolean
+			end)
 			local others = 0
 			for __, c in ipairs(collisions) do
 				if c.what ~= "street" and c.what ~= "node" then
@@ -435,7 +736,12 @@ function builder.step(check : Check) : boolean
 	end
 	local hits : {string} = {}
 	for __, c in ipairs(collisions) do
-		table.insert(hits, ("%s %d at (%.0f %.0f)"):format(c.what, c.entity, c.x or 0, c.y or 0))
+		table.insert(hits, ("%s %d at (%.0f %.0f)%s"):format(c.what, c.entity, c.x or 0, c.y or 0,
+			c.components ~= nil and (" [" .. c.components .. "]") or ""))
+	end
+	if not ok and item.kind == "chunk" and #messages > 0 and messages[1] == "Construction Not Possible" then
+		local chunk = check.net.chunks[item.index]
+		builder.diagnose(check.net, chunk.first, chunk.last, check.settings)
 	end
 	debugPrint(LOG_PREFIX .. ("dry run %s %d%s: %s, cost %d, %d us%s%s"):format(item.kind, item.index, extra,
 		ok and (crossings > 0 and ("clean but for %d level crossings"):format(crossings) or "clean") or "errors", cost,

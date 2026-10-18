@@ -19,6 +19,13 @@ global record PgraceRailRouterGrid
 		-- Road junctions (nodes joining three or more pieces of street or track) and the cells within JUNCTION_BUFFER
 		-- of them (area.tl): a level crossing can't go through one, so the track bridges them as it bridges track.
 		junction : {boolean}
+		-- Road joints (street nodes joining exactly two pieces), by the cell they're in: a level crossing within
+		-- JOINT_CLEARANCE of one is refused (probe P9c: 9.5 m was fine, the build failed at 1.8 and 7 m), so the line
+		-- bridges the road there (route.tl).
+		joints : {integer : {PgraceRailRouterGeo.Pt}}
+		-- Shore cells (water and land both in or next to them) sampled finer: SHORE_SUB × SHORE_SUB points per cell,
+		-- row by row from the low corner, true where on water (survey.tl; maplib from the map). waterAt uses them.
+		shore : {integer : {boolean}}
 		-- What its searches keep their states in (see Store); made by the first search. Internal.
 		store : Store
 	end
@@ -159,8 +166,23 @@ global record PgraceRailRouterGrid
 	centre : function(g : Grid, ix : integer, iy : integer) : PgraceRailRouterGeo.Pt
 	-- Ground height at p, interpolated between cell centres (clamped at the edges).
 	heightAt : function(g : Grid, p : PgraceRailRouterGeo.Pt) : number
+	-- How close to a road joint a level crossing may come (metres).
+	JOINT_CLEARANCE : number
+	addJoint : function(g : Grid, p : PgraceRailRouterGeo.Pt)
+	-- Whether a road joint lies within r of p (r at most a cell).
+	jointNear : function(g : Grid, p : PgraceRailRouterGeo.Pt, r : number) : boolean
+	-- Points per cell side in a shore cell's finer sampling.
+	SHORE_SUB : integer
+	-- The cells whose water flag differs from one of their 8 neighbours' (in index order).
+	shoreCells : function(g : Grid) : {integer}
+	-- Shore sample k (1 .. SHORE_SUB²) of cell i: row by row from the cell's low corner.
+	shorePoint : function(g : Grid, i : integer, k : integer) : PgraceRailRouterGeo.Pt
 	-- Whether the cell nearest to p is water.
 	waterAt : function(g : Grid, p : PgraceRailRouterGeo.Pt) : boolean
+	-- Whether p is on or by water: any of the four finer sample points round it (a shore cell's own, else its cell's
+	-- flag) is water. The line's track there is bridged ("Place on Land": the game refuses ground track over water,
+	-- and a cell's one flag misses a shore across it).
+	wetAt : function(g : Grid, p : PgraceRailRouterGeo.Pt) : boolean
 
 	-- Calls fn with the index of every cell the segment a–b passes through, in order from a to b, stopping (and
 	-- returning false) as soon as fn returns false; true if it never did. Exact, and conservative: a cell the

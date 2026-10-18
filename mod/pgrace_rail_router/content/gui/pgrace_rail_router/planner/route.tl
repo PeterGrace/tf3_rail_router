@@ -752,14 +752,16 @@ local function startHeights(input : Input, a : Station, b : Station, fitted : Pg
 	for i, sample in ipairs(samples) do
 		s[i] = sample.s
 		ground[i] = grid.heightAt(g, sample.p)
-		water[i] = grid.waterAt(g, sample.p)
+		water[i] = grid.wetAt(g, sample.p)
 		local ix, iy = grid.cellOf(g, sample.p)
 		local cell = grid.index(g, ix, iy)
 		if g.blocked[cell] then
 			blockedSamples = blockedSamples + 1
 		end
-		-- A level crossing can't go through a road junction: bridge it as track is.
-		crossing[i] = g.track[cell] or g.junction[cell] or (w.bridgeRoads and g.road[cell]) or false
+		-- A level crossing can't go through a road junction, nor come within JOINT_CLEARANCE of a road joint: bridge
+		-- those as track is. A crossing lies within half a sample step of a sample on the road.
+		crossing[i] = g.track[cell] or g.junction[cell] or (w.bridgeRoads and g.road[cell])
+			or (g.road[cell] and grid.jointNear(g, sample.p, grid.JOINT_CLEARANCE + SAMPLE_STEP / 2)) or false
 	end
 	local fit = profile.start(s, ground, water, { maxGrade = w.maxGrade, bridgeAbove = w.bridgeAbove,
 		tunnelBelow = w.tunnelBelow, bridgeCostFactor = w.bridgeCostFactor, tunnelCostFactor = w.tunnelCostFactor,

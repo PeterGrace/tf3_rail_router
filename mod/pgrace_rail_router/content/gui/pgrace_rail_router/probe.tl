@@ -197,7 +197,27 @@ local function logEdge(e : integer)
 		return true
 	end)
 	pcall(function() : boolean
-		strips = tostring(#api.engine.system.baseParallelStripSystem.getStrips(e))
+		local list = api.engine.system.baseParallelStripSystem.getStrips(e)
+		local parts : {string} = {}
+		for __, st in ipairs(list) do
+			local entity = st as integer
+			local desc = tostring(entity)
+			pcall(function() : boolean
+				local strip = api.engine.getComponent(entity, api.type.ComponentType.BASE_PARALLEL_STRIP) as Engine.Component.BaseParallelStrip
+				local groups : {string} = {}
+				for __, g in ipairs(strip.rangeGroups) do
+					local ranges : {string} = {}
+					for __, r in ipairs(g) do
+						table.insert(ranges, ("%d[%.2f-%.2f]"):format(r.edge, r.bounds[1], r.bounds[2]))
+					end
+					table.insert(groups, "{" .. table.concat(ranges, " ") .. "}")
+				end
+				desc = desc .. ":" .. #strip.rangeGroups .. " groups " .. table.concat(groups, " ")
+				return true
+			end)
+			table.insert(parts, desc)
+		end
+		strips = tostring(#list) .. " (" .. table.concat(parts, "; ") .. ")"
 		return true
 	end)
 	pcall(function() : boolean
@@ -353,49 +373,56 @@ end
 
 local P8_HEIGHTS : {number} = { 6, 7, 8, 9, 10, 11, 12, 14 }
 
+-- The plain (not bridge or tunnel) track or street edge nearest p within 200 m, at the point of its chord nearest p;
+-- nil if none.
+local function nearest(p : Pt, kind : string) : Crossed
+	local found : Crossed = nil
+	local best = math.huge
+	local edges = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(p.x, p.y), 200,
+		api.type.ComponentType.BASE_EDGE)
+	for __, e in ipairs(edges) do
+		pcall(function() : boolean
+			local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+			local isTrack = edge.roadType == api.type["enum"].RoadType.TRACK
+			if edge.type ~= api.type["enum"].BaseEdgeType.NORMAL or (isTrack and "track" or "street") ~= kind then
+				return true
+			end
+			local n0 = api.engine.getComponent(edge.node0, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+			local n1 = api.engine.getComponent(edge.node1, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+			local a : Pt = { x = n0.position.x, y = n0.position.y }
+			local b : Pt = { x = n1.position.x, y = n1.position.y }
+			local ab = geo.sub(b, a)
+			local len = geo.len(ab)
+			if len < 1 then
+				return true
+			end
+			local t = math.max(0, math.min(1, geo.dot(geo.sub(p, a), ab) / (len * len)))
+			local q = geo.add(a, geo.scale(ab, t))
+			local d = geo.len(geo.sub(p, q))
+			if d < best then
+				best = d
+				found = { p = q, dir = geo.scale(ab, 1 / len), z = n0.position.z + t * (n1.position.z - n0.position.z),
+					entity = e }
+			end
+			return true
+		end)
+	end
+	return found
+end
+
 function probe.bridgeClearance(settings : Settings) : {function()}
 	local c = camera()
 	local found : {string : Crossed} = {}
 	local o = network.defaults()
 	local tasks : {function()} = {}
 	table.insert(tasks, guarded("P8", function()
-		local best : {string : number} = {}
-		local edges = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(c.x, c.y), 200,
-			api.type.ComponentType.BASE_EDGE)
-		for __, e in ipairs(edges) do
-			pcall(function() : boolean
-				local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-				local isTrack = edge.roadType == api.type["enum"].RoadType.TRACK
-				if edge.type ~= api.type["enum"].BaseEdgeType.NORMAL then
-					return true
-				end
-				local kind = isTrack and "track" or "street"
-				local n0 = api.engine.getComponent(edge.node0, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
-				local n1 = api.engine.getComponent(edge.node1, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
-				local a : Pt = { x = n0.position.x, y = n0.position.y }
-				local b : Pt = { x = n1.position.x, y = n1.position.y }
-				local ab = geo.sub(b, a)
-				local len = geo.len(ab)
-				if len < 1 then
-					return true
-				end
-				local t = math.max(0, math.min(1, geo.dot(geo.sub(c, a), ab) / (len * len)))
-				local q = geo.add(a, geo.scale(ab, t))
-				local d = geo.len(geo.sub(c, q))
-				if best[kind] == nil or d < best[kind] then
-					best[kind] = d
-					found[kind] = { p = q, dir = geo.scale(ab, 1 / len),
-						z = n0.position.z + t * (n1.position.z - n0.position.z), entity = e }
-				end
-				return true
-			end)
-		end
-		log("P8", ("camera (%.1f %.1f): %d edges within 200 m"):format(c.x, c.y, #edges))
+		log("P8", ("camera (%.1f %.1f)"):format(c.x, c.y))
 		for __, kind in ipairs({ "track", "street" }) do
-			local f = found[kind]
+			local f = nearest(c, kind)
+			found[kind] = f
 			if f ~= nil then
 				log("P8", ("nearest %s: edge %d, %.0f m away at (%.1f %.1f), height %.2f, ground %.2f"):format(kind,
-					f.entity, best[kind], f.p.x, f.p.y, f.z, groundAt(f.p)))
+					f.entity, geo.len(geo.sub(c, f.p)), f.p.x, f.p.y, f.z, groundAt(f.p)))
 			else
 				log("P8", "no " .. kind .. " within 200 m")
 			end

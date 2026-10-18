@@ -48,6 +48,11 @@ global record PgraceRailRouterStationLayout
 	-- 2-track through station of this platform length (createTemplateFn for 2 tracks: main building 1 at slot
 	-- 3400000 + 10 k, stairs and roofs on platform rows 0 and 3).
 	addons : function(platformLength : number, addons : Addons) : {integer : Module}
+	-- The direction to lay a station out along so its main building (on the left of that direction: probe P6, the
+	-- box grew on that side) faces `towards` (the town's centre): dir itself, or turned round. The station is
+	-- symmetric along its tracks, so either way its track ends are the same four points.
+	facing : function(centre : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt,
+		towards : PgraceRailRouterGeo.Pt) : PgraceRailRouterGeo.Pt
 	-- The layout for a site (centre, unit direction of travel) and platform length (a multiple of 40 m; at most 840 m,
 	-- 21 modules, the most the station script has slots for).
 	layout : function(centre : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt, platformLength : number,

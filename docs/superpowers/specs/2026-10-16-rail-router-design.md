@@ -276,9 +276,14 @@ in-game.
 **Crossings:** samples over existing track, road junctions (nodes joining three or more pieces, and 30 m round them:
 a level crossing can't go through one; the grid search prices crossing one as crossing track), and over roads in
 Fastest mode (`Weights.bridgeRoads`), are bridges and
-are never merged away. The track there is lifted to at least 9 m above the ground, ramping up and down within the
+are never merged away. So are roads crossed within 10 m of a joint between two of their pieces (the game refused level
+crossings 1.8 and 7 m from one, `Grid.joints`), and samples on or by water (any of the four 25 m points round them;
+shore cells are sampled 4 × 4 by the survey, `Grid.shore`: the game refuses ground track over water, "Place on
+Land"). The track there is lifted to at least 9 m above the ground, ramping up and down within the
 grade limit (probe P8: a double-track bridge square across existing track collided with it 7 m above, rail to rail,
-and was clean from 8 m; over a street 6 m was clean); the station heights pinned at a leg's ends win if a crossing is too close to them. In Cheapest mode
+and was clean from 8 m; over a street 6 m was clean); the station heights pinned at a leg's ends win if a crossing is too close to them. The bridge reaches 25 m past
+the crossing on each side, wherever the track is above the ground there (Aloha → Imperial Beach: a bridge that began
+11 m before a road, 9 m up, had its embankment's foot on the road). In Cheapest mode
 roads are crossed on the level.
 
 **Cheapest heights:** a dynamic programme (Viterbi) over evenly spaced nodes along the leg (at most 25 m apart) and
@@ -452,6 +457,12 @@ line, as cubic Hermite edges between nodes:
 - **Edges** end at every span boundary (ground, bridge, tunnel), are at most 250 m along the centre line, and are
   split further wherever the cubic strays more than 0.25 m from the height profile or steeper than the grade; each
   node's grade comes from the profile around it. None is shorter than 0.5 m.
+- **Crossovers** (milestone 3): a pair in the 100 m straight at each end of a leg (a station's approach), track 1 to 2
+  from 4 m out and 2 to 1 from 52 m, each one 45 m S-curve edge (tightest radius about 67 m) at the track's grade at
+  each end, its ends moved onto samples within 1 m. A switch's branch must be one long edge, and so must the main
+  track beside it: the tracks aren't broken within 20 m of a switch on its branch side (the game refused 16.6 m and
+  less, passed 18 m and more). An end that isn't 100 m of straight ground gets none. Without crossovers the game's
+  choice of platform stranded trains on the other track (Rail Doctor).
 - **Chunks** of about 1 km of centre line (both tracks) are one dry run each, never splitting a bridge or tunnel.
   Probe P2: a 1 km double-track piece took 12 ms to dry-run, 2 km about 49 ms.
 
@@ -487,20 +498,42 @@ What the probes found:
 - **Timing:** Bangor → Imperial Beach (15 km, 5 stations, 16 chunks): 0.4 s of dry runs over 21 frames; stations
   30 ms each but the first about 100 ms, chunks 3–40 ms.
 
-**Milestone 3: Build.**
+**Milestone 3: Build** (`build.tl`). After a clean check, **Build** builds the line one command at a time, each
+waiting for the game's callback before the next. Built in-game: Bangor → Imperial Beach (5 stations, 16 chunks,
+crossovers at every station end, 29.0 million), and a train ran the whole line; Mercer Island → Imperial Beach with a
+level crossing that buses and a train then used. Each station is turned so its main
+building (on the left of its direction) faces its town; turning it round keeps its track ends.
 
-1. **Stations first:** each station's proposal, dry-run clean before it's sent.
-2. **Then the track**, chunk by chunk, joined to each other and to the stations' end nodes. Each chunk is dry-run
-   before it's sent, and its callback starts the next. Level crossings split the street they cross.
-3. **On a failed dry run**, stop. The window shows what was built and what failed, and offers **Retry from here**.
-   Nothing already built is rolled back.
-4. Track type and electrification come from the settings. No signals, lines or vehicles.
+1. **Stations first**, each dry-run again just before it's sent (the map may have changed since the check). Once
+   built, its free track ends (the nodes of its frozen edges with one track piece; probe P10: they aren't among its
+   frozen nodes) are matched to the network's nodes within 1 m: they're exactly where `stationlayout` puts them.
+2. **Then the track, chunk by chunk** from the first station. A chunk joins the node entities already there (a
+   station's ends, the previous chunk's far ends: `Pt3.entity`); new track can't start with a node of its own on an
+   existing one (P11: "Construction Not Possible"), and its tangents must follow the track it joins. After a chunk is
+   built, its new nodes' entities are recorded by place, for the next chunk.
+3. **Level crossings** (P9): where a chunk's dry run collides only with streets, each crossed street is split at the
+   points where the track crosses it (the engine's `replaceSegment` proposal edited into pieces, as Bus Loops splits
+   a street; it can't be dry-run), then each piece at the new nodes is sent again unedited (`replaceSegment`) so the
+   engine works out its lane connections, then the chunk, cut at the crossings and joined to the new nodes, is
+   dry-run and sent. A crossing within 0.5 m of an existing street node uses that node; one 0.5–9.5 m from a joint
+   between two pieces of street fails with that reason (P9: 7 m was refused, 9.5 m and more worked; the planner keeps
+   10 m, `grid.JOINT_CLEARANCE`). A street counts as a level crossing only where a ground edge of the chunk crosses
+   it within 1.5 m of its height (`builder.crossesOnLevel`), in the check as in the build: a street the track only
+   runs into is an error.
+4. **On a failure** (a dry run that isn't clean, a refused command), stop. The window shows what failed and where
+   (**Show**), and offers **Retry from here**. Nothing already built is rolled back; a street split before a chunk
+   that then fails keeps its extra nodes, which is harmless.
+5. Track type and electrification come from the settings. No signals, lines or vehicles.
+6. **Track 1 and 2 edges carry `distance` 5** (the spacing of the pair) and the player as owner, as track the player
+   lays does: without them the overhead wire of both tracks hung over one of them (P12). Crossovers carry 0.
+7. **Closing the window** pauses the build; the plan, its check and the build are kept (module-level, like the
+   settings), so opening it again carries on by itself. Planning again wouldn't: the new plan avoids the track
+   already built and goes elsewhere. A restart or loading a save loses them; the check and build still skip a
+   station or chunk already there at the same place (`builder.builtStation`, `builtChunk`).
 
-Rules carried over from Bus Loops: never send a proposal that didn't dry-run clean; copy positions out of engine data;
-don't keep engine components across a `sendCommand`.
-
-**To probe for milestone 3 (P7):** where the station's track end nodes are and how the main line joins them; how a
-level crossing is made from a script.
+Rules carried over from Bus Loops: never send a proposal that didn't dry-run clean (the street split is the one
+exception, a shape the engine made); copy positions out of engine data; don't keep engine components across a
+`sendCommand`.
 
 ## Testing
 
@@ -536,7 +569,8 @@ Each ends with one in-game test by the user.
 1. **Survey, plan and preview:** the window, the route on the map, our own cost estimate.
 2. **Probes:** track and station proposals, dry-run only; the game's real price in the window. Done 2026-10-17:
    Bangor → Imperial Beach checks clean.
-3. **Build:** stations, then track chunks, with Retry.
+3. **Build:** stations, then track chunks, with Retry. Done 2026-10-18: Bangor → Imperial Beach and Mercer
+   Island → Imperial Beach built, trains and buses ran.
 4. **Station styles and signals:** a "Station style" setting: Simple 2-track (the default) or **Halt 2+2**, the layout
    of the Express & Local Rail Stations mod (`express_local_stations_1`): platform, local, express, express, local,
    platform on the base modular station, with track fans at both ends that split the 2-track line onto the four
