@@ -225,6 +225,10 @@ local function addCut(cuts : {integer : {Cut}}, edge : integer, s : number, node
 	table.insert(cuts[edge], { s = s, node = node })
 end
 
+-- The closest a level crossing may be to a joint between two pieces of street: the game refused 7 m (P9) and took
+-- 9.5 m; the planner keeps 10 m (grid.JOINT_CLEARANCE), and its 100 m cells let 9.8 m through.
+local JOINT_MIN = 9.5
+
 -- One crossed street: where the chunk's edges cross it; near an end node, that node is used; elsewhere the street is
 -- split (sent; its lanes are then repaired before the next street).
 local function stepStreet(b : Build, first : integer, last : integer)
@@ -255,9 +259,9 @@ local function stepStreet(b : Build, first : integer, last : integer)
 			end
 			if not snapped then
 				for __, n in ipairs(ends) do
-					if n ~= nil and dist2(n, c.p) < 10.0 then
-						fail(b, { ("a level crossing %.1f m from a road joint (the game refuses them closer than about 10 m)")
-							:format(dist2(n, c.p)) }, c.p.x, c.p.y)
+					if n ~= nil and dist2(n, c.p) < JOINT_MIN then
+						fail(b, { ("a level crossing %.1f m from a road joint (the game refuses them closer than about %.1f m)")
+							:format(dist2(n, c.p), JOINT_MIN) }, c.p.x, c.p.y)
 						return
 					end
 				end
