@@ -98,6 +98,9 @@ global record PgraceRailRouterBuilder
 		settings : Settings) : SimpleProposal, string
 	-- The SimpleProposal for one of the plan's stations, or nil and why it can't be made (the station or a module
 	-- file not found).
+	-- A station's layout as it's built: turned so its main building faces its town.
+	stationLayout : function(plan : PgraceRailRouterRoute.Plan, index : integer, settings : Settings)
+		: PgraceRailRouterStationLayout.Layout
 	stationProposal : function(plan : PgraceRailRouterRoute.Plan, index : integer, settings : Settings) : SimpleProposal,
 		string
 	-- The station module's resource name as the module repository knows it: `name`, else the same with or without its

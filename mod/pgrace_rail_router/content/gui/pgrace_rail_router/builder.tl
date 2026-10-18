@@ -199,17 +199,22 @@ function builder.resolveModule(name : string) : string
 	return result ~= "" and result or nil
 end
 
-function builder.stationProposal(plan : Plan, index : integer, settings : Settings) : SimpleProposal, string
-	if findIn(api.res.constructionRep.find, STATION_FILE) < 0 then
-		return nil, "station not found: " .. STATION_FILE
-	end
+function builder.stationLayout(plan : Plan, index : integer, settings : Settings) : PgraceRailRouterStationLayout.Layout
 	local station = plan.stations[index]
 	-- Turned so its main building faces the town (the track ends are the same either way).
 	local dir = station.site.dir
 	if station.town ~= nil and station.town.pos ~= nil then
 		dir = sl.facing(station.site.centre, dir, station.town.pos)
 	end
-	local layout = sl.layout(station.site.centre, dir, plan.platformLength, settings.era)
+	return sl.layout(station.site.centre, dir, plan.platformLength, settings.era)
+end
+
+function builder.stationProposal(plan : Plan, index : integer, settings : Settings) : SimpleProposal, string
+	if findIn(api.res.constructionRep.find, STATION_FILE) < 0 then
+		return nil, "station not found: " .. STATION_FILE
+	end
+	local station = plan.stations[index]
+	local layout = builder.stationLayout(plan, index, settings)
 	if not (finite(layout.angle) and finite(layout.origin.x) and finite(layout.origin.y) and finite(station.z)) then
 		return nil, "the station's place isn't a number"
 	end

@@ -23,6 +23,11 @@ local PASSENGER_PLATFORM_SLOT = 7400000
 local MAIN_BUILDING_SLOT = 3400000
 local ROOF_SLOT = 10400000
 local STAIRS_SLOT = 10800000
+-- A road's dead end in front of the main building, in the station's frame: the main building's slot is at x = -10
+-- level with the platforms' middle (modular_station.script.lua mainBuildingPosition), its front 6.5 m further out
+-- (trainstationutil.lua MakeMainBuildingModule), and the road the player built to it, which the game linked, ended
+-- at x = -30.5 (probe P13).
+local ENTRANCE_X = -30.5
 
 function sl.trackSlot(i : integer, j : integer) : integer
 	return TRACK_SLOT + 1000 * i + 10 * j
@@ -122,6 +127,9 @@ function sl.layout(centre : Pt, dir : Pt, platformLength : number, era : Era) : 
 		angle = atan2(-dir.x, dir.y),
 		origin = origin,
 		ends = { world(LEFT_X, y0), world(RIGHT_X, y0), world(LEFT_X, y1), world(RIGHT_X, y1) },
+		-- Level with the platforms' middle: the building's slot is 20 m ahead of the origin where it moved back.
+		entrance = world(ENTRANCE_X, MODULE_LENGTH / 2 * (k % 2)),
+		outward = geo.scale(localX, -1),
 	}
 end
 

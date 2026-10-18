@@ -573,6 +573,12 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		if b.phase == "done" then
 			table.insert(rows, textRow(fill(_("Built: {money}, {count} level crossings."), { money = formatMoney(b.charged),
 				count = tostring(b.levelCrossings) }), "font-scale-body"))
+			table.insert(rows, textRow(fill(_("Roads to {count} of {total} stations."), { count = tostring(b.roads),
+				total = tostring(#checked.plan.stations) }), "font-scale-annotation"))
+			if #b.roadsMissing > 0 then
+				table.insert(rows, textRow(fill(_("No road could be built to: {towns}"), {
+					towns = table.concat(b.roadsMissing, ", ") }), "font-scale-annotation"))
+			end
 		elseif b.phase == "failed" then
 			local f = b.failure
 			local what : string
