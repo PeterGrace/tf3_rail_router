@@ -37,6 +37,11 @@ global record PgraceRailRouterBuild
 		node : PgraceRailRouterNetwork.Pt3
 		piece : integer
 		u : number
+		-- The way the road leaves the entrance (turned `turn` degrees off straight out), and for a dead end, how far
+		-- before it a middle point is (0: one curve straight to it).
+		start : PgraceRailRouterNetwork.Pt3
+		turn : number
+		mid : number
 	end
 
 	record Build
@@ -63,6 +68,9 @@ global record PgraceRailRouterBuild
 		roadJunction : integer
 		-- A street split for the current station's road: the road to its new node comes next.
 		roadTarget : RoadTarget
+		-- The current station's road shapes, and the next to dry-run.
+		roadShapes : {RoadTarget}
+		roadNext : integer
 	end
 
 	start : function(check : PgraceRailRouterBuilder.Check) : Build
