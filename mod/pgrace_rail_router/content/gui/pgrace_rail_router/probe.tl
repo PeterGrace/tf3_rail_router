@@ -1116,8 +1116,9 @@ local function p15Build(settings : Settings)
 	opts.fan = nil
 	opts.crossovers = false
 	opts.chunkLength = 100000
-	-- Two 200 m pieces per track: stage 3's cuts rely on that.
-	opts.maxEdge = 250
+	-- One 400 m piece per track: no node on track 2 near stage 3's crossing at x = 200 (with two 200 m pieces, the
+	-- crossing beside track 2's node at x = 200 was refused, one at x = 245 wasn't).
+	opts.maxEdge = 1000
 	local s = with(settings, function(copy : Settings)
 		copy.network = opts
 		copy.signal = "::/infrastructure/signal/signal_path_" .. (settings.year < 1950 and "a" or "c") .. ".con"
@@ -1393,7 +1394,7 @@ local function p15Cuts(settings : Settings)
 	-- track's switch is on track 2 where its arc onto the crossing line begins (x ≈ 153.5): from x = 180, 20 m short of
 	-- the next node, the
 	-- branch was refused ("Construction Not Possible"; it had pulled only 0.6 m clear of the main track there).
-	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 2, x = crossSwitchX() } }
+	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 1, x = 200 }, { track = 2, x = crossSwitchX() } }
 	local function nextCut(attempt : integer)
 		if attempt > 8 then
 			log("P15", "too many cuts")
