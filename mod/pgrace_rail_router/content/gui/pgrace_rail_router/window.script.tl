@@ -1435,7 +1435,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P13", "Probe P13: streets around the station" },
 			{ "P14", "Probe P14: build a Halt 2+2 station, fans and signals (test map only)" },
 			{ "P15", "Probe P15: junction into existing track, stage by stage (test map only)" },
-			{ "P16", "Probe P16: track crossing track, at seven angles (test map only)" },
+			{ "P16", "Probe P16: a diamond crossing at 6.5°, as the game makes one (test map only)" },
 		}) do
 			table.insert(body, builtin.Button{
 				content = builtin.TextView{ text = p[2] },

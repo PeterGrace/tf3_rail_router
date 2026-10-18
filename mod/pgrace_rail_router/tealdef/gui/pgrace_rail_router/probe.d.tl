@@ -29,7 +29,8 @@ global record PgraceRailRouterProbe
 	-- and builds a flat junction from the north: one track switching into track 1, one switching into track 2 and
 	-- crossing track 1 on the level at its node at x = 200 (four pieces at one node). Logs every piece, node and signal.
 	junction : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
-	-- P16 (test map only): a 360 m double track at the camera, then a short straight across both tracks at 90, 60,
-	-- 45, 30, 20, 15 and 10 degrees, each dry-run with and without cleanupStreetGraph; the 90° one built if clean.
+	-- P16 (test map only): a 360 m double track at the camera, both tracks split where a straight track at 6.5°
+	-- crosses them, and that track built through the two nodes (a diamond at each, as the game's own tool makes one),
+	-- dry-run with track spacing 0 and 5, built if clean.
 	trackCrossing : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 end

@@ -1479,16 +1479,19 @@ end
 
 -- P16 ------------------------------------------------------------------------------------------------------------
 
--- P16: whether track can cross track on the level from a script, and at what angle. A 360 m double track east of
--- the camera (no signals), then a 40 m straight across both its tracks at each angle, dry-run with and without
--- cleanupStreetGraph (nothing built); if any is clean, the 90° one is built with the context that worked.
-local P16_CROSSINGS : {{number}} = { { 90, 30 }, { 60, 65 }, { 45, 100 }, { 30, 135 }, { 20, 225 }, { 15, 265 }, { 10, 310 } }
+-- P16: the game's own shallow crossing, copied. A track the player drew across a double track at 6.5° became a
+-- diamond at each track: a straight crossing track through a node on each, four pieces there, each pair straight
+-- on (P1, 2026-10-18). So: a 360 m double track east of the camera, both its tracks split where a straight track at
+-- 6.5° crosses them, and that track built through the two nodes, dry-run with the spacing 0 (as our junction's
+-- pieces) and 5 (as the game's), and built if one is clean. Uses P15's split and repair helpers and state.
+local P16_ANGLE = 6.5
 
 function probe.trackCrossing(settings : Settings) : {function()}
 	return { guarded("P16", function()
 		local c = camera()
 		local east : Pt = { x = 1, y = 0 }
 		local ground = groundAt(c)
+		p15.origin, p15.z, p15.off = c, ground, 2.5
 		local opts : Options = {}
 		for k, v in pairs(settings.network as {string : any}) do
 			(opts as {string : any})[k] = v
@@ -1506,65 +1509,94 @@ function probe.trackCrossing(settings : Settings) : {function()}
 		if not ok then
 			return
 		end
-		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(proposal, builder.newContext(), false, true),
-			function(__ : any, built : boolean)
-				guarded("P16", function()
-					log("P16", "double track built: " .. tostring(built))
-					if not built then
-						return
-					end
-					local winner : SimpleProposal = nil
-					local winnerCleanup = false
-					for __, cr in ipairs(P16_CROSSINGS) do
-						local a = math.rad(cr[1])
-						local d : Pt3 = { x = math.cos(a), y = math.sin(a), z = 0 }
-						local mid : Pt3 = { x = c.x + cr[2], y = c.y, z = ground }
-						local p0 : Pt3 = { x = mid.x - d.x * 20, y = mid.y - d.y * 20, z = ground }
-						local p1 : Pt3 = { x = mid.x + d.x * 20, y = mid.y + d.y * 20, z = ground }
-						local t : Pt3 = { x = d.x * 40, y = d.y * 40, z = 0 }
-						local cross : PgraceRailRouterNetwork.Network = { nodes = { p0, p1 }, edges = {
-							{ node0 = 1, node1 = 2, p0 = p0, p1 = p1, t0 = t, t1 = t, kind = "ground", track = 0, leg = 1,
-								s0 = 0, s1 = 40 } }, chunks = {} }
-						for __, cleanup in ipairs({ false, true }) do
-							local pr = builder.chunkProposal(cross, 1, 1, s)
-							if pr ~= nil then
-								local okC, costC, messagesC, ___, dataC = builder.dryRun(pr, builder.newContext(cleanup))
-								local hits : {string} = {}
-								for __, h in ipairs(builder.collisions(dataC)) do
-									table.insert(hits, ("%s %d"):format(h.what, h.entity))
-								end
-								log("P16", ("%2.0f degrees at x = %3.0f, cleanup %-5s: %s, %d %s"):format(cr[1], cr[2],
-									tostring(cleanup), okC and "clean" or table.concat(messagesC, "; "), costC,
-									table.concat(hits, ", ")))
-								if okC and cr[1] == 90 and winner == nil then
-									winner, winnerCleanup = pr, cleanup
-								end
-							end
-						end
-					end
-					if winner == nil then
-						log("P16", "no clean 90 degree crossing: nothing more built")
-						return
-					end
-					api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(winner, builder.newContext(winnerCleanup), false,
-						true), function(res : WorldBuildProposalCommandData, crossed : boolean)
-						guarded("P16", function()
-							log("P16", ("90 degree crossing built (cleanup %s): %s"):format(tostring(winnerCleanup),
-								tostring(crossed)))
-							if crossed then
-								for __, n in ipairs(res.proposal.proposal.addedNodes) do
-									local e = n.entity as integer
-									local segs = api.engine.system.streetSystem.getNodeTrackSegments(e)
-									log("P16", ("  node %d at (%.1f %.1f): %d track pieces"):format(e,
-										n.comp.position.x - c.x, n.comp.position.y - c.y, #segs))
-								end
-								log("P16", ("  %d pieces added, %d removed"):format(#res.proposal.proposal.addedSegments,
-									#res.proposal.proposal.removedSegments))
-							end
-						end)()
-					end)
-				end)()
+		-- The crossing line: through (180, 0) at P16_ANGLE, from x = 60 to x = 300.
+		local a = math.rad(P16_ANGLE)
+		local slope = math.tan(a)
+		local function onLine(x : number) : Pt3
+			return { x = c.x + x, y = c.y + (x - 180) * slope, z = ground }
+		end
+		local x1 = 180 + 2.5 / slope
+		local x2 = 180 - 2.5 / slope
+		log("P16", ("crossing at %.1f degrees: track 1 (y = 2.5) at x = %.1f, track 2 (y = -2.5) at x = %.1f"):format(
+			P16_ANGLE, x1, x2))
+		local function split(track : integer, x : number, done : function())
+			local list = scanPieces()
+			if findNodeAt(list, c.x + x, c.y + (track == 1 and 2.5 or -2.5)) ~= nil then
+				return done()
+			end
+			local piece = findPiece(list, track, x)
+			if piece == nil then
+				log("P16", ("no track %d piece at x = %.1f"):format(track, x))
+				return
+			end
+			local u = network.nearestParam(piece.h, { x = c.x + x, y = c.y + (track == 1 and 2.5 or -2.5) })
+			local rep = splitTrack(piece, { u }, {})
+			if rep == nil then
+				log("P16", "split refused")
+				return
+			end
+			sendProposal(rep, function(res : WorldBuildProposalCommandData, success : boolean)
+				log("P16", ("split of track %d at x = %.1f: %s"):format(track, x, tostring(success)))
+				if success then
+					afterSplit("P16 split", res, done)
+				end
 			end)
+		end
+		local function crossing()
+			local list = scanPieces()
+			local n1, q1 = findNodeAt(list, c.x + x1, c.y + 2.5)
+			local n2, q2 = findNodeAt(list, c.x + x2, c.y - 2.5)
+			if n1 == nil or n2 == nil then
+				log("P16", ("crossing nodes missing: %s %s"):format(tostring(n1), tostring(n2)))
+				return
+			end
+			local pts : {Pt3} = { onLine(60), { x = q2.x, y = q2.y, z = q2.z, entity = n2 },
+				{ x = q1.x, y = q1.y, z = q1.z, entity = n1 }, onLine(300) }
+			local winner : SimpleProposal = nil
+			for __, track in ipairs({ 0, 1 }) do
+				local edges : {PgraceRailRouterNetwork.Edge} = {}
+				for i = 1, 3 do
+					local p, q = pts[i], pts[i + 1]
+					local t : Pt3 = { x = q.x - p.x, y = q.y - p.y, z = 0 }
+					table.insert(edges, { node0 = i, node1 = i + 1, p0 = p, p1 = q, t0 = t, t1 = t, kind = "ground",
+						track = track, leg = 1, s0 = 0, s1 = 0 })
+				end
+				local cross : PgraceRailRouterNetwork.Network = { nodes = pts, edges = edges, chunks = {} }
+				local pr = builder.chunkProposal(cross, 1, 3, s)
+				if pr ~= nil then
+					local okC, costC, messagesC, ___, dataC = builder.dryRun(pr)
+					local hits : {string} = {}
+					for __, h in ipairs(builder.collisions(dataC)) do
+						table.insert(hits, ("%s %d"):format(h.what, h.entity))
+					end
+					log("P16", ("crossing track through both nodes, spacing %s: %s, %d %s"):format(track == 1 and "5" or "0",
+						okC and "clean" or table.concat(messagesC, "; "), costC, table.concat(hits, ", ")))
+					if okC and winner == nil then
+						winner = pr
+					end
+				end
+			end
+			if winner == nil then
+				log("P16", "no clean crossing: nothing more built")
+				return
+			end
+			sendProposal(winner, function(res : WorldBuildProposalCommandData, success : boolean)
+				log("P16", "crossing built: " .. tostring(success))
+				if success then
+					logAdded("P16 crossing", res)
+					for __, n in ipairs({ n1, n2 }) do
+						log("P16", ("  node %d: %d track pieces"):format(n,
+							#api.engine.system.streetSystem.getNodeTrackSegments(n)))
+					end
+				end
+			end)
+		end
+		sendProposal(proposal, function(__ : WorldBuildProposalCommandData, built : boolean)
+			log("P16", "double track built: " .. tostring(built))
+			if built then
+				split(1, x1, function() split(2, x2, crossing) end)
+			end
+		end)
 	end) }
 end
 
