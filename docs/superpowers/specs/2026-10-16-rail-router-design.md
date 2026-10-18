@@ -547,6 +547,45 @@ Rules carried over from Bus Loops: never send a proposal that didn't dry-run cle
 exception, a shape the engine made); copy positions out of engine data; don't keep engine components across a
 `sendCommand`.
 
+## Milestone 4a: Halt 2+2 (design draft, 2026-10-18; not yet reviewed with the player)
+
+Reference: the Express & Local Rail Stations mod (`express_local_stations_1`, read in full; we copy its geometry, not
+its code, and don't depend on it).
+
+- **Setting:** "Station style": Simple 2-track (the default) or Halt 2+2. Applies to every station of the line.
+- **Station:** the base modular station with rows platform, local, express, express, local, platform (i = 0…5, x = 5 i;
+  slots as now), so its axis is at x = 12.5 and the line runs on through the express pair (x = 10, 15: 5 m apart, as
+  our double track). Main building and stairs as now (the building on row 0's side, facing the town); the road's
+  entrance is in the same place in the station's frame (x = −30.5), now 43 m from the axis.
+- **Fans** (ordinary track, built after the station: a construction's own track can't carry one-way signals). At each
+  end, in the end's frame (y outward from the platform end, x across):
+  1. aprons: the 4 station tracks straight on for 20 m;
+  2. each express track straight on for L; each local track an S-curve onto the express on its side, merging there
+     (a switch at y = 20 + L);
+  3. the 2-track main line straight on for 30 m more; the leg starts there.
+  L = max(40, 5 × round(√(4 R × 5) / 5)) for the turnout radius R of the track type (the mod's: simple 150 → 55 m,
+  standard 300 → 75 m, high-speed 600 → 110 m), so a fan is 50 + L long (105 / 125 / 160 m). Our switch limits are
+  met: the branch (the S-curve) is ≥ 40 m, the main edge on its side is L. The planner's straight approach at a
+  station end becomes the fan plus the crossovers' room (below) instead of 100 m.
+- **Running:** right-hand. In a leg's direction of travel the right track (network track 2) carries it; at a station
+  end the tracks on the right of the outward direction are the leaving ones.
+- **Signals** (one-way path signals, `::/infrastructure/signal/signal_path_a|c` by year): per station end a starter on
+  each leaving station track (local and express) on its fan piece about 26 m from the platform end, facing out, and a
+  home signal on the arriving main track 15 m before the fan's open end, facing in. Along the line, a one-way block
+  signal on each track every 2 km (a train per block, so more than one train per direction between stations).
+  Signals go into the same proposals as the track: `edgeObjectsToAdd` (edge, param, oneWay, left, model) with the
+  edge's `comp.objects` listing them (the mod numbers new edge objects from −400000000). Probe P14 checks the model
+  name, which way `left` and the edge's direction make a signal face, and that a dry run takes them.
+- **Turning at the line's ends.** With one-way signals a train can't go back the way it came, and the mod leaves
+  out-and-back lines stranded (its notes say a turning loop is needed). At the first and last stations' line-side
+  ends our crossover pair stays, after the fan and before the home signal: a train reversing in the platform leaves
+  on its arrival track, crosses to the leaving track, and only then meets one-way signals, all facing its way.
+  Intermediate stations get no crossovers (a train keeps its side).
+- **Not in 4a:** using existing stations (4b), the 4-track main option, left-hand running.
+
+Open questions for the player: block spacing (2 km?); whether Halt 2+2 is the default when the line has 3 or more
+stations; whether termini should be Halt 2+2 too or plain 2-track with crossovers.
+
 ## Testing
 
 **Unit tests** (`just test`), on artificial maps:
