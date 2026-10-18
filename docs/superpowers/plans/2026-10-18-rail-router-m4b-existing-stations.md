@@ -104,6 +104,13 @@ module-level variable, so the player can look at the result between clicks.
 - Modify: `tealdef/pgrace_rail_router_def.d.tl` (add `require "gui.pgrace_rail_router.planner.junction"` after network)
 - Test: `tests/junction_test.lua`
 
+The shape (spec "Junction geometry (flat)", as P15 built it): the merge is one S-curve piece from a switch on the
+existing near track (+2.5) to our far track (+12.5). The crossing track is two circular arcs of the turnout radius R,
+each turning θ = acos(1 − 5 / R) and climbing 5 m over C = R sin θ along x: the inner one from a switch on the existing
+far track (−2.5) to the crossing node on the existing near track (+2.5), the outer one from there to our near track
+(+7.5). Each is one piece (the game refuses a new piece over existing track unless they share a node). A circular
+arc's tangents are as long as the arc (R θ); the S-curve's are its x length.
+
 The interface (`junction.d.tl`):
 
 ```teal
@@ -118,13 +125,18 @@ global record PgraceRailRouterJunction
 		kind : string
 	end
 
-	-- A junction piece in the frame: from (x0, y0) to (x1, y1), tangents along x (an S-curve where y changes).
+	-- A junction piece in the frame, as a Hermite curve: from (x0, y0) to (x1, y1), tangents (tx0, ty0), (tx1, ty1).
 	record Piece
 		x0 : number
 		y0 : number
 		x1 : number
 		y1 : number
-		-- "merge" (our far track into the existing near one), "cross" (our near track to the existing far one).
+		tx0 : number
+		ty0 : number
+		tx1 : number
+		ty1 : number
+		-- "merge" (our far track into the existing near one), "cross in" (the existing far track's switch to the
+		-- crossing node), "cross out" (the crossing node to our near track).
 		role : string
 	end
 
@@ -138,10 +150,14 @@ global record PgraceRailRouterJunction
 
 	-- The S-curve length for a lateral offset at turnout radius r: max(40, 5 × round(√(4 r × offset) / 5)).
 	sCurve : function(offset : number, radius : number) : number
+	-- The angle (radians) each crossing arc turns at radius r: acos(1 − 5 / r).
+	crossAngle : function(radius : number) : number
+	-- The x length of each crossing arc at radius r: r sin(crossAngle(r)).
+	crossRun : function(radius : number) : number
 	-- The junction nearest the stretch's start that fits, keeping every cut CLEAR (15 m) from the existing signals
 	-- (x positions along the stretch, per track) and from the stretch's start: nil if none fits within `length`.
 	fit : function(length : number, radius : number, side : number, signals : {string : {number}}) : Layout
-	-- Total length a junction needs at radius r (no signals in the way): 2 × sCurve(10, r) + 80.
+	-- Total length a junction needs at radius r (no signals in the way): sCurve(10, r) + 2 crossRun(r) + 80.
 	needed : function(radius : number) : number
 end
 ```
@@ -152,57 +168,82 @@ end
 local t = ...
 local junction = t.requireTl("gui/pgrace_rail_router/planner/junction.tl")
 
-t.test("junction: S-curve length follows the radius and offset", function()
+-- Standard track: R = 300.
+local R = 300
+local THETA = math.acos(1 - 5 / R)
+local C = R * math.sin(THETA)
+
+t.test("junction: S-curve and crossing arcs follow the radius", function()
 	t.eq(junction.sCurve(10, 300), 110, "standard, 10 m")
 	t.eq(junction.sCurve(10, 600), 155, "high-speed, 10 m")
 	t.eq(junction.sCurve(5, 300), 75, "standard, 5 m (as the fans)")
-	t.eq(junction.needed(300), 300, "2 × 110 + 80")
+	t.near(math.deg(junction.crossAngle(300)), 10.48, 0.01, "standard: about 10.5 degrees")
+	t.near(junction.crossRun(300), 54.54, 0.01, "standard: about 54.5 m")
+	t.near(math.deg(junction.crossAngle(600)), 7.40, 0.01, "high-speed: about 7.4 degrees")
+	t.near(junction.needed(300), 110 + 2 * C + 80, 1e-9, "S-curve + two arcs + 80")
 end)
 
-t.test("junction: from the station out, merge, gap, crossing, approach; cuts where they touch", function()
-	local j = junction.fit(400, 300, 1, { near = {}, far = {} })
+t.test("junction: from the station out, merge, gap, crossing arcs, approach; cuts where they touch", function()
+	local j = junction.fit(400, R, 1, { near = {}, far = {} })
 	t.ok(j ~= nil, "fits in 400 m")
-	local merge, cross
+	local by = {}
 	for __, p in ipairs(j.pieces) do
-		if p.role == "merge" then merge = p else cross = p end
+		by[p.role] = p
 	end
+	local merge, cin, cout = by["merge"], by["cross in"], by["cross out"]
 	t.near(merge.x0, 15, 1e-9, "the merge's switch 15 m out")
 	t.near(merge.y0, 2.5, 1e-9, "on the existing near track")
 	t.near(merge.x1, 125, 1e-9, "110 m S-curve")
 	t.near(merge.y1, 12.5, 1e-9, "to our far track")
-	t.near(cross.x0, 145, 1e-9, "20 m further out")
-	t.near(cross.y0, -2.5, 1e-9, "from the existing far track")
-	t.near(cross.x1, 255, 1e-9, "110 m")
-	t.near(cross.y1, 7.5, 1e-9, "to our near track")
-	t.near(j.approachX, 285, 1e-9, "30 m of approach")
+	t.near(merge.tx0, 110, 1e-9, "S-curve tangent along x")
+	t.near(merge.ty0, 0, 1e-9, "flat at the switch")
+	t.near(merge.ty1, 0, 1e-9, "flat at our track")
+	t.near(cin.x0, 145, 1e-9, "20 m further out")
+	t.near(cin.y0, -2.5, 1e-9, "from the existing far track")
+	t.near(cin.x1, 145 + C, 1e-9, "one arc's run")
+	t.near(cin.y1, 2.5, 1e-9, "to the crossing node on the near track")
+	t.near(cin.ty0, 0, 1e-9, "leaves the far track along it")
+	t.near(math.atan(cin.ty1 / cin.tx1), THETA, 1e-9, "crosses at the arc's angle")
+	t.near(math.sqrt(cin.tx1 ^ 2 + cin.ty1 ^ 2), R * THETA, 1e-9, "tangent as long as the arc")
+	t.near(cout.x0, cin.x1, 1e-9, "the outer arc starts at the crossing node")
+	t.near(cout.tx0, cin.tx1, 1e-9, "tangent to the inner arc there (x)")
+	t.near(cout.ty0, cin.ty1, 1e-9, "tangent to the inner arc there (y)")
+	t.near(cout.x1, 145 + 2 * C, 1e-9, "a second run")
+	t.near(cout.y1, 7.5, 1e-9, "to our near track")
+	t.near(cout.ty1, 0, 1e-9, "flat at our track")
+	t.near(j.approachX, 145 + 2 * C + 30, 1e-9, "30 m of approach")
 	local byKind = {}
 	for __, c in ipairs(j.cuts) do
 		byKind[c.track .. " " .. c.kind] = c.x
 	end
 	t.near(byKind["near switch"], 15, 1e-9, "merge switch")
 	t.near(byKind["far switch"], 145, 1e-9, "crossing track's switch")
-	t.near(byKind["near crossing"], 200, 1e-9, "the level crossing halfway along the S-curve")
+	t.near(byKind["near crossing"], 145 + C, 1e-9, "the crossing node where the arcs meet")
 end)
 
 t.test("junction: mirrored for a line from the other side", function()
-	local j = junction.fit(400, 300, -1, { near = {}, far = {} })
+	local j = junction.fit(400, R, -1, { near = {}, far = {} })
 	for __, p in ipairs(j.pieces) do
 		if p.role == "merge" then
 			t.near(p.y0, -2.5, 1e-9, "the near track is at −2.5")
 			t.near(p.y1, -12.5, 1e-9, "our far track at −12.5")
+		elseif p.role == "cross in" then
+			t.near(p.y0, 2.5, 1e-9, "from the far track at +2.5")
+			t.ok(p.ty1 < 0, "turning towards −y")
 		end
 	end
 end)
 
 t.test("junction: moves out past existing signals, and fails when it can't fit", function()
-	local j = junction.fit(500, 300, 1, { near = { 20 }, far = {} })
+	local j = junction.fit(500, R, 1, { near = { 20 }, far = {} })
 	t.ok(j ~= nil, "fits further out")
 	for __, c in ipairs(j.cuts) do
 		if c.track == "near" then
 			t.ok(math.abs(c.x - 20) >= 15, "cut " .. c.kind .. " 15 m clear of the signal at 20")
 		end
 	end
-	t.ok(junction.fit(299, 300, 1, { near = {}, far = {} }) == nil, "299 m is too short")
+	t.ok(junction.fit(junction.needed(R), R, 1, { near = {}, far = {} }) ~= nil, "exactly the length needed fits")
+	t.ok(junction.fit(junction.needed(R) - 1, R, 1, { near = {}, far = {} }) == nil, "1 m less is too short")
 end)
 ```
 
@@ -213,6 +254,7 @@ end)
 local junction : PgraceRailRouterJunction = {}
 
 local type Layout = PgraceRailRouterJunction.Layout
+local type Piece = PgraceRailRouterJunction.Piece
 
 -- Every cut stays this far from existing signals and from the stretch's start (metres): the clearance our own
 -- signals keep from edge ends (a signal 3 m from a node collided with track joined there).
@@ -220,13 +262,23 @@ local CLEAR = 15.0
 local GAP = 20.0
 local APPROACH = 30.0
 local STEP = 5.0
+-- What each crossing arc climbs: the far track (−2.5) to the crossing node (+2.5), and on to our near track (+7.5).
+local CLIMB = 5.0
 
 function junction.sCurve(offset : number, radius : number) : number
 	return math.max(40, 5 * math.floor(math.sqrt(4 * radius * offset) / 5 + 0.5))
 end
 
+function junction.crossAngle(radius : number) : number
+	return math.acos(1 - CLIMB / radius)
+end
+
+function junction.crossRun(radius : number) : number
+	return radius * math.sin(junction.crossAngle(radius))
+end
+
 function junction.needed(radius : number) : number
-	return 2 * junction.sCurve(10, radius) + GAP + APPROACH + 2 * CLEAR
+	return junction.sCurve(10, radius) + 2 * junction.crossRun(radius) + GAP + APPROACH + 2 * CLEAR
 end
 
 local function clear(x : number, signals : {number}) : boolean
@@ -238,18 +290,33 @@ local function clear(x : number, signals : {number}) : boolean
 	return true
 end
 
+-- A piece from (x0, y0) to (x1, y1) on side +1, its tangents at angles a0, a1 to x and `len` long; mirrored by side.
+local function piece(x0 : number, y0 : number, x1 : number, y1 : number, a0 : number, a1 : number, len : number,
+		side : number, role : string) : Piece
+	return {
+		x0 = x0, y0 = y0 * side, x1 = x1, y1 = y1 * side,
+		tx0 = math.cos(a0) * len, ty0 = math.sin(a0) * len * side,
+		tx1 = math.cos(a1) * len, ty1 = math.sin(a1) * len * side,
+		role = role,
+	}
+end
+
 function junction.fit(length : number, radius : number, side : number, signals : {string : {number}}) : Layout
 	local l = junction.sCurve(10, radius)
+	local theta = junction.crossAngle(radius)
+	local c = junction.crossRun(radius)
+	local arc = radius * theta
 	local m = CLEAR
-	while m + 2 * l + GAP + APPROACH + CLEAR <= length + 1e-9 do
+	while m + l + GAP + 2 * c + APPROACH + CLEAR <= length + 1e-9 do
 		local c0 = m + l + GAP
-		local crossing = c0 + l / 2
+		local crossing = c0 + c
 		if clear(m, signals.near) and clear(crossing, signals.near) and clear(c0, signals.far) then
 			return {
-				approachX = c0 + l + APPROACH,
+				approachX = c0 + 2 * c + APPROACH,
 				pieces = {
-					{ x0 = m, y0 = 2.5 * side, x1 = m + l, y1 = 12.5 * side, role = "merge" },
-					{ x0 = c0, y0 = -2.5 * side, x1 = c0 + l, y1 = 7.5 * side, role = "cross" },
+					piece(m, 2.5, m + l, 12.5, 0, 0, l, side, "merge"),
+					piece(c0, -2.5, crossing, 2.5, 0, theta, arc, side, "cross in"),
+					piece(crossing, 2.5, c0 + 2 * c, 7.5, theta, 0, arc, side, "cross out"),
 				},
 				cuts = {
 					{ track = "near", x = m, kind = "switch" },
@@ -266,7 +333,7 @@ end
 return junction
 ```
 
-- [ ] **Step 4:** run `just test`. Expected: the four junction tests pass, along with everything else.
+- [ ] **Step 4:** run `just test`. Expected: the four junction tests pass, along with everything else. `just check` clean.
 - [ ] **Step 5: Commit** as `feat: junction geometry for joining an existing double track (pure)`.
 
 ### Task 4: Reading an existing station's approach (pure)
@@ -463,26 +530,26 @@ end
 - [ ] **Step 2: Build the pieces.** In `network.build`, for a leg whose start (or end) station has `existing`:
   - **No fan and no crossovers** at that end, so pass `atStart`/`atEnd` = false for that end to `crossoverPlaces`,
     and skip the fan code for it.
-  - **Edges.** For each `j.pieces` entry, make an edge from the frame to the world:
-    `world(x, y) = e.origin + e.dir × x + left(e.dir) × y`, at height `e.z`, with tangents `e.dir × (x1 − x0)`.
-    The end on our side joins the leg's track end node: the merge piece joins our far track, the cross piece our
-    near track. The far track is whichever of the leg's tracks 1/2 lies further from the existing axis at that
-    end. The leg's track node sits at the approach start, and the piece runs straight 30 m from the approach
-    start to x1, as part of the same edge as the S-curve. So the edge runs from (approachX, y_ours) to (x0, y0),
-    with tangents along x, and it is one edge.
+  - **Edges.** For each `j.pieces` entry, make one edge from the frame to the world:
+    `world(x, y) = e.origin + e.dir × x + left(e.dir) × y`, at height `e.z`; tangents
+    `e.dir × tx + left(e.dir) × ty`. Never split a piece: the game refuses a new piece over existing track unless
+    they share a node (P15). Then a straight edge on our track from each outer piece end (the merge's x1 on our far
+    track, the "cross out" piece's x1 on our near track) to the approach start (approachX), where the leg's track
+    end nodes sit: the merge joins our far track, the crossing track our near track. The far track is whichever of
+    the leg's tracks 1/2 lies further from the existing axis at that end. Edges run in whichever direction the
+    leg's chunk needs; reverse a piece by swapping its ends and negating its tangents.
   - **The existing end** becomes a new node carrying `existing = { piece, s }`. Find the piece in
     `e.pieces[near|far]` whose x-range holds the cut, then compute s by linear interpolation along its chord.
-  - **The crossing.** The cross piece must pass through the crossing node: split the cross edge there into two
-    edges sharing that node (`splitHermite` at 0.5, which is exactly y = ±2.5 for the symmetric S-curve). Then add
-    the crossing's `existing` node.
+  - **The crossing.** The "cross in" and "cross out" pieces share one node, the crossing node, which carries the
+    crossing's `existing` cut.
   - **Home signals** on our two approach tracks, 15 m from the approach start, facing inward. Use `addSignal` with
     `forward` according to the edge's direction.
   - Put the junction edges into the leg's first (or last) chunk, and record the chunk's `splits`.
 - [ ] **Step 3: Test.** Add a test to `tests/network_test.lua` with a one-leg plan whose start station has
   `existing` (built by hand, as the route would). Expect:
-  - 3 junction edges (track 4);
+  - 5 junction edges (track 4): the 3 pieces and the 2 straights to the approach start;
   - 3 nodes with `existing` set;
-  - the cross edges sharing the crossing node;
+  - the "cross in" and "cross out" edges sharing the crossing node, tangent there;
   - the leg's first chunk listing `splits` for 2 pieces (near, with 2 parameters; far, with 1);
   - no fan edges and no crossovers at that end.
 - [ ] **Step 4:** run `just test`. Expected: PASS. Commit as `feat: network junction pieces into existing track, and the splits a chunk needs`.
