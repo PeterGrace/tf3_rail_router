@@ -25,6 +25,8 @@ global record PgraceRailRouterSurvey
 		streetEdges : integer
 		-- Street nodes joining three or more pieces, marked as junctions.
 		junctions : integer
+		-- Shore cells sampled finer for water (Grid.shore).
+		shoreCells : integer
 		trackEdges : integer
 		tunnelsSkipped : integer
 		-- Edges drawn as a straight node-to-node line because their curve couldn't be read.

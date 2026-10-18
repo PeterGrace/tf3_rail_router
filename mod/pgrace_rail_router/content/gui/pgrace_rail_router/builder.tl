@@ -319,6 +319,10 @@ function builder.collisions(data : ProposalData) : {Collision}
 	return result
 end
 
+-- Notes (errorState.infos) a dry run gives that the build is then refused for: "Place on Land" came with ground track
+-- over a lake's edge (Bangor - Imperial Beach), clean otherwise.
+local REFUSING_INFOS : {string : boolean} = { ["Place on Land"] = true }
+
 function builder.dryRun(proposal : SimpleProposal, context ?: Context) : boolean, integer, {string}, integer,
 		ProposalData
 	local clock = api.type.Clock.new()
@@ -341,6 +345,15 @@ function builder.dryRun(proposal : SimpleProposal, context ?: Context) : boolean
 	if not read then
 		table.insert(messages, "couldn't read the dry run's errors")
 	end
+	-- Notes the game only refuses on at build time (a clean dry run that the build then refused: track over water).
+	pcall(function() : boolean
+		for __, m in ipairs(pd.errorState.infos or {}) do
+			if REFUSING_INFOS[tostring(m)] then
+				table.insert(messages, tostring(m))
+			end
+		end
+		return true
+	end)
 	local cost = 0
 	pcall(function() : boolean
 		cost = math.floor(tonumber(pd.costs) or 0)

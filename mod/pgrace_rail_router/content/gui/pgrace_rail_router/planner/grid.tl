@@ -29,7 +29,7 @@ local ROAD_FOLLOW_FACTOR = 1.5
 
 function grid.new(x0 : number, y0 : number, cell : number, nx : integer, ny : integer) : Grid
 	local g : Grid = { x0 = x0, y0 = y0, cell = cell, nx = nx, ny = ny, height = {}, water = {}, blocked = {},
-		road = {}, track = {}, junction = {} }
+		road = {}, track = {}, junction = {}, shore = {} }
 	for i = 1, nx * ny do
 		g.height[i] = 0
 		g.water[i] = false
@@ -75,9 +75,67 @@ function grid.heightAt(g : Grid, p : Pt) : number
 	return top * (1 - ty) + bottom * ty
 end
 
+grid.SHORE_SUB = 4
+
+function grid.shoreCells(g : Grid) : {integer}
+	local result : {integer} = {}
+	for iy = 1, g.ny do
+		for ix = 1, g.nx do
+			local i = grid.index(g, ix, iy)
+			local w = g.water[i]
+			local shore = false
+			for dy = -1, 1 do
+				for dx = -1, 1 do
+					local jx, jy = ix + dx, iy + dy
+					if not shore and jx >= 1 and jx <= g.nx and jy >= 1 and jy <= g.ny
+							and g.water[grid.index(g, jx, jy)] ~= w then
+						shore = true
+					end
+				end
+			end
+			if shore then
+				table.insert(result, i)
+			end
+		end
+	end
+	return result
+end
+
+function grid.shorePoint(g : Grid, i : integer, k : integer) : Pt
+	local n = grid.SHORE_SUB
+	local ix, iy = (i - 1) % g.nx + 1, (i - 1) // g.nx + 1
+	local kx, ky = (k - 1) % n + 1, (k - 1) // n + 1
+	local d = g.cell / n
+	return { x = g.x0 + (ix - 1) * g.cell + (kx - 0.5 - n / 2) * d, y = g.y0 + (iy - 1) * g.cell + (ky - 0.5 - n / 2) * d }
+end
+
+-- Fine point (jx, jy) (1-based over the whole grid, SHORE_SUB per cell side): water?
+local function fineWater(g : Grid, jx : integer, jy : integer) : boolean
+	local n = grid.SHORE_SUB
+	jx = math.max(1, math.min(g.nx * n, jx))
+	jy = math.max(1, math.min(g.ny * n, jy))
+	local ix, iy = (jx - 1) // n + 1, (jy - 1) // n + 1
+	local i = grid.index(g, ix, iy)
+	local fine = g.shore ~= nil and g.shore[i]
+	if fine ~= nil then
+		return fine[((jy - 1) % n) * n + (jx - 1) % n + 1]
+	end
+	return g.water[i]
+end
+
 function grid.waterAt(g : Grid, p : Pt) : boolean
 	local ix, iy = grid.cellOf(g, p)
 	return g.water[grid.index(g, ix, iy)]
+end
+
+function grid.wetAt(g : Grid, p : Pt) : boolean
+	local n = grid.SHORE_SUB
+	local d = g.cell / n
+	-- Fine point j sits at x0 - cell/2 + (j - 0.5) d.
+	local fx = (p.x - (g.x0 - g.cell / 2)) / d + 0.5
+	local fy = (p.y - (g.y0 - g.cell / 2)) / d + 0.5
+	local jx, jy = math.floor(fx), math.floor(fy)
+	return fineWater(g, jx, jy) or fineWater(g, jx + 1, jy) or fineWater(g, jx, jy + 1) or fineWater(g, jx + 1, jy + 1)
 end
 
 -- Cell coordinates within this much of a cell edge count as on it, so rounding never skips a cell the segment

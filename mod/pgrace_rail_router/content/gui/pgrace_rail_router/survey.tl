@@ -449,7 +449,7 @@ function survey.start(stops : {Town}, cell : number, margin : number, bounds ?: 
 	local nx, ny = box.nx, box.ny
 	cell = box.cell
 	local job : Job = { box = box, grid = grid.new(minX, minY, cell, nx, ny), tasks = {}, next = 1, seen = {},
-		reported = false, constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, junctions = 0, trackEdges = 0,
+		reported = false, constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, junctions = 0, shoreCells = 0, trackEdges = 0,
 		tunnelsSkipped = 0, curveFallbacks = 0, invalidCells = 0, failures = 0, slowestRowUs = 0, slowestQueryUs = 0,
 		slowestMarkUs = 0, slowestTaskUs = 0, slowestStepUs = 0, queries = 0, slices = 0, stepCalls = 0, totalUs = 0 }
 	for iy = 1, ny do
@@ -461,6 +461,34 @@ function survey.start(stops : {Town}, cell : number, margin : number, bounds ?: 
 			return nextCol > nx
 		end)
 	end
+	-- Then the shore cells (once every row is in), sampled finer for water: a cell's one flag misses a shore across it,
+	-- and the game refuses ground track over water ("Place on Land").
+	local shore : {integer} = nil
+	local nextShore = 1
+	table.insert(job.tasks, function(clock : Clock, budgetUs : number) : boolean
+		local g = job.grid
+		if shore == nil then
+			shore = grid.shoreCells(g)
+			job.shoreCells = #shore
+		end
+		local terrain = api.engine.terrain
+		local n = grid.SHORE_SUB * grid.SHORE_SUB
+		while nextShore <= #shore do
+			local i = shore[nextShore]
+			local fine : {boolean} = {}
+			for k = 1, n do
+				local p = grid.shorePoint(g, i, k)
+				local v = api.type.Vec2f.new(p.x, p.y)
+				fine[k] = terrain.isValidCoordinate(v) and terrain.isOnWater(v) or false
+			end
+			g.shore[i] = fine
+			nextShore = nextShore + 1
+			if clock:getTime() >= budgetUs then
+				break
+			end
+		end
+		return nextShore > #shore
+	end)
 	-- Tiles run to half a cell past maxX/maxY: after coarsening, the last cells' centres can sit close to the edge.
 	local tx = minX
 	while tx < maxX + cell / 2 do
@@ -498,7 +526,8 @@ local function report(job : Job)
 		.. job.trackEdges .. ", tunnels skipped " .. job.tunnelsSkipped .. ", straight fallbacks " .. job.curveFallbacks
 		.. "), failures " .. job.failures .. "; cells " .. n .. ": blocked " .. count(g.blocked, n) .. ", road "
 		.. count(g.road, n) .. " (junctions " .. job.junctions .. ", " .. count(g.junction, n) .. " cells), track "
-		.. count(g.track, n) .. ", water " .. count(g.water, n) .. ", invalid "
+		.. count(g.track, n) .. ", water " .. count(g.water, n) .. " (shore cells sampled finer " .. job.shoreCells
+		.. "), invalid "
 		.. job.invalidCells)
 end
 

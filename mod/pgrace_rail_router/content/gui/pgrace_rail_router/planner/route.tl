@@ -752,7 +752,7 @@ local function startHeights(input : Input, a : Station, b : Station, fitted : Pg
 	for i, sample in ipairs(samples) do
 		s[i] = sample.s
 		ground[i] = grid.heightAt(g, sample.p)
-		water[i] = grid.waterAt(g, sample.p)
+		water[i] = grid.wetAt(g, sample.p)
 		local ix, iy = grid.cellOf(g, sample.p)
 		local cell = grid.index(g, ix, iy)
 		if g.blocked[cell] then

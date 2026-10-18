@@ -698,3 +698,23 @@ t.test("grid: a grid's searches share its store, one at a time, and find what th
 	grid.startSearch(shared, { x = 200, y = 300 }, { x = 2800, y = 300 }, EAST, EAST, W)
 	t.ok(not pcall(grid.stepSearch, older, 10), "an older search can't go on")
 end)
+
+t.test("grid: shore cells are those with water and land side by side; wetAt uses their finer sampling", function()
+	local g = grid.new(0, 0, 100, 4, 1)
+	-- Cells 1-2 land, 3-4 water: the shore cells are 2 and 3.
+	g.water[3], g.water[4] = true, true
+	local shore = grid.shoreCells(g)
+	t.eq(#shore, 2, "two shore cells") t.eq(shore[1], 2, "cell 2") t.eq(shore[2], 3, "cell 3")
+	-- Cell 2 (centre x 100) sampled finer: its last column of points (x 137.5) is water, a shore running through it.
+	local fine = {}
+	for k = 1, grid.SHORE_SUB * grid.SHORE_SUB do
+		local p = grid.shorePoint(g, 2, k)
+		fine[k] = p.x > 130
+	end
+	g.shore[2] = fine
+	t.near(grid.shorePoint(g, 2, 1).x, 62.5, 1e-9, "first point's x") t.near(grid.shorePoint(g, 2, 1).y, -37.5, 1e-9, "y")
+	t.ok(not grid.waterAt(g, { x = 120, y = 0 }), "the cell's own flag says land")
+	t.ok(grid.wetAt(g, { x = 130, y = 0 }), "but beside its water points it's wet")
+	t.ok(not grid.wetAt(g, { x = 90, y = 0 }), "and away from them it's dry")
+	t.ok(grid.wetAt(g, { x = 320, y = 0 }), "a water cell's middle is wet")
+end)
