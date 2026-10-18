@@ -233,6 +233,57 @@ t.test("grid: a path doesn't follow a road when there's room beside it", functio
 	t.ok(onRoad <= 4, "mostly off the road: " .. onRoad .. " of " .. #path .. " points on it")
 end)
 
+-- An existing line (track cells) along the direct line, y = 500, from x = 300 to 1700.
+local function trackedGrid()
+	local g = grid.new(0, 0, 100, 21, 11)
+	for ix = 4, 18 do
+		g.track[grid.index(g, ix, 6)] = true
+	end
+	return g
+end
+
+local function onTrack(g, path)
+	local n = 0
+	for __, p in ipairs(path) do
+		if g.track[cellIndex(g, p)] then
+			n = n + 1
+		end
+	end
+	return n
+end
+
+t.test("grid: a path doesn't run along existing track, which the profile would bridge", function()
+	local g = trackedGrid()
+	local path = run(g, { x = 0, y = 500 }, { x = 2000, y = 500 })
+	t.ok(path ~= nil, "found")
+	t.eq(onTrack(g, path), 0, "off the line")
+end)
+
+t.test("grid: running along existing track costs as a bridge, but for the cells the caller frees", function()
+	-- Buildings either side of the line from x = 300 to 1700, all the way across: the only way is along it.
+	local g = trackedGrid()
+	for ix = 4, 18 do
+		for iy = 1, 11 do
+			if iy ~= 6 then
+				g.blocked[grid.index(g, ix, iy)] = true
+			end
+		end
+	end
+	local path, s = run(g, { x = 0, y = 500 }, { x = 2000, y = 500 })
+	t.ok(path ~= nil, "found")
+	t.eq(onTrack(g, path), 15, "along the line")
+	-- Ground for the 600 m off it, the 1400 m along it as a bridge, and the crossing on entering it.
+	t.near(s.cost[0], 600 + 1400 * W.bridgeFactor + W.trackCrossing, 1e-6, "cost")
+	local free = {}
+	for ix = 4, 18 do
+		free[grid.index(g, ix, 6)] = true
+	end
+	local fs = grid.startSearch(g, { x = 0, y = 500 }, { x = 2000, y = 500 }, EAST, EAST, W, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, free)
+	while not grid.stepSearch(fs, 1000) do end
+	t.near(fs.cost[0], 2000 + W.trackCrossing, 1e-6, "freed: plain ground")
+end)
+
 -- The cells cellsAlong visits, as a set and in visiting order.
 local function along(g, a, b)
 	local set, order = {}, {}

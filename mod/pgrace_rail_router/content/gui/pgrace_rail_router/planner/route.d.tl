@@ -269,6 +269,9 @@ global record PgraceRailRouterRoute
 		-- Grid cells (by index) under the stations' platforms and approaches, which legs' searches keep off, and how
 		-- many times they have been worked out (a key of searchCache's: a re-sited station changes them).
 		footprint : {integer : boolean}
+		-- Grid cells (by index) of the existing stations' own track (their platforms, and each stretch used): searches
+		-- run along track cells there at plain cost (grid.startSearch's alongFree). Worked out once the sites are.
+		alongFree : {integer : boolean}
 		footprintVersion : integer
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
 		-- is never changed.

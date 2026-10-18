@@ -506,6 +506,10 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 		return nil
 	end
 	local overWater = g.water[a] or g.water[b]
+	-- A move from track cell to track cell runs along existing track, which the profile bridges (route.tl: every
+	-- sample on a track cell is a crossing), so it costs as a bridge does, as over water; crossing a line costs
+	-- w.trackCrossing on entering it instead.
+	local alongTrack = g.track[a] and g.track[b] and not (s.alongFree[a] and s.alongFree[b])
 	local length = g.cell * math.sqrt(d[1] * d[1] + d[2] * d[2])
 	local grade = math.abs(g.height[b] - g.height[a]) / length
 	-- A knight move passes between two cells: both must be passable, and the ground there (their mean height, at the
@@ -517,11 +521,12 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 			return nil
 		end
 		overWater = overWater or g.water[m1] or g.water[m2]
+		alongTrack = alongTrack and (g.track[m1] or g.track[m2])
 		local hm = (g.height[m1] + g.height[m2]) / 2
 		grade = math.max(grade, math.abs(hm - g.height[a]) / (length / 2), math.abs(g.height[b] - hm) / (length / 2))
 	end
 	local factor = 1.0
-	if overWater then
+	if overWater or alongTrack then
 		factor = w.bridgeFactor
 	else
 		if grade > w.maxGrade then
@@ -718,7 +723,7 @@ end
 function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights,
 		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number, startRoom ?: number,
 		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}, startOverTrack ?: boolean,
-		goalOverTrack ?: boolean) : Search
+		goalOverTrack ?: boolean, alongFree ?: {integer : boolean}) : Search
 	local sx, sy = grid.cellOf(g, from)
 	local gx, gy = grid.cellOf(g, to)
 	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
@@ -726,7 +731,8 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 		found = false, expansions = 0, h0 = 0, bestH = 0, heapN = 0, cost = {}, parent = {},
 		origin = {}, finishDir = 0, finishSteps = 0, finishGoal = 1, filling = true, fillHead = 1, fillTail = 0,
 		fillEdge = false, enclosed = false, buildRadius = w.minBuildRadius or 0,
-		startRoom = startRoom or 0, goalRoom = goalRoom or 0, approach = approach or math.huge, avoid = {} }
+		startRoom = startRoom or 0, goalRoom = goalRoom or 0, approach = approach or math.huge, avoid = {},
+		alongFree = alongFree or {} }
 	-- The grid's store is this search's from now on.
 	local st = storeOf(g)
 	s.store, s.id = st, st.nextId

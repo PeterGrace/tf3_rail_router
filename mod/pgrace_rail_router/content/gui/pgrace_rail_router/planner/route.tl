@@ -360,6 +360,43 @@ local function footprints(input : Input, plan : Plan, i : integer, site : Statio
 	return cells
 end
 
+-- The cells (by grid index) of the plan's existing stations' own track: along each one's axis, 12 m either side
+-- (the analyser's corridor), over its platforms and out along each stretch the line uses to its end. A search's
+-- moves between them cost as plain ground (grid.startSearch's alongFree): a scout ends at the station's centre, in
+-- its track, and a leg's run lies beside its stretch, which the profile doesn't bridge. Elsewhere running along
+-- track cells costs as the bridge it builds.
+local function alongFreeCells(input : Input, plan : Plan) : {integer : boolean}
+	local g = input.grid
+	local cells : {integer : boolean} = {}
+	local function band(o : Pt, dir : Pt, x0 : number, x1 : number)
+		local left : Pt = { x = -dir.y, y = dir.x }
+		local x = x0
+		while x <= x1 + 1e-6 do
+			local y = -12.0
+			while y <= 12.0 + 1e-6 do
+				local p = geo.add(geo.add(o, geo.scale(dir, x)), geo.scale(left, y))
+				if grid.inside(g, p) then
+					local ix, iy = grid.cellOf(g, p)
+					cells[grid.index(g, ix, iy)] = true
+				end
+				y = y + math.min(6.0, g.cell / 4)
+			end
+			x = x + g.cell / 4
+		end
+	end
+	for __, station in ipairs(plan.stations) do
+		local st = station.existing
+		if st ~= nil then
+			local dir = geo.norm(st.dir)
+			band(st.centre, dir, -st.half, st.half)
+			for __, e in pairs(station.ends) do
+				band(e.origin, e.dir, -geo.dot(geo.sub(e.origin, st.centre), e.dir), e.length)
+			end
+		end
+	end
+	return cells
+end
+
 -- Adds a station's platform cells (by grid index) to `taken`, so later sites keep off them (none for an existing
 -- station, as addFootprint).
 local function takePlatforms(input : Input, station : Station, taken : {integer : boolean})
@@ -457,7 +494,7 @@ local function searchFor(job : Job, from : Pt, to : Pt, fromDir : Pt, toDir : Pt
 		end
 	end
 	local s = grid.startSearch(job.input.grid, from, to, fromDir, toDir, job.input.weights, radius, maxCost, fromRun,
-		toRun, fromRoom, toRoom, approachOf(job.input), avoid, fromTrack, toTrack)
+		toRun, fromRoom, toRoom, approachOf(job.input), avoid, fromTrack, toTrack, job.alongFree)
 	if key ~= nil then
 		s.cacheKey = key
 	end
@@ -1369,6 +1406,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			job.siteIndex = i + 1
 			if job.siteIndex > #input.stops then
 				job.phase, job.round, job.scoutIndex, job.scouts = "scout", 1, 1, {}
+				job.alongFree = alongFreeCells(input, plan)
 			end
 			return false
 		end
@@ -1416,7 +1454,8 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			local a, b = plan.stations[i].site.centre, plan.stations[i + 1].site.centre
 			local any : Pt = { x = 0, y = 0 }
 			local w = input.weights
-			job.search = grid.startSearch(input.grid, a, b, any, any, w, w.minSearchRadius or w.minRadius)
+			job.search = grid.startSearch(input.grid, a, b, any, any, w, w.minSearchRadius or w.minRadius, nil, nil, nil,
+				nil, nil, nil, nil, nil, nil, job.alongFree)
 			return false
 		end
 		if not grid.stepSearch(job.search, searchBudget(job.search, maxExpansions)) then

@@ -111,6 +111,9 @@ global record PgraceRailRouterGrid
 		approach : number
 		-- Cells kept off as if blocked (the stations' platforms and approaches), less the start and goal cells.
 		avoid : {integer : boolean}
+		-- Track cells a move between two of costs as plain ground (an existing station's own track, beside which a leg
+		-- runs on purpose; see startSearch).
+		alongFree : {integer : boolean}
 		-- Paths costing more are not wanted (math.huge: no limit).
 		maxCost : number
 		done : boolean
@@ -232,12 +235,14 @@ global record PgraceRailRouterGrid
 	-- goal with every cell blocked finishes the search at once, not found. The first stepSearch calls flood-fill the cells from the start
 	-- (about one cell per unit of budget, no expansions counted) and finish, not found, if the goal can't be reached
 	-- at all. Entering a road or track cell costs w.roadCrossing or w.trackCrossing (a junction cell w.trackCrossing too); a step from road to road costs
-	-- 1.5 × its length, so the path doesn't run along roads.
+	-- 1.5 × its length, so the path doesn't run along roads, and a step from track cell to track cell (a knight move's
+	-- cells between too) costs as over water (w.bridgeFactor): the profile bridges track cells, so that's what
+	-- running along a line builds; but for a step between two cells of `alongFree`.
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
 		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights,
 		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number, startRoom ?: number,
 		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}, startOverTrack ?: boolean,
-		goalOverTrack ?: boolean) : Search
+		goalOverTrack ?: boolean, alongFree ?: {integer : boolean}) : Search
 	-- Expands up to maxExpansions states (or fills that many cells first); true once the search is finished (found
 	-- or not). Gives up, not found, after 12 expansions per cell (a goal cut off only by the turn limit).
 	stepSearch : function(s : Search, maxExpansions : integer) : boolean
