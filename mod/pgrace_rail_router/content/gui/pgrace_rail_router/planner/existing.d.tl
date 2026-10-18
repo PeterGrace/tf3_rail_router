@@ -1,0 +1,55 @@
+-- An existing station's ends, read from a snapshot of its track (milestone 4b). Pure: the survey fills in the
+-- snapshot, and the planner uses each usable end's straight double-track stretch for a junction.
+global record PgraceRailRouterExisting
+	record Piece
+		entity : integer
+		node0 : integer
+		node1 : integer
+		p0 : PgraceRailRouterNetwork.Pt3
+		p1 : PgraceRailRouterNetwork.Pt3
+		t0 : PgraceRailRouterNetwork.Pt3
+		t1 : PgraceRailRouterNetwork.Pt3
+		-- "ground", "bridge" or "tunnel"
+		kind : string
+		-- One-way signals: param along the piece, and +1 facing node0 → node1 trains, −1 the other way.
+		signals : {{number}}
+	end
+
+	record Snapshot
+		pieces : {Piece}
+		-- Track pieces per node (entity → count), as streetSystem.getNodeTrackSegments gives.
+		degree : {integer : integer}
+	end
+
+	-- A station: its platforms' centre and direction, half their length, and its track end nodes.
+	record Station
+		entity : integer
+		centre : PgraceRailRouterGeo.Pt
+		dir : PgraceRailRouterGeo.Pt
+		half : number
+		ends : {integer}
+	end
+
+	-- A usable end: the straight double-track stretch's start on the two tracks' midline (and its height), the unit
+	-- outward direction, the stretch's length (metres), each track's pieces along it ("near": the track on our
+	-- line's side, "far"), ordered outward, and each track's signals as positions along the stretch (metres from its
+	-- start).
+	record End
+		origin : PgraceRailRouterGeo.Pt
+		z : number
+		dir : PgraceRailRouterGeo.Pt
+		length : number
+		pieces : {string : {Piece}}
+		signals : {string : {number}}
+	end
+
+	-- Both ends: [1] the end at +dir, [-1] the one at −dir; nil where not usable, and why in `why` ("no double
+	-- track", "short" or "left-hand").
+	record Result
+		ends : {integer : End}
+		why : {integer : string}
+	end
+
+	-- `side[k]`: which side of end k our line comes from (+1 left of outward, −1 right; nil +1).
+	analyse : function(station : Station, snap : Snapshot, side : {integer : number}) : Result
+end

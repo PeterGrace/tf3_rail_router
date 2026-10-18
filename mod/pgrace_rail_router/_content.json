@@ -15,6 +15,8 @@
         "gui/pgrace_rail_router/planner/arrows.tl",
         "gui/pgrace_rail_router/planner/corridor.d.tl",
         "gui/pgrace_rail_router/planner/corridor.tl",
+        "gui/pgrace_rail_router/planner/existing.d.tl",
+        "gui/pgrace_rail_router/planner/existing.tl",
         "gui/pgrace_rail_router/planner/geo.d.tl",
         "gui/pgrace_rail_router/planner/geo.tl",
         "gui/pgrace_rail_router/planner/grid.d.tl",
