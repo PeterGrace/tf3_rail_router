@@ -160,6 +160,26 @@ P15 builds a short straight double track with one-way signals, places a train on
 The player then runs a train through each route of the junction, and along the existing line across the
 crossing.
 
+### What P15 and P16 found (2026-10-18, in-game)
+
+- **Splitting existing track:** the engine's `replaceSegment` proposal, edited into pieces, works on signalled track
+  and the signal survives on its piece. The new node has no `BASE_NODE_CONFIG`; sending each piece at it again,
+  unedited (`replaceSegment`), gives it one.
+- **A new piece may lie over existing track only where the two share a node.** Every refusal fitted this: a crossing
+  piece starting at a node of ours 1.5 m beside track 2, and a branch running 0.6 m beside a track piece beyond a
+  joint 20 m from its switch. So a switch's branch must stay one piece until it is clear of the track it left, and the
+  crossing track must be one piece from its switch into the crossing node. No crossing is made where the track has no
+  node, at any angle (10° to 90°), even with `cleanupStreetGraph`.
+- **The crossing:** a node on the crossed track with four pieces, the crossing track's two pieces tangent to each
+  other there. The game's own tool makes straight pieces (P16 copied it at 6.5°); P15's two circular arcs, 12° at the
+  crossing, radius 228 m over 47.6 m each, also built.
+- **The built junction:** switch on track 1 at x = 60 with a single 110 m S-curve to +12.5; switch on track 2 at
+  x = 152.4; crossing at x = 200. Both connections face the station (west): a train off our line can only turn
+  towards the station, as designed.
+- **Junction geometry, revised:** the crossing S-curve is two circular arcs of angle θ meeting at the crossing node,
+  each `2 off / tan(θ/2)` long along x. For 12° that's 95 m in all. Its switch must keep the 16.6 m rule and the
+  15 m signal clearance like any other.
+
 ## Testing
 
 - **Unit tests:**
