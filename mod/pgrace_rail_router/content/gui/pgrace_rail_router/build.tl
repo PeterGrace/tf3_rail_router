@@ -450,8 +450,9 @@ local function streetNodesNear(p : Pt3, reach : number) : {Pt3}
 					if not seen[n] then
 						seen[n] = true
 						local q = nodePos(n)
-						-- Not a junction of four already, nor a level crossing.
-						if q ~= nil and dist2(q, p) <= reach and #streets.getNodeStreetSegments(n) < 4
+						-- A dead end or a node along a street (a junction of three would need its fourth arm square to
+						-- the others), not a level crossing.
+						if q ~= nil and dist2(q, p) <= reach and #streets.getNodeStreetSegments(n) <= 2
 								and #streets.getNodeTrackSegments(n) == 0 then
 							table.insert(nodes, q)
 						end
@@ -467,22 +468,49 @@ local function streetNodesNear(p : Pt3, reach : number) : {Pt3}
 end
 
 -- A road from the entrance (leaving it outward) to an existing street node, typed like a street at that node; nil
--- if the node is behind or alongside the station.
+-- if the node is behind or alongside the station. It meets a dead end straight on, continuing the street, and a node
+-- along a street square to it, as a T: arriving at an angle, it overlapped the street there (Collision, Mercer
+-- Island).
 local function roadProposal(e : Pt3, out : Pt3, node : Pt3) : SimpleProposal
 	local l = dist2(e, node)
 	local cx, cy = (node.x - e.x) / l, (node.y - e.y) / l
 	if cx * out.x + cy * out.y < ROAD_SQUARE then
 		return nil
 	end
-	local piece = api.engine.system.streetSystem.getNodeStreetSegments(node.entity)[1] as integer
+	local pieces = api.engine.system.streetSystem.getNodeStreetSegments(node.entity)
+	local piece = pieces[1] as integer
 	local street = api.engine.getComponent(piece, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
 	local rep = api.engine.util.proposal.replaceSegment(piece)
 	if street == nil or rep == nil or #rep.proposal.addedSegments == 0 then
 		return nil
 	end
+	-- The street's way out of the node along this piece.
+	local ax, ay : number, number
+	if street.node0 as integer == node.entity then
+		ax, ay = -street.tangent0.x, -street.tangent0.y
+	else
+		ax, ay = street.tangent1.x, street.tangent1.y
+	end
+	local al = math.sqrt(ax * ax + ay * ay)
+	if al < 1e-6 then
+		return nil
+	end
+	ax, ay = ax / al, ay / al
+	-- The way the road runs as it reaches the node.
+	local dx, dy : number, number
+	if #pieces == 1 then
+		dx, dy = -ax, -ay
+	else
+		-- Square to the street, from the entrance's side.
+		local px, py = -ay, ax
+		if px * (e.x - node.x) + py * (e.y - node.y) < 0 then
+			px, py = -px, -py
+		end
+		dx, dy = -px, -py
+	end
 	local dz = node.z - e.z
 	local h : Hermite = { p0 = e, p1 = node, t0 = { x = out.x * l, y = out.y * l, z = dz },
-		t1 = { x = cx * l, y = cy * l, z = dz } }
+		t1 = { x = dx * l, y = dy * l, z = dz } }
 	local n = api.type.NodeAndEntity.new()
 	n.entity = -2
 	n.comp.position = v3(e)
@@ -492,6 +520,21 @@ local function roadProposal(e : Pt3, out : Pt3, node : Pt3) : SimpleProposal
 	proposal.streetProposal.nodesToAdd = { n }
 	proposal.streetProposal.edgesToAdd = { seg }
 	return proposal
+end
+
+-- PROBE (remove before release): a node's lane connections (BASE_NODE_CONFIG), as Bus Loops logged them.
+local function laneConnections(node : integer) : string
+	local ok, n = pcall(function() : integer
+		local c = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG) as {string : any}
+		if c == nil then
+			return -1
+		end
+		return #(c.laneConnections as {any})
+	end)
+	if not ok then
+		return "unreadable"
+	end
+	return n as integer < 0 and "none" or tostring(n)
 end
 
 local function stepRoad(b : Build)
@@ -523,9 +566,14 @@ local function stepRoad(b : Build)
 		local made, proposal = pcall(roadProposal, e, out, node)
 		if made and proposal ~= nil then
 			tried = tried + 1
-			local ok, cost, messages = builder.dryRun(proposal as SimpleProposal)
-			log(("road to station %d (%s) from node %d, %.0f m: %s"):format(b.road, name, node.entity, dist2(e, node),
-				ok and ("clean, " .. tostring(cost)) or table.concat(messages, "; ")))
+			local ok, cost, messages, __, data = builder.dryRun(proposal as SimpleProposal)
+			local hits : {string} = {}
+			for __, c in ipairs(builder.collisions(data)) do
+				table.insert(hits, ("%s %d"):format(c.what, c.entity))
+			end
+			log(("road to station %d (%s) from node %d, %.0f m: %s%s"):format(b.road, name, node.entity, dist2(e, node),
+				ok and ("clean, " .. tostring(cost)) or table.concat(messages, "; "),
+				#hits > 0 and (" (" .. table.concat(hits, ", ") .. ")") or ""))
 			if ok then
 				b.waiting = true
 				api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(proposal as SimpleProposal, builder.newContext(),
@@ -538,10 +586,9 @@ local function stepRoad(b : Build)
 						end
 						b.charged = b.charged + math.floor(tonumber(res.resultProposalData.costs) or 0)
 						b.roads = b.roads + 1
-						-- The junction's lanes: every piece at the node, the new road among them, sent again unedited.
-						for __, sg in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(node.entity)) do
-							table.insert(b.roadRepair, sg as integer)
-						end
+						-- The junction's lanes, from the next step: in the callback the node listed only two of its
+						-- three pieces, and the junction was left with a no-entry sign (Antelope).
+						b.roadJunction = node.entity
 						log(("road to station %d (%s) built"):format(b.road, name))
 						next_()
 						return true
@@ -574,7 +621,8 @@ function build.step(b : Build) : boolean
 	if b.phase == "track" and b.chunk > #b.check.net.chunks then
 		b.phase = "roads"
 	end
-	if b.phase == "roads" and b.road > #b.check.plan.stations and #b.roadRepair == 0 then
+	if b.phase == "roads" and b.road > #b.check.plan.stations and #b.roadRepair == 0 and b.roadJunction == nil
+			and b.roadRepaired == nil then
 		b.phase = "done"
 		log(("done: %d level crossings, roads to %d of %d stations, charged %d"):format(b.levelCrossings, b.roads,
 			#b.check.plan.stations, b.charged))
@@ -585,6 +633,32 @@ function build.step(b : Build) : boolean
 			stepStation(b)
 		elseif b.phase == "track" then
 			stepChunk(b)
+		elseif b.roadJunction ~= nil then
+			-- Every piece at the junction, the new road among them, sent again unedited for its lanes.
+			for __, sg in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(b.roadJunction)) do
+				table.insert(b.roadRepair, sg as integer)
+				local edge = api.engine.getComponent(sg, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+				if edge ~= nil then
+					log(("road junction %d: piece %d, nodes %d (%s lane connections) / %d (%s)"):format(b.roadJunction,
+						sg as integer, edge.node0 as integer, laneConnections(edge.node0 as integer), edge.node1 as integer,
+						laneConnections(edge.node1 as integer)))
+				end
+			end
+			log(("road junction %d: %d pieces to repair"):format(b.roadJunction, #b.roadRepair))
+			b.roadRepaired = b.roadJunction
+			b.roadJunction = nil
+		elseif #b.roadRepair == 0 and b.roadRepaired ~= nil then
+			log(("road junction %d after the repair: %s lane connections"):format(b.roadRepaired,
+				laneConnections(b.roadRepaired)))
+			for __, sg in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(b.roadRepaired)) do
+				local edge = api.engine.getComponent(sg, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+				if edge ~= nil then
+					log(("road junction %d after: piece %d, nodes %d (%s) / %d (%s)"):format(b.roadRepaired, sg as integer,
+						edge.node0 as integer, laneConnections(edge.node0 as integer), edge.node1 as integer,
+						laneConnections(edge.node1 as integer)))
+				end
+			end
+			b.roadRepaired = nil
 		elseif #b.roadRepair > 0 then
 			stepRepair(b, b.roadRepair)
 		else

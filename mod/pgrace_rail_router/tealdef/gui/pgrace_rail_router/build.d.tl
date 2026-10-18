@@ -47,6 +47,10 @@ global record PgraceRailRouterBuild
 		roads : integer
 		roadsMissing : {string}
 		roadRepair : {integer}
+		-- The street node a road was just joined to: its pieces are queued for repair on the next step.
+		roadJunction : integer
+		-- PROBE (remove before release): the junction just repaired, its lane connections logged on the next step.
+		roadRepaired : integer
 	end
 
 	start : function(check : PgraceRailRouterBuilder.Check) : Build
