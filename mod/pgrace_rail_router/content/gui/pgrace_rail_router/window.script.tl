@@ -56,6 +56,8 @@ local record Settings
 	-- electrified variant available in the current year.
 	electrified : boolean
 	platform : integer
+	-- Station style: "simple" (2 tracks) or "halt" (Halt 2+2, with fans and one-way signals); nil: simple.
+	style : string
 	-- The player's ticks on candidate stops, by town id, over the default (corridor.select's towns ticked): true
 	-- ticked, false unticked, nil the default. Cleared when From or To changes.
 	ticked : {integer : boolean}
@@ -68,6 +70,8 @@ local rememberedStations = false
 local rememberedProbes = false -- PROBE (remove before release)
 -- Unticked candidates listed besides the ticked ones while the list is short.
 local EXTRA_STOPS = 5
+-- Halt 2+2 lines: a one-way block signal on each track every so many metres between stations (design draft: 2 km).
+local BLOCK_SPACING = 2000.0
 
 -- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
 local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 160, ticked = {} }
@@ -96,6 +100,8 @@ local record Work
 	track : TrackType
 	weights : PgraceRailRouterModes.Weights
 	platform : integer
+	-- The straight at each platform end the stations need (route Input.approach; nil: the planner's 100 m).
+	approach : number
 	-- The survey margin in use, and how many times the work was started over with a wider one.
 	margin : number
 	retries : integer
@@ -130,6 +136,7 @@ local record CheckWork
 	electrified : boolean
 	-- The plan crosses roads on the level (its mode doesn't bridge them).
 	levelCrossings : boolean
+	style : string
 	check : PgraceRailRouterBuilder.Check
 end
 
@@ -207,8 +214,27 @@ end
 -- available), its speed, the year, the bridge and tunnel types the game would pick (nil where none is available),
 -- the station's modules for the year's era (the station script's getEra), and whether streets the track collides with
 -- are level crossings. Main thread: reads the game's types.
-local function settingsFor(track : TrackType, electrified : boolean, year : integer, levelCrossings : boolean)
-		: PgraceRailRouterBuilder.Settings
+-- Halt 2+2's turnout radius for a track type, as the Express & Local mod picks it: simple 150, standard 300,
+-- high-speed 600 (by top speed: 100, 160 and 350 km/h).
+local function turnoutRadius(track : TrackType) : number
+	if track.speed < 30 then
+		return 150
+	elseif track.speed < 60 then
+		return 300
+	end
+	return 600
+end
+
+-- The straight a station of a style needs at each platform end: Halt 2+2's fan and the crossovers' room after it.
+local function approachFor(style : string, track : TrackType) : number
+	if style ~= "halt" or track == nil then
+		return nil
+	end
+	return network.fanLength(network.turnoutLength(turnoutRadius(track))) + 100
+end
+
+local function settingsFor(track : TrackType, electrified : boolean, year : integer, levelCrossings : boolean,
+		style ?: string) : PgraceRailRouterBuilder.Settings
 	local name = templateFor(track, electrified, year)
 	local function structure(which : string) : PgraceRailRouterModes.StructureType
 		local ok, result = pcall(function() : PgraceRailRouterModes.StructureType
@@ -222,6 +248,13 @@ local function settingsFor(track : TrackType, electrified : boolean, year : inte
 	end
 	local era = sl.eraLetter(year)
 	local dir = "::/stations/rail/modular_station/"
+	local options = network.defaults()
+	local signal : string = nil
+	if style == "halt" then
+		options.fan = network.turnoutLength(turnoutRadius(track))
+		options.blockSpacing = BLOCK_SPACING
+		signal = "::/infrastructure/signal/signal_path_" .. (year < 1950 and "a" or "c") .. ".con"
+	end
 	return {
 		track = name, speed = track.speed, year = year,
 		bridge = structure("bridge"), tunnel = structure("tunnel"),
@@ -229,8 +262,10 @@ local function settingsFor(track : TrackType, electrified : boolean, year : inte
 		era = { platform = dir .. "platform_passenger_era_" .. era .. ".module", track = sl.trackModule(name) },
 		addons = { building = dir .. "main_building_1_era_" .. era .. ".module",
 			stairs = dir .. "addon_platform_passenger_stairs_era_" .. era .. ".module" },
-		network = network.defaults(),
+		network = options,
 		levelCrossings = levelCrossings,
+		style = style == "halt" and "halt" or nil,
+		signal = signal,
 	}
 end
 
@@ -535,7 +570,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local function setSettings(change : function(Settings))
 		settingsState:transform(function(current : Settings) : Settings
 			local copy : Settings = { from = current.from, to = current.to, mode = current.mode, track = current.track,
-				electrified = current.electrified, platform = current.platform, ticked = current.ticked }
+				electrified = current.electrified, platform = current.platform, style = current.style,
+				ticked = current.ticked }
 			change(copy)
 			remembered = copy
 			return copy
@@ -714,7 +750,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		workRef:set({ stops = corridor.order(fromTown, toTown, picked), track = track,
 			weights = modes.weights(settings.mode, track),
-			platform = settings.platform, margin = SURVEY_MARGIN, retries = 0, slowestStepUs = {},
+			platform = settings.platform, approach = approachFor(settings.style, track), margin = SURVEY_MARGIN,
+			retries = 0, slowestStepUs = {},
 			planUs = 0, planFrames = 0 })
 		resetCheck()
 		kept.plan = nil
@@ -796,7 +833,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			if survey.step(work.surveyJob, BUDGET_US) then
 				pcall(captureProbe, work, survey.grid(work.surveyJob)) -- PROBE (remove before release)
 				work.routeJob = route.start({ grid = survey.grid(work.surveyJob), stops = work.stops,
-					weights = work.weights, platformLength = work.platform })
+					weights = work.weights, platformLength = work.platform, approach = work.approach })
 				setProgress(work, "plan", 0)
 			else
 				setProgress(work, "survey", survey.progress(work.surveyJob))
@@ -922,7 +959,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	local function advanceCheck(work : CheckWork)
 		if work.check == nil then
 			local clock = api.type.Clock.new()
-			local settings = settingsFor(work.track, work.electrified, currentYear(data.year), work.levelCrossings)
+			local settings = settingsFor(work.track, work.electrified, currentYear(data.year), work.levelCrossings,
+				work.style)
 			work.check = builder.start(work.plan, settings, math.floor(clock:getTime()))
 			checkDoneState:set(0)
 		else
@@ -1159,6 +1197,17 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		table.insert(platformItems, builtin.ComboBoxItem{ value = length,
 			content = builtin.TextView{ text = formatLength(length) } })
 	end
+	table.insert(body, labelled(_("Stations"), builtin.ComboBox{
+		value = settings.style == "halt" and 2 or 1,
+		items = {
+			builtin.ComboBoxItem{ value = 1, content = builtin.TextView{ text = _("2 tracks") } },
+			builtin.ComboBoxItem{ value = 2, content = builtin.TextView{ text = _("Halt 2+2, signalled") } },
+		},
+		onValueChange = function(v : integer | number | string)
+			local style = toInteger(v) == 2 and "halt" or "simple"
+			update(function(s : Settings) s.style = style end)
+		end,
+	}))
 	table.insert(body, labelled(_("Platforms"), builtin.ComboBox{
 		value = settings.platform,
 		items = platformItems,
@@ -1327,7 +1376,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 							return
 						end
 						checkRef:set({ plan = plan, track = track, electrified = electrified,
-							levelCrossings = not modes.weights(settings.mode, track).bridgeRoads })
+							levelCrossings = not modes.weights(settings.mode, track).bridgeRoads, style = settings.style })
 						checkDoneState:set(0)
 						checkErrorState:set(false)
 					end,

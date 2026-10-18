@@ -10,6 +10,9 @@ global record PgraceRailRouterRoute
 		weights : PgraceRailRouterModes.Weights
 		-- Platform length in metres.
 		platformLength : number
+		-- The straight before and after each platform (metres; nil: 100). Halt 2+2 stations need their fans' length
+		-- and the crossovers' room after it (network.fanLength + 100).
+		approach : number
 	end
 
 	record Station

@@ -18,8 +18,12 @@ local type Plan = PgraceRailRouterRoute.Plan
 local type Job = PgraceRailRouterRoute.Job
 local type LegHeights = PgraceRailRouterRoute.LegHeights
 
--- Straight track before and after each platform, so trains run in line with it (metres).
+-- Straight track before and after each platform, so trains run in line with it (metres): Input.approach, else this.
 local APPROACH = 100.0
+
+local function approachOf(input : Input) : number
+	return input.approach or APPROACH
+end
 -- The estimate's price for a metre of bridge and of tunnel, as a multiple of plain track: what the game charged.
 -- Probe P3 (300 m of each on flat ground): 1.8 and 3.0; Bangor - Imperial Beach, Fastest, 985 m of bridges: 1.8.
 -- Not the planner's own weights (Weights.bridgeCostFactor, tunnelCostFactor), which also steer it off structures.
@@ -197,17 +201,17 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 	local half = input.platformLength / 2
 	local c, d = station.site.centre, station.site.dir
 	local platformEnd = geo.add(c, geo.scale(d, sign * half))
-	local approach = geo.add(c, geo.scale(d, sign * (half + APPROACH)))
+	local approach = geo.add(c, geo.scale(d, sign * (half + approachOf(input))))
 	local own = platformCells(input, station)
 	local ext = extensionLength(input, radius)
 	if other ~= nil then
 		local ahead = sign * geo.dot(geo.sub(other.site.centre, c), d)
-		ext = math.min(ext, (ahead - 2 * (half + APPROACH)) / 4)
+		ext = math.min(ext, (ahead - 2 * (half + approachOf(input))) / 4)
 	end
 	while ext > 0 do
-		local extension = geo.add(c, geo.scale(d, sign * (half + APPROACH + ext)))
+		local extension = geo.add(c, geo.scale(d, sign * (half + approachOf(input) + ext)))
 		if straightClear(input, approach, extension, taken, own)
-				and leavable(g, geo.add(c, geo.scale(d, -sign * (half + APPROACH))), extension, geo.scale(d, sign)) then
+				and leavable(g, geo.add(c, geo.scale(d, -sign * (half + approachOf(input)))), extension, geo.scale(d, sign)) then
 			return platformEnd, approach, extension
 		end
 		ext = ext - g.cell / 2
@@ -234,7 +238,7 @@ end
 -- them (their own ends' cells aside), so a line that loops round never crosses a station's track.
 local function addFootprint(input : Input, station : Station, cells : {integer : boolean})
 	local g = input.grid
-	local reach = input.platformLength / 2 + APPROACH
+	local reach = input.platformLength / 2 + approachOf(input)
 	local c, dir = station.site.centre, station.site.dir
 	local d = -reach
 	while d <= reach + 1e-6 do
@@ -322,7 +326,7 @@ end
 -- of a along both their directions.
 local function apartEnough(input : Input, a : PgraceRailRouterStations.Site, b : PgraceRailRouterStations.Site) : boolean
 	local apart = geo.sub(b.centre, a.centre)
-	return geo.len(apart) >= input.platformLength + 2 * APPROACH and geo.dot(apart, a.dir) > 0
+	return geo.len(apart) >= input.platformLength + 2 * approachOf(input) and geo.dot(apart, a.dir) > 0
 		and geo.dot(apart, b.dir) > 0
 end
 
@@ -347,7 +351,7 @@ local function searchFor(job : Job, from : Pt, to : Pt, fromDir : Pt, toDir : Pt
 		end
 	end
 	local s = grid.startSearch(job.input.grid, from, to, fromDir, toDir, job.input.weights, radius, maxCost, run, run,
-		fromRoom, toRoom, APPROACH, avoid)
+		fromRoom, toRoom, approachOf(job.input), avoid)
 	if key ~= nil then
 		s.cacheKey = key
 	end
@@ -918,7 +922,7 @@ local function stepResite(job : Job, maxExpansions : integer)
 	end
 	if rs.stage == "site" then
 		if rs.finder == nil then
-			rs.finder = stations.startFind(input.grid, station.town.pos, rs.dirs[rs.k], input.platformLength + 2 * APPROACH,
+			rs.finder = stations.startFind(input.grid, station.town.pos, rs.dirs[rs.k], input.platformLength + 2 * approachOf(input),
 				MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + RESITE_MOVE), rs.others,
 				exitFor(job, i))
 		end
@@ -1154,7 +1158,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 				takePlatforms(input, prev, job.taken)
 			end
 			job.finder = stations.startFind(input.grid, town.pos, stopDir(input.stops, i),
-				input.platformLength + 2 * APPROACH, MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken, exitFor(job, i))
+				input.platformLength + 2 * approachOf(input), MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken, exitFor(job, i))
 		end
 		if not stations.stepFind(job.finder, SITE_WORK_PER_STEP) then
 			return false
@@ -1244,7 +1248,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 					takePlatforms(input, other, job.others)
 				end
 			end
-			job.finder = stations.startFind(input.grid, station.town.pos, dir, input.platformLength + 2 * APPROACH,
+			job.finder = stations.startFind(input.grid, station.town.pos, dir, input.platformLength + 2 * approachOf(input),
 				MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + MAX_TURN_MOVE), job.others,
 				exitFor(job, i))
 			return false
