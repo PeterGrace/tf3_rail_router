@@ -1271,6 +1271,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				table.insert(body, textRow(fill(_("The game's price: {price} (track {track}, stations {stations})"),
 					{ price = formatMoney(checked.total), track = formatMoney(checked.total - stationsPrice),
 					stations = formatMoney(stationsPrice) }), "font-scale-body"))
+				if checked.built > 0 then
+					table.insert(body, textRow(fill(_("{count} of {total} parts already built: Build carries on from there."),
+						{ count = tostring(checked.built), total = tostring(#checked.items) }), "font-scale-annotation"))
+				end
 				if checked.crossings > 0 then
 					table.insert(body, textRow(fill(_("Level crossings: {count}"),
 						{ count = tostring(checked.crossings) }), "font-scale-annotation"))

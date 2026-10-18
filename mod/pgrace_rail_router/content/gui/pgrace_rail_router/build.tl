@@ -10,10 +10,6 @@ local type Hermite = PgraceRailRouterNetwork.Hermite
 local type Cut = PgraceRailRouterNetwork.Cut
 
 local LOG_PREFIX = "[rail_router] build "
-local STATION_FILE = "modular_station.con"
--- A station's free track end is matched to a network node this close (metres; probe P10: they're exactly where the
--- layout puts them).
-local END_MATCH = 1.0
 -- A node a built chunk added is matched to a network node this close (metres).
 local NODE_MATCH = 0.5
 -- A crossing this close to an existing street node uses the node, not a split (metres): within network.cut's 1 m,
@@ -121,53 +117,16 @@ end
 
 -- Stations -------------------------------------------------------------------------------------------------------
 
--- The modular station built nearest p (within 200 m), or nil.
-local function stationNear(x : number, y : number) : integer
-	local best : integer = nil
-	local bestD = math.huge
-	for __, e in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), 200,
-			api.type.ComponentType.CONSTRUCTION)) do
-		pcall(function() : boolean
-			local con = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
-			if con ~= nil and tostring(con.fileName):find(STATION_FILE, 1, true) ~= nil then
-				local bv = api.engine.getComponent(e, api.type.ComponentType.BOUNDING_VOLUME) as Engine.Component.BoundingVolume
-				local d = math.sqrt(((bv.bbox.min.x + bv.bbox.max.x) / 2 - x) ^ 2 + ((bv.bbox.min.y + bv.bbox.max.y) / 2 - y) ^ 2)
-				if d < bestD then
-					best, bestD = e, d
-				end
-			end
-			return true
-		end)
-	end
-	return best
-end
-
--- A station's free track ends: the nodes of its frozen edges with one track piece (probe P10: they aren't among its
--- frozen nodes).
-local function freeEnds(station : integer) : {Pt3}
-	local ends : {Pt3} = {}
-	local seen : {integer : boolean} = {}
-	local con = api.engine.getComponent(station, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
-	for __, e in ipairs(con.frozenEdges or {}) do
-		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-		if edge ~= nil then
-			for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
-				if not seen[node] then
-					seen[node] = true
-					if #api.engine.system.streetSystem.getNodeTrackSegments(node) == 1 then
-						table.insert(ends, nodePos(node))
-					end
-				end
-			end
-		end
-	end
-	return ends
-end
-
 local function stepStation(b : Build)
 	local check = b.check
 	local station = check.plan.stations[b.station]
 	local c = station.site.centre
+	-- Built before (a build that stopped, then the game restarted): join to it and go on.
+	if builder.builtStation(check.plan, b.station, check.net) then
+		log(("station %d already built"):format(b.station))
+		b.station = b.station + 1
+		return
+	end
 	local proposal, why = builder.stationProposal(check.plan, b.station, check.settings)
 	if proposal == nil then
 		fail(b, { tostring(why) }, c.x, c.y)
@@ -180,42 +139,11 @@ local function stepStation(b : Build)
 	end
 	log(("station %d (%s): dry run clean, %d"):format(b.station, station.town ~= nil and station.town.name or "?", cost))
 	send(b, proposal, c.x, c.y, function()
-		local con = stationNear(c.x, c.y)
-		if con == nil then
-			fail(b, { "the station built can't be found" }, c.x, c.y)
+		if not builder.builtStation(check.plan, b.station, check.net) then
+			fail(b, { "the station built can't be found, or its track ends aren't where they were planned" }, c.x, c.y)
 			return
 		end
-		-- Join the network's nodes at its track ends.
-		local matched = 0
-		for __, e in ipairs(freeEnds(con)) do
-			for __, n in ipairs(check.net.nodes) do
-				if n.entity == nil and dist2(n, e) <= END_MATCH then
-					n.entity = e.entity
-					matched = matched + 1
-				end
-			end
-		end
-		log(("station %d built (construction %d), %d track ends joined"):format(b.station, con, matched))
-		-- PROBE (remove before release): the station's street ends (its entrance, to join to the town's roads).
-		pcall(function() : boolean
-			local c2 = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
-			local seen : {integer : boolean} = {}
-			for __, e in ipairs(c2.frozenEdges or {}) do
-				if api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) ~= nil then
-					local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-					for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
-						if not seen[node] then
-							seen[node] = true
-							local p = nodePos(node)
-							log(("station %d street node %d at (%.1f %.1f %.1f): %d street pieces, %d in all"):format(b.station,
-								node, p.x, p.y, p.z, #api.engine.system.streetSystem.getNodeStreetSegments(node),
-								#api.engine.system.streetSystem.getNodeSegments(node)))
-						end
-					end
-				end
-			end
-			return true
-		end)
+		log(("station %d built"):format(b.station))
 		b.station = b.station + 1
 	end)
 end
@@ -435,6 +363,11 @@ local function stepChunk(b : Build)
 	local chunk = net.chunks[b.chunk]
 	local p = net.edges[chunk.first].p0
 	local cr = b.crossings
+	if cr == nil and builder.builtChunk(net, b.chunk) then
+		log(("chunk %d already built"):format(b.chunk))
+		b.chunk = b.chunk + 1
+		return
+	end
 	if cr == nil then
 		local proposal, why = builder.chunkProposal(net, chunk.first, chunk.last, check.settings)
 		if proposal == nil then

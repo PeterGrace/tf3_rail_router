@@ -468,6 +468,132 @@ function builder.diagnose(net : Network, first : integer, last : integer, settin
 	end)
 end
 
+local STATION_FILE_NAME = "modular_station.con"
+-- A station's track end matches a network node this close, and a chunk's node an existing track node this close (m).
+local END_MATCH = 1.0
+local NODE_MATCH = 0.5
+
+local function nodeAt(n : integer) : Pt3
+	local node = api.engine.getComponent(n, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+	if node == nil then
+		return nil
+	end
+	return { x = node.position.x, y = node.position.y, z = node.position.z, entity = n }
+end
+
+-- The modular station nearest (x, y) within 200 m, or nil.
+local function stationNear(x : number, y : number) : integer
+	local best : integer = nil
+	local bestD = math.huge
+	for __, e in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), 200,
+			api.type.ComponentType.CONSTRUCTION)) do
+		pcall(function() : boolean
+			local con = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+			if con ~= nil and tostring(con.fileName):find(STATION_FILE_NAME, 1, true) ~= nil then
+				local bv = api.engine.getComponent(e, api.type.ComponentType.BOUNDING_VOLUME) as Engine.Component.BoundingVolume
+				local d = math.sqrt(((bv.bbox.min.x + bv.bbox.max.x) / 2 - x) ^ 2 + ((bv.bbox.min.y + bv.bbox.max.y) / 2 - y) ^ 2)
+				if d < bestD then
+					best, bestD = e, d
+				end
+			end
+			return true
+		end)
+	end
+	return best
+end
+
+-- A station's track ends: the nodes of its frozen edges that aren't among its frozen nodes (probe P10: those are the
+-- ones inside it; the ends, free or joined since, aren't).
+local function trackEnds(station : integer) : {Pt3}
+	local con = api.engine.getComponent(station, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+	local frozen : {integer : boolean} = {}
+	for __, n in ipairs(con.frozenNodes or {}) do
+		frozen[n as integer] = true
+	end
+	local ends : {Pt3} = {}
+	local seen : {integer : boolean} = {}
+	for __, e in ipairs(con.frozenEdges or {}) do
+		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if edge ~= nil and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) == nil then
+			for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
+				if not seen[node] and not frozen[node] then
+					seen[node] = true
+					local p = nodeAt(node)
+					if p ~= nil then
+						table.insert(ends, p)
+					end
+				end
+			end
+		end
+	end
+	return ends
+end
+
+local function dist2(a : Pt3, b : Pt3) : number
+	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+end
+
+function builder.builtStation(plan : Plan, i : integer, net : Network) : boolean
+	local c = plan.stations[i].site.centre
+	local con = stationNear(c.x, c.y)
+	if con == nil then
+		return false
+	end
+	local matches : {{Pt3, integer}} = {}
+	for __, e in ipairs(trackEnds(con)) do
+		for __, n in ipairs(net.nodes) do
+			if dist2(n, e) <= END_MATCH and (n.entity == nil or n.entity == e.entity) then
+				table.insert(matches, { n, e.entity })
+			end
+		end
+	end
+	if #matches < 2 then
+		return false
+	end
+	for __, m in ipairs(matches) do
+		m[1].entity = m[2]
+	end
+	debugPrint(LOG_PREFIX .. ("station %d: construction %d, %d track ends joined"):format(i, con, #matches))
+	return true
+end
+
+-- An existing track node within NODE_MATCH of p (and 1.5 m in height), or nil.
+local function trackNodeAt(p : Pt3) : integer
+	local best : integer = nil
+	local bestD = NODE_MATCH
+	for __, n in ipairs(api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(p.x, p.y), 2,
+			api.type.ComponentType.BASE_NODE)) do
+		local q = nodeAt(n as integer)
+		if q ~= nil and math.abs(q.z - p.z) <= 1.5 and dist2(p, q) <= bestD
+				and #api.engine.system.streetSystem.getNodeTrackSegments(n) > 0 then
+			best, bestD = n as integer, dist2(p, q)
+		end
+	end
+	return best
+end
+
+function builder.builtChunk(net : Network, c : integer) : boolean
+	local chunk = net.chunks[c]
+	local found : {Pt3 : integer} = {}
+	for i = chunk.first, chunk.last do
+		local e = net.edges[i]
+		for __, k in ipairs({ e.node0, e.node1 }) do
+			local n = net.nodes[k]
+			if n.entity == nil and found[n] == nil then
+				local entity = trackNodeAt(n)
+				if entity == nil then
+					return false
+				end
+				found[n] = entity
+			end
+		end
+	end
+	for n, entity in pairs(found) do
+		n.entity = entity
+	end
+	return true
+end
+
 function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) : Check
 	local clock = api.type.Clock.new()
 	local net = network.build(plan, settings.network)
@@ -483,7 +609,7 @@ function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) 
 		settings.bridge ~= nil and settings.bridge.name or "none", settings.tunnel ~= nil and settings.tunnel.name or "none",
 		settings.year or 0, settingsUs or 0, math.floor(clock:getTime())))
 	return { plan = plan, settings = settings, net = net, items = items, next = 1, outcomes = {}, total = 0,
-		failures = 0, crossings = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
+		failures = 0, crossings = 0, built = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
 end
 
 function builder.step(check : Check) : boolean
@@ -494,6 +620,24 @@ function builder.step(check : Check) : boolean
 	check.next = check.next + 1
 	check.done = check.next > #check.items
 	local x, y = 0.0, 0.0
+	-- Already built (a build stopped earlier, then the game restarted): not dry-run; Build skips it.
+	local builtOk, isBuilt = pcall(function() : boolean
+		if item.kind == "station" then
+			return builder.builtStation(check.plan, item.index, check.net)
+		end
+		return builder.builtChunk(check.net, item.index)
+	end)
+	if builtOk and isBuilt then
+		table.insert(check.outcomes, { item = item, ok = true, cost = 0, messages = {}, x = x, y = y, us = 0,
+			collisions = {}, crossings = 0, built = true })
+		check.built = check.built + 1
+		debugPrint(LOG_PREFIX .. ("dry run %s %d: already built"):format(item.kind, item.index))
+		if check.done then
+			debugPrint(LOG_PREFIX .. ("check done: %d items, %d already built, %d with errors"):format(#check.items,
+				check.built, check.failures))
+		end
+		return check.done
+	end
 	local made, proposal, why = pcall(function() : SimpleProposal, string
 		if item.kind == "station" then
 			local c = check.plan.stations[item.index].site.centre

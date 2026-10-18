@@ -35,6 +35,8 @@ global record PgraceRailRouterBuilder
 		y : number
 		-- Wall time of the dry run (microseconds); 0 if there was none.
 		us : integer
+		-- Already built (a build stopped earlier): not dry-run, no price.
+		built : boolean
 		-- What it ran into, each entity once (the game lists some several times).
 		collisions : {Collision}
 		-- Streets crossed on the level (Settings.levelCrossings): in a dry run the track collides with them, since a
@@ -75,8 +77,9 @@ global record PgraceRailRouterBuilder
 		-- The sum of the game's prices, and the outcomes that weren't clean.
 		total : integer
 		failures : integer
-		-- Level crossings over all the outcomes.
+		-- Level crossings over all the outcomes, and the items already built.
 		crossings : integer
+		built : integer
 		-- The slowest dry run so far and the time of all of them (microseconds).
 		slowestUs : integer
 		totalUs : integer
@@ -116,6 +119,13 @@ global record PgraceRailRouterBuilder
 	-- PROBE (remove before release): after a chunk's dry run failed, each of its edges dry-run alone (and with the
 	-- edges sharing its nodes), logged: which the game refuses. Never throws.
 	diagnose : function(net : PgraceRailRouterNetwork.Network, first : integer, last : integer, settings : Settings)
+	-- Whether station i is already built (a build stopped earlier): a modular station at its site whose track ends
+	-- (the nodes of its frozen edges that aren't frozen nodes) are the network's nodes there, within 1 m; those nodes
+	-- get their entities. Main thread.
+	builtStation : function(plan : PgraceRailRouterRoute.Plan, i : integer, net : PgraceRailRouterNetwork.Network) : boolean
+	-- Whether chunk c is already built: every node of its edges is a track node in the game within 0.5 m (then they
+	-- get their entities; otherwise none does). Main thread.
+	builtChunk : function(net : PgraceRailRouterNetwork.Network, c : integer) : boolean
 	-- A dry run: whether it's clean, the price, the error messages, its wall time in µs, and the raw ProposalData
 	-- (nil if the dry run threw).
 	dryRun : function(proposal : SimpleProposal, context ?: Context) : boolean, integer, {string}, integer, ProposalData
