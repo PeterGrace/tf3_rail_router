@@ -19,4 +19,8 @@ global record PgraceRailRouterProbe
 	-- P13: the modular station nearest the camera: its transform, building modules, and every street piece within 200 m
 	-- in its local frame (where the road the player builds to its main building goes).
 	stationStreets : function() : {function()}
+	-- P14: a Halt 2+2 station at the camera facing east (test map only), then 600 m of line off its east end with its
+	-- fans, crossovers and one-way signals in one proposal; logs the signal resource the game knows and the signals as
+	-- built, against the planned ones.
+	halt : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 end

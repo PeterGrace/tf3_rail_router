@@ -22,8 +22,11 @@ global record PgraceRailRouterNetwork
 		t1 : Pt3
 		-- "ground", "bridge" or "tunnel".
 		kind : string
-		-- 1: the left track (in the leg's direction of travel), 2: the right; 0: a crossover between them.
+		-- 1: the left track (in the leg's direction of travel), 2: the right; 0: a crossover between them; 3: a fan's
+		-- piece, from a Halt 2+2 station's local track into the line's track on its side.
 		track : integer
+		-- One-way signals on it (Halt 2+2), or nil.
+		signals : {Signal}
 		leg : integer
 		-- Metres along the leg's centre line where the edge starts and ends.
 		s0 : number
@@ -59,6 +62,17 @@ global record PgraceRailRouterNetwork
 		-- with none, the game's choice of platform could be on the other track, and the train had no path). An end
 		-- that isn't straight ground for 100 m gets none.
 		crossovers : boolean
+		-- Halt 2+2 stations: the turnout length L of their fans (network.turnoutLength), nil for 2-track stations. With
+		-- it, each leg gets a fan at both ends, crossovers after each fan (a train can turn back at any station), and one-way signals:
+		-- starters, home signals, and (blockSpacing) block signals along the line, every so many metres.
+		fan : number
+		blockSpacing : number
+	end
+
+	-- A signal on an edge: where along it (0..1), and whether it faces trains running node0 → node1.
+	record Signal
+		param : number
+		forward : boolean
 	end
 
 	-- A cubic Hermite curve (an edge's shape).
@@ -108,5 +122,10 @@ global record PgraceRailRouterNetwork
 	trackEdges : function(leg : PgraceRailRouterRoute.Leg, legIndex : integer, side : number, options : Options,
 		cuts ?: {number}, keepWhole ?: {{number}}) : {Edge}
 	-- The whole plan's network.
+	-- A Halt 2+2 fan's turnout length for a radius: max(40, 5 × round(√(20 R) / 5)) (the Express & Local mod's: simple
+	-- track 150 → 55 m, standard 300 → 75 m, high-speed 600 → 110 m).
+	turnoutLength : function(radius : number) : number
+	-- How far a fan reaches from the platforms for a turnout length: 20 + L + 30.
+	fanLength : function(l : number) : number
 	build : function(plan : PgraceRailRouterRoute.Plan, options : Options) : Network
 end

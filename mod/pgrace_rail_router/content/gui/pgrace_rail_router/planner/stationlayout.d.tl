@@ -22,6 +22,9 @@ global record PgraceRailRouterStationLayout
 		-- Track ends: {left track's start, right track's start, left's end, right's end} in the direction of travel
 		-- (left/right as network.tl's tracks 1 and 2).
 		ends : {PgraceRailRouterGeo.Pt}
+		-- Halt 2+2 only: the local tracks' ends, in the same order (left local's start, right local's start, left's
+		-- end, right's end); the line's tracks (`ends`) are the express pair.
+		localEnds : {PgraceRailRouterGeo.Pt}
 		-- Where a road to the main building ends (its dead end; the game paves the rest and links the sidewalks),
 		-- and the way out from the building, away from the tracks.
 		entrance : PgraceRailRouterGeo.Pt
@@ -51,7 +54,8 @@ global record PgraceRailRouterStationLayout
 	-- The main building, underpass stairs and (if addons.roof is set) roofs the station script's template puts on a
 	-- 2-track through station of this platform length (createTemplateFn for 2 tracks: main building 1 at slot
 	-- 3400000 + 10 k, stairs and roofs on platform rows 0 and 3).
-	addons : function(platformLength : number, addons : Addons) : {integer : Module}
+	-- Halt 2+2 (style "halt"): stairs and roofs on platform rows 0 and 5.
+	addons : function(platformLength : number, addons : Addons, style ?: string) : {integer : Module}
 	-- The direction to lay a station out along so its main building (on the left of that direction: probe P6, the
 	-- box grew on that side) faces `towards` (the town's centre): dir itself, or turned round. The station is
 	-- symmetric along its tracks, so either way its track ends are the same four points.
@@ -59,6 +63,8 @@ global record PgraceRailRouterStationLayout
 		towards : PgraceRailRouterGeo.Pt) : PgraceRailRouterGeo.Pt
 	-- The layout for a site (centre, unit direction of travel) and platform length (a multiple of 40 m; at most 840 m,
 	-- 21 modules, the most the station script has slots for).
+	-- Style nil: 2 tracks between 2 platforms; "halt": Halt 2+2, platform, local, express, express, local, platform
+	-- (the line runs on through the express pair).
 	layout : function(centre : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt, platformLength : number,
-		era : Era) : Layout
+		era : Era, style ?: string) : Layout
 end

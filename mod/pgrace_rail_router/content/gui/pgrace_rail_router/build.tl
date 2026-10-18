@@ -411,6 +411,14 @@ local function stepChunk(b : Build)
 		end
 		if not check.settings.levelCrossings or others > 0
 				or builder.levelCrossings(messages, collisions, onLevel) == 0 then
+			-- PROBE (remove before release): what it hit, and which edges the game refuses on their own.
+			local hits : {string} = {}
+			for __, c in ipairs(collisions) do
+				table.insert(hits, ("%s %d at (%.0f %.0f)%s"):format(c.what, c.entity, c.x, c.y,
+					c.components ~= nil and (" [" .. c.components .. "]") or ""))
+			end
+			log(("chunk %d dry run: %s; hit %s"):format(b.chunk, table.concat(messages, "; "), table.concat(hits, ", ")))
+			pcall(builder.diagnose, net, chunk.first, chunk.last, check.settings)
 			fail(b, messages, p.x, p.y)
 			return
 		end
@@ -441,7 +449,8 @@ end
 -- partway along a piece, which is split there first.
 -- How far from the entrance a street may be (metres), and how many ways are dry-run.
 local ROAD_REACH = 300.0
-local ROAD_TRIES = 16
+local ROAD_TRIES = 48
+local ROAD_STEP_TRIES = 8
 -- A street node this close to the entrance means the road is there already (a build carried on after a restart).
 local ROAD_SNAP = 3.0
 -- How far behind the building's front a street may be (the cosine of the angle off straight out): one alongside is
@@ -558,36 +567,167 @@ end
 
 -- A road from the entrance (leaving it outward) to the target, arriving along t.arrive, joined to t.node, or ending
 -- at a new node at t.p (a split's dry run: it collides with that street only), typed like the target's street.
-local function roadProposal(e : Pt3, out : Pt3, t : PgraceRailRouterBuild.RoadTarget) : SimpleProposal
+-- t.start is the way the road leaves the entrance; with t.mid it first curves to a point t.mid before the target,
+-- on the line it arrives along, then runs straight into it (a dead end close beside the station can't be reached
+-- in one curve: Mercer Island, 24 m away).
+local function roadProposal(e : Pt3, t : PgraceRailRouterBuild.RoadTarget) : SimpleProposal
 	local street = api.engine.getComponent(t.piece, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
 	local rep = api.engine.util.proposal.replaceSegment(t.piece)
 	if street == nil or rep == nil or #rep.proposal.addedSegments == 0 then
 		return nil
 	end
-	local l = dist2(e, t.p)
-	local dz = t.p.z - e.z
-	local h : Hermite = { p0 = e, p1 = t.p, t0 = { x = out.x * l, y = out.y * l, z = dz },
-		t1 = { x = t.arrive.x * l, y = t.arrive.y * l, z = dz } }
+	local template = rep.proposal.addedSegments[1]
+	-- Edges -1 (and -2), then the nodes: the entrance, the middle point, a new node at a split's point.
+	local pieces = (t.mid or 0) > 0 and 2 or 1
 	local nodes : {Proposal.NodeAndEntity} = {}
-	local n = api.type.NodeAndEntity.new()
-	n.entity = -2
-	n.comp.position = v3(e)
-	table.insert(nodes, n)
-	local far = -3
+	local function newNode(p : Pt3) : integer
+		local n = api.type.NodeAndEntity.new()
+		n.entity = -(pieces + #nodes + 1)
+		n.comp.position = v3(p)
+		table.insert(nodes, n)
+		return n.entity
+	end
+	local entrance = newNode(e)
+	local m : Pt3 = nil
+	local mid : integer = nil
+	if pieces == 2 then
+		m = { x = t.p.x - t.arrive.x * t.mid, y = t.p.y - t.arrive.y * t.mid, z = t.p.z }
+		mid = newNode(m)
+	end
+	local far : integer
 	if t.node ~= nil then
 		far = t.node.entity
 	else
-		local m = api.type.NodeAndEntity.new()
-		m.entity = -3
-		m.comp.position = v3(t.p)
-		table.insert(nodes, m)
+		far = newNode(t.p)
 	end
-	local seg = streetPiece(-2, far, h, street, rep.proposal.addedSegments[1])
-	seg.entity = -1
+	local function curve(a : Pt3, from : Pt3, b : Pt3, into : Pt3) : Hermite
+		local l = dist2(a, b)
+		local dz = b.z - a.z
+		return { p0 = a, p1 = b, t0 = { x = from.x * l, y = from.y * l, z = dz }, t1 = { x = into.x * l, y = into.y * l, z = dz } }
+	end
+	local segs : {Proposal.SegmentAndEntity} = {}
+	if pieces == 1 then
+		local seg = streetPiece(entrance, far, curve(e, t.start, t.p, t.arrive), street, template)
+		seg.entity = -1
+		table.insert(segs, seg)
+	else
+		local first = streetPiece(entrance, mid, curve(e, t.start, m, t.arrive), street, template)
+		first.entity = -1
+		local last_ = streetPiece(mid, far, curve(m, t.arrive, t.p, t.arrive), street, template)
+		last_.entity = -2
+		table.insert(segs, first)
+		table.insert(segs, last_)
+	end
 	local proposal = api.type.SimpleProposal.new()
 	proposal.streetProposal.nodesToAdd = nodes
-	proposal.streetProposal.edgesToAdd = { seg }
+	proposal.streetProposal.edgesToAdd = segs
 	return proposal
+end
+
+-- The shapes a road may take, cheapest first. First straight roads: out of the building square, or turned by up to
+-- 30°, to the first street they meet, as a T there (a straight road looks like a road; curves forced to leave square
+-- and arrive along a street made hairpins: Bangor - Imperial Beach, 2026-10-18). Then curves to every target,
+-- leaving square or up to 60° off (the road the player built, which the game linked, came in 15° off), and to a
+-- dead end also by way of a point ROAD_MIDS before it, none turning more than ROAD_MAX_TURN in all. Each costs its
+-- length plus a metre a degree it turns.
+local ROAD_RAYS : {number} = { 0, 15, -15, 30, -30 }
+local ROAD_TURNS : {number} = { 0, 30, -30, 60, -60 }
+local ROAD_MIDS : {number} = { 20, 40 }
+local ROAD_MAX_TURN = 120.0
+-- A straight road meets a street at least this far off parallel (degrees).
+local ROAD_MIN_ANGLE = 30.0
+
+local function turned(out : Pt3, deg : number) : Pt3
+	local a = math.rad(deg)
+	return { x = out.x * math.cos(a) - out.y * math.sin(a), y = out.x * math.sin(a) + out.y * math.cos(a), z = 0 }
+end
+
+-- How far a curve leaving a along `from` and arriving at b along `into` turns in all (degrees).
+local function turning(a : Pt3, from : Pt3, b : Pt3, into : Pt3) : number
+	local l = dist2(a, b)
+	local h : Hermite = { p0 = a, p1 = b, t0 = { x = from.x * l, y = from.y * l, z = 0 }, t1 = { x = into.x * l, y = into.y * l, z = 0 } }
+	-- The angle between successive chords (acos of their unit vectors' dot: the game's Lua has no two-argument atan).
+	local total = 0.0
+	local last = network.hermiteAt(h, 0)
+	local px, py = 0.0, 0.0
+	for k = 1, 32 do
+		local p = network.hermiteAt(h, k / 32)
+		local dx, dy = unit(p.x - last.x, p.y - last.y)
+		if k > 1 then
+			total = total + math.acos(math.max(-1.0, math.min(1.0, px * dx + py * dy)))
+		end
+		px, py, last = dx, dy, p
+	end
+	return math.deg(total)
+end
+
+-- Straight roads from the entrance: for each ray, the first street piece it meets, well clear of its ends and not
+-- too near parallel to it.
+local function rayShapes(e : Pt3, out : Pt3, reach : number) : {PgraceRailRouterBuild.RoadTarget}
+	local shapes : {PgraceRailRouterBuild.RoadTarget} = {}
+	local pieces = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(e.x, e.y), reach,
+		api.type.ComponentType.BASE_EDGE)
+	for __, deg in ipairs(ROAD_RAYS) do
+		local dir = turned(out, deg)
+		local ray : Hermite = { p0 = e, p1 = { x = e.x + dir.x * reach, y = e.y + dir.y * reach, z = e.z },
+			t0 = { x = dir.x * reach, y = dir.y * reach, z = 0 }, t1 = { x = dir.x * reach, y = dir.y * reach, z = 0 } }
+		local best : PgraceRailRouterBuild.RoadTarget = nil
+		local bestS = math.huge
+		for __, ent in ipairs(pieces) do
+			local edge = isStreet(ent as integer)
+			if edge ~= nil and #api.engine.system.streetSystem.getNodeTrackSegments(edge.node0) == 0 then
+				local h : Hermite = { p0 = p3(edge.position0), p1 = p3(edge.position1), t0 = p3(edge.tangent0),
+					t1 = p3(edge.tangent1) }
+				for __, c in ipairs(network.crossings(ray, h)) do
+					if c.s < bestS then
+						local before = network.hermiteAt(h, math.max(0, c.u - 0.01))
+						local after = network.hermiteAt(h, math.min(1, c.u + 0.01))
+						local sx, sy = unit(after.x - before.x, after.y - before.y)
+						local sine = math.abs(sx * dir.y - sy * dir.x)
+						bestS = c.s
+						best = nil
+						if dist2(c.p, h.p0) >= SPLIT_END and dist2(c.p, h.p1) >= SPLIT_END
+								and sine >= math.sin(math.rad(ROAD_MIN_ANGLE)) then
+							best = { kind = "split", p = c.p, arrive = dir, piece = ent as integer, u = c.u, start = dir,
+								mid = 0, turn = deg, cost = dist2(e, c.p) + math.abs(deg) }
+						end
+					end
+				end
+			end
+		end
+		if best ~= nil then
+			table.insert(shapes, best)
+		end
+	end
+	return shapes
+end
+
+local function roadShapes(e : Pt3, out : Pt3, reach : number) : {PgraceRailRouterBuild.RoadTarget}
+	local shapes = rayShapes(e, out, reach)
+	for __, t in ipairs(roadTargets(e, out, reach)) do
+		local mids : {number} = { 0 }
+		if t.kind == "dead end" then
+			for __, d in ipairs(ROAD_MIDS) do
+				table.insert(mids, d)
+			end
+		end
+		for __, deg in ipairs(ROAD_TURNS) do
+			local start = turned(out, deg)
+			for __, mid in ipairs(mids) do
+				local into = t.arrive
+				local m = mid > 0 and { x = t.p.x - into.x * mid, y = t.p.y - into.y * mid, z = t.p.z } or t.p
+				local turn = turning(e, start, m, into)
+				if turn <= ROAD_MAX_TURN then
+					table.insert(shapes, { kind = t.kind, p = t.p, arrive = into, node = t.node, piece = t.piece, u = t.u,
+						start = start, mid = mid, turn = deg, cost = dist2(e, m) + mid + turn })
+				end
+			end
+		end
+	end
+	table.sort(shapes, function(x : PgraceRailRouterBuild.RoadTarget, y : PgraceRailRouterBuild.RoadTarget) : boolean
+		return x.cost < y.cost
+	end)
+	return shapes
 end
 
 -- A split's dry run is good if all it hit is the street to be split (and its nodes).
@@ -619,6 +759,7 @@ local function stepRoad(b : Build)
 			log(("road to station %d (%s): none, %s"):format(b.road, name, missing))
 		end
 		b.roadTarget = nil
+		b.roadShapes = nil
 		b.road = b.road + 1
 	end
 	local function sendRoad(t : PgraceRailRouterBuild.RoadTarget, proposal : SimpleProposal)
@@ -645,7 +786,7 @@ local function stepRoad(b : Build)
 	-- A split street: now the road to its new node.
 	local t = b.roadTarget
 	if t ~= nil then
-		local proposal = roadProposal(e, out, t)
+		local proposal = roadProposal(e, t)
 		local ok, __, messages = false, 0, {} as {string}
 		if proposal ~= nil then
 			ok, __, messages = builder.dryRun(proposal)
@@ -665,13 +806,16 @@ local function stepRoad(b : Build)
 		next_()
 		return
 	end
-	local targets = roadTargets(e, out, ROAD_REACH)
+	-- The shapes to try, nearest target first, ROAD_STEP_TRIES dry runs a step (a few ms each).
+	if b.roadShapes == nil then
+		b.roadShapes = roadShapes(e, out, ROAD_REACH)
+		b.roadNext = 1
+	end
 	local tried = 0
-	for __, target in ipairs(targets) do
-		if tried >= ROAD_TRIES then
-			break
-		end
-		local made, proposal = pcall(roadProposal, e, out, target)
+	while b.roadNext <= #b.roadShapes and b.roadNext <= ROAD_TRIES and tried < ROAD_STEP_TRIES do
+		local target = b.roadShapes[b.roadNext]
+		b.roadNext = b.roadNext + 1
+		local made, proposal = pcall(roadProposal, e, target)
 		if made and proposal ~= nil then
 			tried = tried + 1
 			local ok, cost, messages, __, data = builder.dryRun(proposal as SimpleProposal)
@@ -684,8 +828,9 @@ local function stepRoad(b : Build)
 			for __, c in ipairs(builder.collisions(data)) do
 				table.insert(hits, ("%s %d"):format(c.what, c.entity))
 			end
-			log(("road to station %d (%s), %s %s, %.0f m: %s%s"):format(b.road, name, target.kind,
-				target.node ~= nil and tostring(target.node.entity) or tostring(target.piece), dist2(e, target.p),
+			log(("road to station %d (%s), %s %s (%.0f°%s), %.0f m: %s%s"):format(b.road, name, target.kind,
+				target.node ~= nil and tostring(target.node.entity) or tostring(target.piece), target.turn,
+				target.mid > 0 and (", by " .. tostring(target.mid) .. " m before") or "", dist2(e, target.p),
 				ok and ("clean, " .. tostring(cost)) or table.concat(messages, "; "),
 				#hits > 0 and (" (" .. table.concat(hits, ", ") .. ")") or ""))
 			if ok and target.kind ~= "split" then
@@ -726,8 +871,11 @@ local function stepRoad(b : Build)
 			end
 		end
 	end
-	next_(#targets == 0 and ("no street within %.0f m"):format(ROAD_REACH)
-		or ("%d roads tried, none clean"):format(tried))
+	if b.roadNext <= #b.roadShapes and b.roadNext <= ROAD_TRIES then
+		return
+	end
+	next_(#b.roadShapes == 0 and ("no street within %.0f m"):format(ROAD_REACH)
+		or ("%d roads tried, none clean"):format(b.roadNext - 1))
 end
 
 function build.start(check : PgraceRailRouterBuilder.Check) : Build

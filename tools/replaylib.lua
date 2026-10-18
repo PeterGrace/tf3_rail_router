@@ -39,6 +39,7 @@ return function(root)
 	lib.corridor = ug_require(base .. "corridor.tl")
 	lib.modes = ug_require(base .. "modes.tl")
 	lib.area = ug_require(base .. "area.tl")
+	lib.network = ug_require(base .. "network.tl")
 	lib.maplib = dofile(root .. "/tools/maplib.lua")
 	lib.capture = dofile(root .. "/tools/capture_file.lua")
 	local grid, route, corridor, modes, area, maplib = lib.grid, lib.route, lib.corridor, lib.modes, lib.area, lib.maplib
@@ -73,10 +74,10 @@ return function(root)
 	-- costs most beyond the work itself: the game's Lua (5.2) collects incrementally, and pays a step's garbage
 	-- collection debt (as much work as bytes allocated) at its next allocation, so a step that allocates megabytes (a
 	-- search's tables doubling) makes a hitch there that the desktop, with the collector held off, never shows.
-	function lib.runPlan(g, stops, weights, platform, expansions)
+	function lib.runPlan(g, stops, weights, platform, expansions, approach)
 		expansions = expansions or lib.STEP_EXPANSIONS
 		local start = clock()
-		local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform })
+		local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform, approach = approach })
 		local paths = {}
 		local slowest, worst = {}, 0
 		local alloc = { total = 0, max = 0, maxKind = nil, worst = 0, worstKind = nil }
@@ -229,7 +230,7 @@ return function(root)
 			local g, stats = lib.gridFor(map, box)
 			table.insert(r.areas, { box = box, margin = margin, stats = stats })
 			r.grid = g
-			r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, platform, opts.expansions)
+			r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, platform, opts.expansions, opts.approach)
 			if r.plan.ok or r.plan.failure ~= "no_path" or retry == lib.MAX_RETRIES then
 				break
 			end
