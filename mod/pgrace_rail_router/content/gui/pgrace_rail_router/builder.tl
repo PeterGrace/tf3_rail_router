@@ -1,5 +1,6 @@
 local network = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/network.tl" as PgraceRailRouterNetwork
 local sl = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/stationlayout.tl" as PgraceRailRouterStationLayout
+local survey = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/survey.tl" as PgraceRailRouterSurvey
 
 local builder : PgraceRailRouterBuilder = {}
 
@@ -575,33 +576,6 @@ local function stationNear(x : number, y : number) : integer
 	return best
 end
 
--- A station's track ends: the nodes of its frozen edges that aren't among its frozen nodes (probe P10: those are the
--- ones inside it; the ends, free or joined since, aren't).
-local function trackEnds(station : integer) : {Pt3}
-	local con = api.engine.getComponent(station, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
-	local frozen : {integer : boolean} = {}
-	for __, n in ipairs(con.frozenNodes or {}) do
-		frozen[n as integer] = true
-	end
-	local ends : {Pt3} = {}
-	local seen : {integer : boolean} = {}
-	for __, e in ipairs(con.frozenEdges or {}) do
-		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-		if edge ~= nil and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) == nil then
-			for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
-				if not seen[node] and not frozen[node] then
-					seen[node] = true
-					local p = nodeAt(node)
-					if p ~= nil then
-						table.insert(ends, p)
-					end
-				end
-			end
-		end
-	end
-	return ends
-end
-
 local function dist2(a : Pt3, b : Pt3) : number
 	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
 end
@@ -613,7 +587,7 @@ function builder.builtStation(plan : Plan, i : integer, net : Network) : boolean
 		return false
 	end
 	local matches : {{Pt3, integer}} = {}
-	for __, e in ipairs(trackEnds(con)) do
+	for __, e in ipairs(survey.trackEnds(con)) do
 		for __, n in ipairs(net.nodes) do
 			if dist2(n, e) <= END_MATCH and (n.entity == nil or n.entity == e.entity) then
 				table.insert(matches, { n, e.entity })
