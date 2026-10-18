@@ -117,6 +117,24 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 			seg.comp.typeIndex = settings.normalTypeIndex
 		end
 		seg.comp.laneConfigs = template.laneConfigs
+		-- The distance between parallel tracks, as the game's own track carries it (probe P1: 5 on a double track the
+		-- player built; left at 0, the game took the two tracks for one in their parallel strip, and drew overhead wire
+		-- over one of them only).
+		-- A crossover (track 0) isn't one of a pair: left at 0.
+		if e.track ~= 0 then
+			seg.comp.distance = 2 * settings.network.offset
+		end
+		-- Owned by the player, as the game's own track is (P1: ours had no owner). The constructor isn't in the
+		-- tealdefs: used only if it's there.
+		local PlayerOwned = (api.type as any as {string : {string : function() : Engine.Component.PlayerOwned}})
+			["PlayerOwned"]
+		if PlayerOwned ~= nil and PlayerOwned.new ~= nil then
+			local owned = PlayerOwned.new()
+			owned.player = api.engine.util.getPlayer()
+			seg.playerOwned = owned
+		else
+			logOnce("playerOwned", "api.type.PlayerOwned isn't there: track built without an owner")
+		end
 		seg.comp.roadTemplate = settings.track
 		seg.comp.roadStyle = template.streetStyle
 		seg.comp.roadType = api.type["enum"].RoadType.TRACK
