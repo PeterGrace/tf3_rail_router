@@ -333,7 +333,16 @@ end
 -- Where the edges along a leg start and end (metres of centre line, as {s0, s1} pairs in order). They don't depend on
 -- the track, so the two tracks' edges pair up index by index.
 local function stretches(leg : Leg, starts : {number}, total : number, options : Options, limit : number,
-		extra : {number}) : {{number}}
+		extra : {number}, keepWhole : {{number}}) : {{number}}
+	-- No break strictly inside a keepWhole window (a switch's branch side).
+	local function free(c : number) : boolean
+		for __, w in ipairs(keepWhole or {}) do
+			if c > w[1] + 1e-6 and c < w[2] - 1e-6 then
+				return false
+			end
+		end
+		return true
+	end
 	-- Where edges must break: where one piece meets the next, the spans' ends, and the crossovers' ends (extra), each
 	-- with the samples either side of it, so no edge runs from it over a change of grade at a sample.
 	local cuts : {number} = {}
@@ -367,7 +376,7 @@ local function stretches(leg : Leg, starts : {number}, total : number, options :
 	-- dropped piece end lets an edge run that far into the next piece, close enough to its own curve.
 	local breaks : {number} = { 0.0 }
 	for __, c in ipairs(cuts) do
-		if c > breaks[#breaks] + MIN_EDGE and c < total - MIN_EDGE then
+		if c > breaks[#breaks] + MIN_EDGE and c < total - MIN_EDGE and free(c) then
 			table.insert(breaks, c)
 		end
 	end
@@ -387,7 +396,7 @@ local function stretches(leg : Leg, starts : {number}, total : number, options :
 			local k = sampleAfter(samples, s0)
 			while k <= #samples and samples[k].s < s1 - 1e-6 do
 				local s = samples[k].s
-				if s >= s0 + MIN_EDGE and s <= s1 - MIN_EDGE
+				if s >= s0 + MIN_EDGE and s <= s1 - MIN_EDGE and free(s)
 						and (split == nil or math.abs(s - mid) < math.abs(split - mid)) then
 					split = s
 				end
@@ -405,6 +414,13 @@ local function stretches(leg : Leg, starts : {number}, total : number, options :
 		local a, b = breaks[k], breaks[k + 1]
 		-- As many parts as keep edges within maxEdge.
 		local parts = math.max(1, math.ceil((b - a) / options.maxEdge - 1e-9))
+		if parts > 1 then
+			for m = 1, parts - 1 do
+				if not free(a + (b - a) * m / parts) then
+					parts = 1
+				end
+			end
+		end
 		for m = 0, parts - 1 do
 			refine(a + (b - a) * m / parts, a + (b - a) * (m + 1) / parts)
 		end
@@ -412,7 +428,8 @@ local function stretches(leg : Leg, starts : {number}, total : number, options :
 	return list
 end
 
-function network.trackEdges(leg : Leg, legIndex : integer, side : number, options : Options, cuts ?: {number}) : {Edge}
+function network.trackEdges(leg : Leg, legIndex : integer, side : number, options : Options, cuts ?: {number},
+		keepWhole ?: {{number}}) : {Edge}
 	-- Where each piece starts along the leg, and where the leg ends.
 	local starts : {number} = {}
 	local total = 0.0
@@ -430,7 +447,7 @@ function network.trackEdges(leg : Leg, legIndex : integer, side : number, option
 		return "ground"
 	end
 	local edges : {Edge} = {}
-	for __, st in ipairs(stretches(leg, starts, total, options, limit, cuts)) do
+	for __, st in ipairs(stretches(leg, starts, total, options, limit, cuts, keepWhole)) do
 		local e = edgeOver(leg, starts, st[1], st[2], side * options.offset, options, limit)
 		e.kind, e.track, e.leg = kindAt((st[1] + st[2]) / 2), side > 0 and 1 or 2, legIndex
 		table.insert(edges, e)
@@ -448,6 +465,9 @@ local CROSSOVER_START = 4.0
 -- 42² / 30 = 59 m, over the game's 55 m).
 local CROSSOVER_SNAP = 1.0
 local CROSSOVER_MIN = 42.0
+-- How much main track beside a switch's branch stays one edge (metres). The check's diagnosis: every switch with 16.6 m
+-- or less there was refused ("Construction Not Possible"), 18 m or more passed; the other side's piece could be 3 m.
+local SWITCH_CLEAR = 20.0
 
 -- A leg's crossovers as {from track, s on it, to track, s on that}: a pair at each end whose first (last) piece is a
 -- straight of CROSSOVER_STRAIGHT on the ground.
@@ -528,14 +548,18 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			places = crossoverPlaces(leg, total)
 		end
 		local cuts : {number} = {}
+		-- Each track's switch windows: the main track beside a switch's branch, kept in one edge (SWITCH_CLEAR).
+		local keep : {{{number}}} = { {}, {} }
 		for __, p in ipairs(places) do
 			table.insert(cuts, p[2])
 			table.insert(cuts, p[4])
+			table.insert(keep[p[1] as integer], { p[2], p[2] + SWITCH_CLEAR })
+			table.insert(keep[p[3] as integer], { p[4] - SWITCH_CLEAR, p[4] })
 		end
 		-- Each track's edges, then grouped by stretch: a chunk takes both tracks' edges between two cut points along
 		-- the centre line, so the two tracks of a bridge are in one proposal (one parallel strip, probe P3).
-		local tracks : {{Edge}} = { network.trackEdges(leg, li, 1, options, cuts),
-			network.trackEdges(leg, li, -1, options, cuts) }
+		local tracks : {{Edge}} = { network.trackEdges(leg, li, 1, options, cuts, keep[1]),
+			network.trackEdges(leg, li, -1, options, cuts, keep[2]) }
 		for __, list in ipairs(tracks) do
 			local previous : integer = nil
 			for __, e in ipairs(list) do

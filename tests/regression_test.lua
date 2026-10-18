@@ -343,7 +343,8 @@ local function check(rt, planFn, name)
 	-- edge with no sample inside (one the network can't split further) may go over by up to GRADE_OVERSHOOT (2.4
 	-- points at worst on these maps).
 	local GRADE_OVERSHOOT = 0.03
-	-- How far a crossover (one 45 m edge between the tracks, over one or two samples) may stray from the profile.
+	-- How far a crossover (one 45 m edge between the tracks, over one or two samples), or the main track beside a
+	-- switch (one edge of 20 m or more), may stray from the profile.
 	local CROSSOVER_STRAY = 1.0
 	local net = network.build(plan, network.defaults())
 	local maxEdge = network.defaults().maxEdge
@@ -354,6 +355,8 @@ local function check(rt, planFn, name)
 		t.ok(e.s1 - e.s0 <= maxEdge + 1e-6, "edge within maxEdge")
 		local leg = plan.legs[e.leg]
 		local inside = false
+		-- Crossovers, and the main track in a station's approach (kept whole beside the switches), may stray more.
+		local loose = e.track == 0 or e.s1 <= 100 + 1e-6 or e.s0 >= leg.length - 100 - 1e-6
 		for k, sample in ipairs(leg.samples) do
 			if sample.s > e.s0 + 1e-6 and sample.s < e.s1 - 1e-6 then
 				inside = true
@@ -362,7 +365,7 @@ local function check(rt, planFn, name)
 				local z = (2 * u3 - 3 * u2 + 1) * e.p0.z + (u3 - 2 * u2 + u) * e.t0.z + (-2 * u3 + 3 * u2) * e.p1.z
 					+ (u3 - u2) * e.t1.z
 				-- A crossover is one edge (a switch's branch must be long): it may stray more.
-				if math.abs(z - leg.z[k]) > (e.track == 0 and CROSSOVER_STRAY or 0.25) + 1e-6 then
+				if math.abs(z - leg.z[k]) > (loose and CROSSOVER_STRAY or 0.25) + 1e-6 then
 					tooHigh = tooHigh + 1
 				end
 			end
@@ -375,7 +378,7 @@ local function check(rt, planFn, name)
 			local dy = dh00 * e.p0.y + dh10 * e.t0.y + dh01 * e.p1.y + dh11 * e.t1.y
 			local dz = dh00 * e.p0.z + dh10 * e.t0.z + dh01 * e.p1.z + dh11 * e.t1.z
 			local over = math.abs(dz) / math.sqrt(dx * dx + dy * dy) - leg.maxGrade
-			if over > ((inside and e.track ~= 0) and 0.002 or GRADE_OVERSHOOT) then
+			if over > ((inside and not loose) and 0.002 or GRADE_OVERSHOOT) then
 				tooSteep = tooSteep + 1
 				if over > worstOver then
 					worstOver, worstAt = over, ("leg %d, s %.0f-%.0f"):format(e.leg, e.s0, e.s1)

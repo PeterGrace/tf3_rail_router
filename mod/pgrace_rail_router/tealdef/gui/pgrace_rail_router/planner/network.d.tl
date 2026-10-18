@@ -104,8 +104,9 @@ global record PgraceRailRouterNetwork
 	-- The defaults: offset 2.5, maxEdge 250, chunkLength 1000, tangent "circle", crossovers on.
 	defaults : function() : Options
 	-- One track's edges along a leg, `side` +1 for the left track, -1 for the right, without node indices.
+	-- cuts: where edges must also break; keepWhole: windows {s0, s1} with no break inside (a switch's branch side).
 	trackEdges : function(leg : PgraceRailRouterRoute.Leg, legIndex : integer, side : number, options : Options,
-		cuts ?: {number}) : {Edge}
+		cuts ?: {number}, keepWhole ?: {{number}}) : {Edge}
 	-- The whole plan's network.
 	build : function(plan : PgraceRailRouterRoute.Plan, options : Options) : Network
 end

@@ -417,3 +417,27 @@ t.test("network: no crossovers where a leg's end isn't 100 m of straight ground"
 	end
 	t.eq(starts, 2, "a pair at the end on the ground")
 end)
+
+t.test("network: beside a switch's branch, the main track runs on in one edge of 18 m or more", function()
+	-- Samples every 25 m would otherwise cut the track a few metres from the switches.
+	for __, length in ipairs({ 1000, 1013.7 }) do
+		local net = network.build(plan({ leg({ straight(0, 0, length, 0) }) }), network.defaults())
+		for __, x in ipairs(net.edges) do
+			if x.track == 0 then
+				for __, end_ in ipairs({ { x.node0, 1 }, { x.node1, -1 } }) do
+					-- The branch leaves node0 forward (along s) and reaches node1 from behind.
+					local n, dir = end_[1], end_[2]
+					local found = false
+					for __, e in ipairs(net.edges) do
+						if e.track ~= 0 and ((dir > 0 and e.node0 == n) or (dir < 0 and e.node1 == n)) then
+							found = true
+							t.ok(e.s1 - e.s0 >= 18, ("leg %.0f m: %.1f m of main track beside the switch at s %.1f"):format(length,
+								e.s1 - e.s0, dir > 0 and e.s0 or e.s1))
+						end
+					end
+					t.ok(found, "a main track edge on the branch side")
+				end
+			end
+		end
+	end
+end)
