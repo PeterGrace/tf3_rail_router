@@ -8,6 +8,61 @@ local type Options = PgraceRailRouterNetwork.Options
 local type Leg = PgraceRailRouterRoute.Leg
 local type Piece = PgraceRailRouterSmooth.Piece
 
+local type Hermite = PgraceRailRouterNetwork.Hermite
+local type Pt3 = PgraceRailRouterNetwork.Pt3
+
+local function lerp3(a : Pt3, b : Pt3, s : number) : Pt3
+	return { x = a.x + (b.x - a.x) * s, y = a.y + (b.y - a.y) * s, z = a.z + (b.z - a.z) * s }
+end
+
+function network.hermiteAt(h : Hermite, s : number) : Pt3
+	local s2, s3 = s * s, s * s * s
+	local h00, h10, h01, h11 = 2 * s3 - 3 * s2 + 1, s3 - 2 * s2 + s, -2 * s3 + 3 * s2, s3 - s2
+	return { x = h00 * h.p0.x + h10 * h.t0.x + h01 * h.p1.x + h11 * h.t1.x,
+		y = h00 * h.p0.y + h10 * h.t0.y + h01 * h.p1.y + h11 * h.t1.y,
+		z = h00 * h.p0.z + h10 * h.t0.z + h01 * h.p1.z + h11 * h.t1.z }
+end
+
+function network.splitHermite(h : Hermite, s : number) : Hermite, Hermite
+	-- Bézier control points: p0, p0 + t0/3, p1 - t1/3, p1.
+	local b0 = h.p0
+	local b1 : Pt3 = { x = h.p0.x + h.t0.x / 3, y = h.p0.y + h.t0.y / 3, z = h.p0.z + h.t0.z / 3 }
+	local b2 : Pt3 = { x = h.p1.x - h.t1.x / 3, y = h.p1.y - h.t1.y / 3, z = h.p1.z - h.t1.z / 3 }
+	local b3 = h.p1
+	local c0, c1, c2 = lerp3(b0, b1, s), lerp3(b1, b2, s), lerp3(b2, b3, s)
+	local d0, d1 = lerp3(c0, c1, s), lerp3(c1, c2, s)
+	local m = lerp3(d0, d1, s)
+	local function tangent(a : Pt3, b : Pt3) : Pt3
+		return { x = 3 * (b.x - a.x), y = 3 * (b.y - a.y), z = 3 * (b.z - a.z) }
+	end
+	return { p0 = b0, t0 = tangent(b0, c0), p1 = m, t1 = tangent(d0, m) },
+		{ p0 = m, t0 = tangent(m, d1), p1 = b3, t1 = tangent(c2, b3) }
+end
+
+function network.nearestParam(h : Hermite, p : Pt) : number
+	local function d2(s : number) : number
+		local q = network.hermiteAt(h, s)
+		return (q.x - p.x) ^ 2 + (q.y - p.y) ^ 2
+	end
+	local best, bestD = 0.0, d2(0)
+	for k = 1, 100 do
+		local d = d2(k / 100)
+		if d < bestD then
+			best, bestD = k / 100, d
+		end
+	end
+	local step = 0.01
+	while step > 1e-4 do
+		step = step / 2
+		for __, s in ipairs({ best - step, best + step }) do
+			if s >= 0 and s <= 1 and d2(s) < bestD then
+				best, bestD = s, d2(s)
+			end
+		end
+	end
+	return best
+end
+
 function network.defaults() : Options
 	return { offset = 2.5, maxEdge = 250.0, chunkLength = 1000.0, tangent = "circle" }
 end

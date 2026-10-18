@@ -544,53 +544,164 @@ end
 
 -- P9: a level crossing ---------------------------------------------------------------------------------------------
 
+local function v3(p : Pt3) : Vec3f
+	return api.type.Vec3f.new(p.x, p.y, p.z)
+end
+
+local function p3(v : Vec3f) : Pt3
+	return { x = v.x, y = v.y, z = v.z }
+end
+
+-- A street piece from node0 to node1 along h, typed like the street it replaces (Bus Loops' split).
+local function streetPiece(node0 : integer, node1 : integer, h : PgraceRailRouterNetwork.Hermite,
+		street : Engine.Component.BaseEdge, template : Proposal.SegmentAndEntity) : Proposal.SegmentAndEntity
+	local seg = api.type.SegmentAndEntity.new()
+	seg.type = 0
+	seg.comp.node0, seg.comp.node1 = node0, node1
+	seg.comp.position0, seg.comp.position1 = v3(h.p0), v3(h.p1)
+	seg.comp.tangent0, seg.comp.tangent1 = v3(h.t0), v3(h.t1)
+	seg.comp.type = street.type
+	seg.comp.typeIndex = street.typeIndex
+	seg.comp.laneConfigs = street.laneConfigs
+	seg.comp.roadType = street.roadType
+	seg.comp.roadTemplate = street.roadTemplate
+	seg.comp.roadStyle = street.roadStyle
+	seg.streetEdge = template.streetEdge
+	seg.playerOwned = template.playerOwned
+	return seg
+end
+
+-- Sends the engine's own, unedited replaceSegment proposal for each street piece at the nodes, one after another, so
+-- the engine works out their lane connections again (Bus Loops); then andThen().
+local function repairLanes(name : string, nodes : {integer}, andThen : function())
+	local segs : {integer} = {}
+	local seen : {integer : boolean} = {}
+	for __, n in ipairs(nodes) do
+		pcall(function() : boolean
+			for __, sg in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(n)) do
+				if not seen[sg] then
+					seen[sg] = true
+					table.insert(segs, sg)
+				end
+			end
+			return true
+		end)
+	end
+	local i = 0
+	local function nextSegment()
+		i = i + 1
+		if i > #segs then
+			andThen()
+			return
+		end
+		local ok, rep = pcall(function() : Proposal
+			return api.engine.util.proposal.replaceSegment(segs[i])
+		end)
+		if not ok or rep == nil then
+			log(name, "lane repair: replaceSegment failed for " .. segs[i] .. ": " .. tostring(rep))
+			nextSegment()
+			return
+		end
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(rep as Proposal, builder.newContext(), false, true),
+			function(__ : WorldBuildProposalCommandData, success : boolean)
+				log(name, ("lane repair of street %d: %s"):format(segs[i], tostring(success)))
+				nextSegment()
+			end)
+	end
+	nextSegment()
+end
+
 function probe.levelCrossing(settings : Settings) : {function()}
 	local c = camera()
-	local street : Crossed = nil
-	local proposal : SimpleProposal = nil
-	local results : {string : boolean} = {}
-	local tasks : {function()} = {}
-	table.insert(tasks, guarded("P9", function()
-		street = nearest(c, "street")
-		if street == nil then
+	return { guarded("P9", function()
+		local found = nearest(c, "street")
+		if found == nil then
 			log("P9", ("camera (%.1f %.1f): no street within 200 m"):format(c.x, c.y))
 			return
 		end
-		log("P9", ("camera (%.1f %.1f): street edge %d at (%.1f %.1f) height %.2f"):format(c.x, c.y, street.entity,
-			street.p.x, street.p.y, street.z))
-		local across : Pt = { x = -street.dir.y, y = street.dir.x }
-		local start = geo.add(street.p, geo.scale(across, -150))
-		local net = network.build(testPlan({ straight(start, across, 300) }, street.z, 0, "ground"), network.defaults())
-		local why : string
-		proposal, why = builder.chunkProposal(net, 1, #net.edges, settings)
-		if proposal == nil then
-			log("P9", "NOT MADE " .. tostring(why))
+		local street = api.engine.getComponent(found.entity, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		local h : PgraceRailRouterNetwork.Hermite = { p0 = p3(street.position0), p1 = p3(street.position1),
+			t0 = p3(street.tangent0), t1 = p3(street.tangent1) }
+		local node0, node1 = street.node0 as integer, street.node1 as integer
+		log("P9", ("camera (%.1f %.1f): street edge %d, nodes %d %d, at (%.1f %.1f) height %.2f"):format(c.x, c.y,
+			found.entity, node0, node1, found.p.x, found.p.y, found.z))
+		-- The track runs square across the street through found.p; its two tracks cross the street 2.5 m either side.
+		local across : Pt = { x = -found.dir.y, y = found.dir.x }
+		local params : {number} = {}
+		for __, k in ipairs({ -1, 1 }) do
+			table.insert(params, network.nearestParam(h, geo.add(found.p, geo.scale(found.dir, 2.5 * k))))
 		end
-	end))
-	for __, v in ipairs({ { "plain", false }, { "cleanupStreetGraph", true } }) do
-		table.insert(tasks, guarded("P9", function()
-			if proposal ~= nil then
-				results[v[1] as string] = tryProposal("P9 " .. (v[1] as string), proposal, builder.newContext(v[2] as boolean))
+		table.sort(params)
+		local a, rest = network.splitHermite(h, params[1])
+		local b, cc = network.splitHermite(rest, (params[2] - params[1]) / (1 - params[1]))
+		local x1, x2 = a.p1, b.p1
+		log("P9", ("crossings at s %.4f (%.2f %.2f %.2f) and %.4f (%.2f %.2f %.2f)"):format(params[1], x1.x, x1.y, x1.z,
+			params[2], x2.x, x2.y, x2.z))
+		-- Step 1: the street split at both crossings, by editing the engine's replaceSegment proposal (it can't be
+		-- dry-run; the Bus Loops way).
+		local rep = api.engine.util.proposal.replaceSegment(found.entity)
+		local sp = rep.proposal
+		local template = sp.addedSegments[1]
+		local n1, n2 = api.type.NodeAndEntity.new(), api.type.NodeAndEntity.new()
+		n1.entity, n2.entity = -4, -5
+		n1.comp.position, n2.comp.position = v3(x1), v3(x2)
+		local s1 = streetPiece(node0, -4, a, street, template)
+		local s2 = streetPiece(-4, -5, b, street, template)
+		local s3 = streetPiece(-5, node1, cc, street, template)
+		s1.entity, s2.entity, s3.entity = -1, -2, -3
+		sp.addedNodes = { n1, n2 }
+		sp.addedSegments = { s1, s2, s3 }
+		sp.nodeConfigsToAdd = {}
+		build("P9 split", rep as any as SimpleProposal, builder.newContext(), function(res : WorldBuildProposalCommandData)
+			-- The crossing nodes, matched by place.
+			local xs : {Pt3} = {}
+			for __, n in ipairs(res.proposal.proposal.addedNodes) do
+				local e = n.entity as integer
+				local pos = nodePos(e)
+				if pos ~= nil then
+					table.insert(xs, pos)
+				end
 			end
-		end))
-	end
-	table.insert(tasks, guarded("P9", function()
-		if proposal == nil then
-			return
-		end
-		-- Build the first variant that dry-ran clean (test map only).
-		for __, v in ipairs({ { "plain", false }, { "cleanupStreetGraph", true } }) do
-			if results[v[1] as string] then
-				log("P9", "building the " .. (v[1] as string) .. " variant")
-				build("P9", proposal, builder.newContext(v[2] as boolean), function()
-					log("P9", "done")
-				end)
+			log("P9", ("%d crossing nodes"):format(#xs))
+			if #xs ~= 2 then
+				log("P9", "done (the split didn't give 2 nodes)")
 				return
 			end
-		end
-		log("P9", "done (nothing clean to build)")
-	end))
-	return tasks
+			repairLanes("P9", { xs[1].entity, xs[2].entity }, function()
+				-- Step 2: the track, each of its two tracks through its own crossing node: start -> X -> end.
+				local net : Network = { nodes = {}, edges = {}, chunks = {} }
+				local t : Pt3 = { x = across.x * 150, y = across.y * 150, z = 0 }
+				for k, x in ipairs(xs) do
+					local s0 : Pt3 = { x = x.x - t.x, y = x.y - t.y, z = x.z }
+					local e1 : Pt3 = { x = x.x + t.x, y = x.y + t.y, z = x.z }
+					table.insert(net.nodes, s0)
+					table.insert(net.nodes, x)
+					table.insert(net.nodes, e1)
+					local n = #net.nodes
+					table.insert(net.edges, { node0 = n - 2, node1 = n - 1, p0 = s0, p1 = x, t0 = t, t1 = t,
+						kind = "ground", track = k, leg = 1, s0 = 0, s1 = 150 })
+					table.insert(net.edges, { node0 = n - 1, node1 = n, p0 = x, p1 = e1, t0 = t, t1 = t,
+						kind = "ground", track = k, leg = 1, s0 = 150, s1 = 300 })
+				end
+				local proposal, why = builder.chunkProposal(net, 1, #net.edges, settings)
+				if proposal == nil then
+					log("P9", "track NOT MADE " .. tostring(why))
+					return
+				end
+				local context = builder.newContext()
+				if not tryProposal("P9 track", proposal, context) then
+					log("P9", "done (the track's dry run wasn't clean)")
+					return
+				end
+				build("P9 track", proposal, context, function()
+					for __, x in ipairs(xs) do
+						log("P9", "crossing " .. segmentCounts(x.entity))
+					end
+					log("P9", "done")
+				end)
+			end)
+		end)
+	end) }
 end
 
 -- P10: build a station ---------------------------------------------------------------------------------------------

@@ -16,8 +16,9 @@ global record PgraceRailRouterProbe
 	-- P6: a 160 m station at the camera facing east, without and with the main building and stairs (and roofs), with
 	-- its bounding box's length along the axis; the module names.
 	dryRunStation : function(settings : PgraceRailRouterBuilder.Settings, tracks : {PgraceRailRouterModes.TrackType}) : {function()}
-	-- P9: a 300 m double track on the ground across the nearest street (within 200 m of the camera), dry-run plain
-	-- and with cleanupStreetGraph; the first clean one is built (test map only), logging the edges and nodes made.
+	-- P9: a level crossing over the nearest street (within 200 m of the camera; test map only): the street split at
+	-- the two points a double track square across it would cross (the engine's replaceSegment proposal, edited; it
+	-- can't be dry-run), its lanes repaired, then 300 m of double track through the two new nodes, dry-run and built.
 	levelCrossing : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 	-- P10: builds a 160 m station at the camera facing east (if its dry run is clean; test map only) and logs its
 	-- frozen nodes: where the track ends are, and their pieces.

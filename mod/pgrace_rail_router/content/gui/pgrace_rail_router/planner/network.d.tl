@@ -56,6 +56,22 @@ global record PgraceRailRouterNetwork
 		tangent : string
 	end
 
+	-- A cubic Hermite curve (an edge's shape).
+	record Hermite
+		p0 : Pt3
+		p1 : Pt3
+		t0 : Pt3
+		t1 : Pt3
+	end
+
+	-- The point at parameter s (0..1) along h.
+	hermiteAt : function(h : Hermite, s : number) : Pt3
+	-- h split at parameter s into the two curves either side (de Casteljau on its Bézier form), which together
+	-- trace exactly h.
+	splitHermite : function(h : Hermite, s : number) : Hermite, Hermite
+	-- The parameter of h's point nearest p in plan (to about a thousandth: sampled, then refined).
+	nearestParam : function(h : Hermite, p : PgraceRailRouterGeo.Pt) : number
+
 	-- The defaults: offset 2.5, maxEdge 250, chunkLength 1000, tangent "circle".
 	defaults : function() : Options
 	-- One track's edges along a leg, `side` +1 for the left track, -1 for the right, without node indices.

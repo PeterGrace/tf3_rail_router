@@ -261,3 +261,28 @@ t.test("network: every leg gets its own chunks", function()
 	t.eq(net.chunks[1].leg, 1, "leg 1")
 	t.eq(net.chunks[#net.chunks].leg, 2, "leg 2")
 end)
+
+t.test("network: a Hermite split traces the curve, and halves as Bus Loops' midpoint split does", function()
+	local h = { p0 = { x = 0, y = 0, z = 0 }, p1 = { x = 100, y = 40, z = 6 }, t0 = { x = 120, y = -30, z = 2 },
+		t1 = { x = 60, y = 90, z = 4 } }
+	for __, s in ipairs({ 0.25, 0.5, 0.8 }) do
+		local a, b = network.splitHermite(h, s)
+		for __, u in ipairs({ 0, 0.3, 0.7, 1 }) do
+			local pa, pb = network.hermiteAt(a, u), network.hermiteAt(b, u)
+			local qa, qb = network.hermiteAt(h, s * u), network.hermiteAt(h, s + (1 - s) * u)
+			t.near(pa.x, qa.x, 1e-9, "a.x") t.near(pa.y, qa.y, 1e-9, "a.y") t.near(pa.z, qa.z, 1e-9, "a.z")
+			t.near(pb.x, qb.x, 1e-9, "b.x") t.near(pb.y, qb.y, 1e-9, "b.y")
+		end
+	end
+	local a = network.splitHermite(h, 0.5)
+	-- Bus Loops: m = 0.5 p0 + 0.125 t0 + 0.5 p1 - 0.125 t1; the halves' tangents t0/2 and tm/2.
+	t.near(a.p1.x, 0.5 * 0 + 0.125 * 120 + 0.5 * 100 - 0.125 * 60, 1e-9, "midpoint")
+	t.near(a.t0.x, 60, 1e-9, "first half's start tangent is t0/2")
+end)
+
+t.test("network: the nearest parameter on a curve", function()
+	local h = { p0 = { x = 0, y = 0, z = 0 }, p1 = { x = 100, y = 0, z = 0 }, t0 = { x = 100, y = 0, z = 0 },
+		t1 = { x = 100, y = 0, z = 0 } }
+	t.near(network.nearestParam(h, { x = 37, y = 20 }), 0.37, 1e-3, "a straight line")
+	t.near(network.nearestParam(h, { x = -5, y = 0 }), 0, 1e-9, "before the start")
+end)
