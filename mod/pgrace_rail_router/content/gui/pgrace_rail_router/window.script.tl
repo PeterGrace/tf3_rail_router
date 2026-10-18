@@ -926,6 +926,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.dryRunCrossing(settings)
 			elseif work.name == "P8" then
 				work.tasks = probe.bridgeClearance(settings)
+			elseif work.name == "P12" then
+				work.tasks = probe.catenaryPairs(settings)
 			elseif work.name == "P9" then
 				work.tasks = probe.levelCrossing(settings)
 			elseif work.name == "P9b" then
@@ -1353,6 +1355,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P4", "Probe P4: dry-run across a street" },
 			{ "P8", "Probe P8: bridge clearance over track and street" },
 			{ "P6", "Probe P6: dry-run a station" },
+			{ "P12", "Probe P12: overhead wire, two test pairs (builds; test map only)" },
 			{ "P9", "Probe P9: level crossing (builds; test map only)" },
 			{ "P9b", "Probe P9b: level crossing at 70 degrees (builds; test map only)" },
 			{ "P9c", "Probe P9c: level crossing 12 m from a road joint (builds)" },

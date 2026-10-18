@@ -919,6 +919,48 @@ function probe.joinStation(settings : Settings) : {function()}
 	end) }
 end
 
+-- P12: which way the second track runs, for its overhead wire -------------------------------------------------
+
+function probe.catenaryPairs(settings : Settings) : {function()}
+	local c = camera()
+	local east : Pt = { x = 1, y = 0 }
+	local ground = groundAt(c)
+	local tasks : {function()} = {}
+	-- Pair A (north): both tracks east. Pair B (40 m south): the second track west.
+	for k, reversed in ipairs({ false, true }) do
+		table.insert(tasks, guarded("P12", function()
+			local y = c.y - 40 * (k - 1)
+			local starts : {Pt3} = { { x = c.x - 100, y = y + 2.5, z = ground }, { x = c.x - 100, y = y - 2.5, z = ground } }
+			local net = straightNet(starts, east, 200)
+			if reversed then
+				local e = net.edges[2]
+				e.node0, e.node1 = e.node1, e.node0
+				e.p0, e.p1 = e.p1, e.p0
+				e.t0 = { x = -e.t0.x, y = -e.t0.y, z = -e.t0.z }
+				e.t1 = { x = -e.t1.x, y = -e.t1.y, z = -e.t1.z }
+			end
+			local name = reversed and "P12 pair B (second track west)" or "P12 pair A (both east)"
+			local proposal, why = builder.chunkProposal(net, 1, 2, settings)
+			if proposal == nil then
+				log("P12", "NOT MADE " .. tostring(why))
+				return
+			end
+			local context = builder.newContext()
+			if not tryProposal(name, proposal, context) then
+				log("P12", name .. ": not built")
+				return
+			end
+			build(name, proposal, context, function()
+				log("P12", name .. " built")
+			end)
+		end))
+	end
+	table.insert(tasks, function()
+		log("P12", "done")
+	end)
+	return tasks
+end
+
 -- P6 -------------------------------------------------------------------------------------------------------------
 
 local function moduleLookup(name : string) : string

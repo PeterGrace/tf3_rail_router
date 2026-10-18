@@ -27,4 +27,7 @@ global record PgraceRailRouterProbe
 	-- ends' node entities in the proposal; new nodes at the same places with cleanupStreetGraph, dry run only), builds
 	-- it, then a second 100 m from where the first ended (test map only).
 	joinStation : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
+	-- P12: two 200 m double-track straights at the camera, 40 m apart (test map only): pair A with both tracks running
+	-- east, pair B with the second (south) track running west: which way gets its overhead wire over each track.
+	catenaryPairs : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 end
