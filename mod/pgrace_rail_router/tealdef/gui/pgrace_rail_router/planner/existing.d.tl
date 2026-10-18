@@ -11,7 +11,8 @@ global record PgraceRailRouterExisting
 		t1 : PgraceRailRouterNetwork.Pt3
 		-- "ground", "bridge" or "tunnel"
 		kind : string
-		-- One-way signals: param along the piece, and +1 facing node0 → node1 trains, −1 the other way.
+		-- One-way signals only (the survey leaves out two-way path signals, type 0): param along the piece, and +1
+		-- facing node0 → node1 trains, −1 the other way.
 		signals : {{number}}
 	end
 
@@ -21,7 +22,8 @@ global record PgraceRailRouterExisting
 		degree : {integer : integer}
 	end
 
-	-- A station: its platforms' centre and direction, half their length, and its track end nodes.
+	-- A station: its platforms' centre and direction (a unit vector; normalised anyway), half their length, and its
+	-- track end nodes.
 	record Station
 		entity : integer
 		centre : PgraceRailRouterGeo.Pt
@@ -44,12 +46,20 @@ global record PgraceRailRouterExisting
 	end
 
 	-- Both ends: [1] the end at +dir, [-1] the one at −dir; nil where not usable, and why in `why` ("no double
-	-- track", "short" or "left-hand").
+	-- track", "short": none long enough before something that stops the reading, or "left-hand").
 	record Result
 		ends : {integer : End}
 		why : {integer : string}
 	end
 
+	-- Each end's first straight, level, plain double-track stretch at least junction.needed(radius) long. Frame: x
+	-- outward from the platform end, y to the left; the scan starts at the station's end nodes and reads up to
+	-- 1.5 km out, 12 m either side. A stretch starts where exactly two straight ground pieces 4.5–5.5 m apart cross
+	-- x. Each track is then walked piece by piece through plain nodes (degree 2), and the stretch ends at the first
+	-- node that isn't plain, a bridge or tunnel, a piece that isn't straight (tangents within 0.5% of the axis), or
+	-- where the tracks stop being the only two, 4.5–5.5 m apart, with midline and height within 0.5 m of the start's
+	-- (checked every 5 m and at each node). Past a short stretch the scan reads on only after a bridge or tunnel,
+	-- such a drift, or a crossover; any other switch, the track's end or single track stops it.
 	-- `side[k]`: which side of end k our line comes from (+1 left of outward, −1 right; nil +1).
-	analyse : function(station : Station, snap : Snapshot, side : {integer : number}) : Result
+	analyse : function(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 end

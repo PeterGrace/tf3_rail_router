@@ -394,7 +394,7 @@ global record PgraceRailRouterExisting
 		why : {integer : string}
 	end
 
-	analyse : function(station : Station, snap : Snapshot, side : {integer : number}) : Result
+	analyse : function(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 end
 ```
 
@@ -412,7 +412,7 @@ end
 4. **The stretch's length.** Carry on while all of these hold: exactly two pieces cross, both are "ground", the
    midline stays within 0.5 m of where it started (straight along the axis), and every node passed has degree 2 (no
    switches). The length is from the start to where any of these breaks.
-5. **Usable** if the length ≥ `junction.needed(300)` (the caller checks against its own radius). Otherwise
+5. **Usable** if the length ≥ `junction.needed(radius)` (the radius is passed in). Otherwise
    `why[k] = "short"`, `"no double track"` or `"switches"`.
 6. **Running directions.** For each signal on the stretch's pieces, get the direction it faces along outward
    (+ outward, − inward) from its facing and the piece's direction. Right-hand running wants the track to the right
