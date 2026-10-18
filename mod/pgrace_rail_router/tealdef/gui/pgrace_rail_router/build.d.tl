@@ -22,6 +22,8 @@ global record PgraceRailRouterBuild
 		-- The street pieces still to send again unedited (their lane connections), after a split.
 		repair : {integer}
 		count : integer
+		-- Existing street nodes used as crossings, and the track (1, 2) each joins.
+		nodeTrack : {integer : integer}
 	end
 
 	record Build

@@ -16,8 +16,9 @@ local STATION_FILE = "modular_station.con"
 local END_MATCH = 1.0
 -- A node a built chunk added is matched to a network node this close (metres).
 local NODE_MATCH = 0.5
--- A crossing this close to an existing street node uses the node, not a split (metres).
-local NODE_SNAP = 3.0
+-- A crossing this close to an existing street node uses the node, not a split (metres). Under half the distance
+-- between the two tracks (5 m), and a node joins one track at most: two tracks through one node would join them.
+local NODE_SNAP = 2.0
 
 local function log(text : string)
 	debugPrint(LOG_PREFIX .. text)
@@ -262,7 +263,9 @@ local function stepStreet(b : Build, first : integer, last : integer)
 		for __, c in ipairs(network.crossings({ p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }, h)) do
 			local snapped = false
 			for __, n in ipairs(ends) do
-				if not snapped and n ~= nil and dist2(n, c.p) <= NODE_SNAP then
+				if not snapped and n ~= nil and dist2(n, c.p) <= NODE_SNAP
+						and (cr.nodeTrack[n.entity] == nil or cr.nodeTrack[n.entity] == e.track) then
+					cr.nodeTrack[n.entity] = e.track
 					addCut(cr.cuts, i, c.s, n)
 					cr.count = cr.count + 1
 					snapped = true
@@ -390,7 +393,7 @@ local function stepChunk(b : Build)
 			return
 		end
 		log(("chunk %d crosses %d street pieces on the level"):format(b.chunk, #streets))
-		b.crossings = { streets = streets, next = 1, cuts = {}, repair = {}, count = 0 }
+		b.crossings = { streets = streets, next = 1, cuts = {}, repair = {}, count = 0, nodeTrack = {} }
 		return
 	end
 	if #cr.repair > 0 then
