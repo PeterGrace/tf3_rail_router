@@ -394,6 +394,62 @@ function builder.pricePerMetre(settings : Settings, at : Pt3, dir : PgraceRailRo
 	return cost / PRICE_LENGTH
 end
 
+function builder.diagnose(net : Network, first : integer, last : integer, settings : Settings)
+	pcall(function() : boolean
+		local function fmt(p : Pt3) : string
+			return ("(%.2f %.2f %.2f%s)"):format(p.x, p.y, p.z, p.entity ~= nil and (" #" .. p.entity) or "")
+		end
+		-- Edges at each node of the chunk.
+		local at : {integer : {integer}} = {}
+		for i = first, last do
+			for __, n in ipairs({ net.edges[i].node0, net.edges[i].node1 }) do
+				at[n] = at[n] or {}
+				table.insert(at[n], i)
+			end
+		end
+		local logged = 0
+		for i = first, last do
+			local e = net.edges[i]
+			local proposal = builder.chunkProposal(net, i, i, settings)
+			if proposal ~= nil then
+				local ok, __, messages = builder.dryRun(proposal)
+				if not ok and logged < 12 then
+					logged = logged + 1
+					debugPrint(LOG_PREFIX .. ("diagnose edge %d (%s, track %d, s %.1f-%.1f): %s; %s -> %s, t0 (%.2f %.2f %.3f) t1 (%.2f %.2f %.3f)")
+						:format(i, e.kind, e.track, e.s0, e.s1, table.concat(messages, "; "), fmt(e.p0), fmt(e.p1), e.t0.x, e.t0.y,
+						e.t0.z, e.t1.x, e.t1.y, e.t1.z))
+				end
+			end
+		end
+		-- The switches (nodes with three edges): those three alone.
+		local switches = 0
+		for n, list in pairs(at) do
+			if #list >= 3 and switches < 6 then
+				switches = switches + 1
+				local sub : Network = { nodes = net.nodes, edges = {}, chunks = {} }
+				for __, i in ipairs(list) do
+					table.insert(sub.edges, net.edges[i])
+				end
+				local proposal = builder.chunkProposal(sub, 1, #sub.edges, settings)
+				if proposal ~= nil then
+					local ok, __, messages = builder.dryRun(proposal)
+					local parts : {string} = {}
+					for __, i in ipairs(list) do
+						local e = net.edges[i]
+						table.insert(parts, ("%d (track %d, s %.1f-%.1f, t0 %.2f %.2f, t1 %.2f %.2f)"):format(i, e.track, e.s0, e.s1,
+							e.t0.x, e.t0.y, e.t1.x, e.t1.y))
+					end
+					debugPrint(LOG_PREFIX .. ("diagnose switch at node %d %s: %s; edges %s"):format(n, fmt(net.nodes[n]),
+						ok and "clean" or table.concat(messages, "; "), table.concat(parts, ", ")))
+				end
+			end
+		end
+		debugPrint(LOG_PREFIX .. ("diagnose: %d of %d edges refused alone (at most 12 logged), %d switches tried")
+			:format(logged, last - first + 1, switches))
+		return true
+	end)
+end
+
 function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) : Check
 	local clock = api.type.Clock.new()
 	local net = network.build(plan, settings.network)
@@ -473,6 +529,10 @@ function builder.step(check : Check) : boolean
 	for __, c in ipairs(collisions) do
 		table.insert(hits, ("%s %d at (%.0f %.0f)%s"):format(c.what, c.entity, c.x or 0, c.y or 0,
 			c.components ~= nil and (" [" .. c.components .. "]") or ""))
+	end
+	if not ok and item.kind == "chunk" and #messages > 0 and messages[1] == "Construction Not Possible" then
+		local chunk = check.net.chunks[item.index]
+		builder.diagnose(check.net, chunk.first, chunk.last, check.settings)
 	end
 	debugPrint(LOG_PREFIX .. ("dry run %s %d%s: %s, cost %d, %d us%s%s"):format(item.kind, item.index, extra,
 		ok and (crossings > 0 and ("clean but for %d level crossings"):format(crossings) or "clean") or "errors", cost,

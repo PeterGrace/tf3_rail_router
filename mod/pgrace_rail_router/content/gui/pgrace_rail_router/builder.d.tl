@@ -113,6 +113,9 @@ global record PgraceRailRouterBuilder
 	-- A proposal context for the player; cleanup sets cleanupStreetGraph (the game simplifies the edge and node
 	-- graph: probe P9 tries it for level crossings).
 	newContext : function(cleanup ?: boolean) : Context
+	-- PROBE (remove before release): after a chunk's dry run failed, each of its edges dry-run alone (and with the
+	-- edges sharing its nodes), logged: which the game refuses. Never throws.
+	diagnose : function(net : PgraceRailRouterNetwork.Network, first : integer, last : integer, settings : Settings)
 	-- A dry run: whether it's clean, the price, the error messages, its wall time in µs, and the raw ProposalData
 	-- (nil if the dry run threw).
 	dryRun : function(proposal : SimpleProposal, context ?: Context) : boolean, integer, {string}, integer, ProposalData
