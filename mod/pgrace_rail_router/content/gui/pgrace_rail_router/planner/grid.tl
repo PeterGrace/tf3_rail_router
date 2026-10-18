@@ -29,7 +29,7 @@ local ROAD_FOLLOW_FACTOR = 1.5
 
 function grid.new(x0 : number, y0 : number, cell : number, nx : integer, ny : integer) : Grid
 	local g : Grid = { x0 = x0, y0 = y0, cell = cell, nx = nx, ny = ny, height = {}, water = {}, blocked = {},
-		road = {}, track = {}, junction = {}, shore = {} }
+		road = {}, track = {}, junction = {}, shore = {}, joints = {} }
 	for i = 1, nx * ny do
 		g.height[i] = 0
 		g.water[i] = false
@@ -76,6 +76,37 @@ function grid.heightAt(g : Grid, p : Pt) : number
 end
 
 grid.SHORE_SUB = 4
+grid.JOINT_CLEARANCE = 10.0
+
+function grid.addJoint(g : Grid, p : Pt)
+	if not grid.inside(g, p) then
+		return
+	end
+	local ix, iy = grid.cellOf(g, p)
+	local i = grid.index(g, ix, iy)
+	g.joints[i] = g.joints[i] or {}
+	table.insert(g.joints[i], { x = p.x, y = p.y })
+end
+
+function grid.jointNear(g : Grid, p : Pt, r : number) : boolean
+	if g.joints == nil then
+		return false
+	end
+	local ix, iy = grid.cellOf(g, p)
+	for dy = -1, 1 do
+		for dx = -1, 1 do
+			local jx, jy = ix + dx, iy + dy
+			if jx >= 1 and jx <= g.nx and jy >= 1 and jy <= g.ny then
+				for __, q in ipairs(g.joints[grid.index(g, jx, jy)] or {}) do
+					if (q.x - p.x) ^ 2 + (q.y - p.y) ^ 2 <= r * r then
+						return true
+					end
+				end
+			end
+		end
+	end
+	return false
+end
 
 function grid.shoreCells(g : Grid) : {integer}
 	local result : {integer} = {}

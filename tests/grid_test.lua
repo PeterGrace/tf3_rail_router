@@ -718,3 +718,12 @@ t.test("grid: shore cells are those with water and land side by side; wetAt uses
 	t.ok(not grid.wetAt(g, { x = 90, y = 0 }), "and away from them it's dry")
 	t.ok(grid.wetAt(g, { x = 320, y = 0 }), "a water cell's middle is wet")
 end)
+
+t.test("grid: road joints are found within a radius, across cell borders", function()
+	local g = grid.new(0, 0, 100, 3, 3)
+	grid.addJoint(g, { x = 148, y = 100 })
+	t.ok(grid.jointNear(g, { x = 160, y = 100 }, 15), "12 m away, in the next cell")
+	t.ok(not grid.jointNear(g, { x = 170, y = 100 }, 15), "22 m away")
+	grid.addJoint(g, { x = 9999, y = 0 })
+	t.ok(not grid.jointNear(g, { x = 290, y = 0 }, 15), "a joint off the grid is ignored")
+end)

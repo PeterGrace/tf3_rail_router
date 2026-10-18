@@ -363,8 +363,13 @@ function maplib.rasterise(map, x0, y0, cell, nx, ny, opts)
 		end
 	end
 	stats.junctions = 0
+	-- Road joints: street nodes two pieces end at (positions; Rail Router's Grid.joints).
+	g.joints = {}
 	local jb = maplib.JUNCTION_BUFFER
 	for node, n in pairs(ends) do
+		if n == 2 and streetNode[node] then
+			table.insert(g.joints, { x = at[node].x, y = at[node].y })
+		end
 		if n >= 3 and streetNode[node] then
 			local p = at[node]
 			markBox(g, p.x - jb, p.y - jb, p.x + jb, p.y + jb, g.junction)

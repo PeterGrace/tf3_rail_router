@@ -170,6 +170,9 @@ return function(root)
 			g.height[i], g.water[i], g.blocked[i] = cells.height[i], cells.water[i], cells.blocked[i]
 			g.road[i], g.track[i], g.junction[i] = cells.road[i], cells.track[i], cells.junction[i]
 		end
+		for _, p in ipairs(cells.joints or {}) do
+			grid.addJoint(g, p)
+		end
 		-- Shore cells sampled finer, as the survey does (from the map's 25 m flags).
 		local n = grid.SHORE_SUB * grid.SHORE_SUB
 		for _, i in ipairs(grid.shoreCells(g)) do

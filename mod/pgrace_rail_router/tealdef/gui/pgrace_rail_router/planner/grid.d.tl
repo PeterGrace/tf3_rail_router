@@ -19,6 +19,10 @@ global record PgraceRailRouterGrid
 		-- Road junctions (nodes joining three or more pieces of street or track) and the cells within JUNCTION_BUFFER
 		-- of them (area.tl): a level crossing can't go through one, so the track bridges them as it bridges track.
 		junction : {boolean}
+		-- Road joints (street nodes joining exactly two pieces), by the cell they're in: a level crossing within
+		-- JOINT_CLEARANCE of one is refused (probe P9c: 9.5 m was fine, the build failed at 1.8 and 7 m), so the line
+		-- bridges the road there (route.tl).
+		joints : {integer : {PgraceRailRouterGeo.Pt}}
 		-- Shore cells (water and land both in or next to them) sampled finer: SHORE_SUB × SHORE_SUB points per cell,
 		-- row by row from the low corner, true where on water (survey.tl; maplib from the map). waterAt uses them.
 		shore : {integer : {boolean}}
@@ -162,6 +166,11 @@ global record PgraceRailRouterGrid
 	centre : function(g : Grid, ix : integer, iy : integer) : PgraceRailRouterGeo.Pt
 	-- Ground height at p, interpolated between cell centres (clamped at the edges).
 	heightAt : function(g : Grid, p : PgraceRailRouterGeo.Pt) : number
+	-- How close to a road joint a level crossing may come (metres).
+	JOINT_CLEARANCE : number
+	addJoint : function(g : Grid, p : PgraceRailRouterGeo.Pt)
+	-- Whether a road joint lies within r of p (r at most a cell).
+	jointNear : function(g : Grid, p : PgraceRailRouterGeo.Pt, r : number) : boolean
 	-- Points per cell side in a shore cell's finer sampling.
 	SHORE_SUB : integer
 	-- The cells whose water flag differs from one of their 8 neighbours' (in index order).

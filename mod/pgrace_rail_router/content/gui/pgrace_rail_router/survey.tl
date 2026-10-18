@@ -323,7 +323,13 @@ local function markJunctions(job : Job, edge : Engine.Component.BaseEdge)
 				segments = #api.engine.system.streetSystem.getNodeSegments(node)
 				return true
 			end)
-			if segments >= 3 then
+			if segments == 2 then
+				local n = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+				if n ~= nil then
+					grid.addJoint(job.grid, { x = n.position.x, y = n.position.y })
+					job.joints = job.joints + 1
+				end
+			elseif segments >= 3 then
 				local n = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
 				if n ~= nil then
 					local b = area.JUNCTION_BUFFER
@@ -449,7 +455,7 @@ function survey.start(stops : {Town}, cell : number, margin : number, bounds ?: 
 	local nx, ny = box.nx, box.ny
 	cell = box.cell
 	local job : Job = { box = box, grid = grid.new(minX, minY, cell, nx, ny), tasks = {}, next = 1, seen = {},
-		reported = false, constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, junctions = 0, shoreCells = 0, trackEdges = 0,
+		reported = false, constructions = 0, townBuildings = 0, noBox = 0, edges = 0, streetEdges = 0, junctions = 0, joints = 0, shoreCells = 0, trackEdges = 0,
 		tunnelsSkipped = 0, curveFallbacks = 0, invalidCells = 0, failures = 0, slowestRowUs = 0, slowestQueryUs = 0,
 		slowestMarkUs = 0, slowestTaskUs = 0, slowestStepUs = 0, queries = 0, slices = 0, stepCalls = 0, totalUs = 0 }
 	for iy = 1, ny do
@@ -525,7 +531,7 @@ local function report(job : Job)
 		.. ", no box " .. job.noBox .. ", edges " .. job.edges .. " (streets " .. job.streetEdges .. ", track "
 		.. job.trackEdges .. ", tunnels skipped " .. job.tunnelsSkipped .. ", straight fallbacks " .. job.curveFallbacks
 		.. "), failures " .. job.failures .. "; cells " .. n .. ": blocked " .. count(g.blocked, n) .. ", road "
-		.. count(g.road, n) .. " (junctions " .. job.junctions .. ", " .. count(g.junction, n) .. " cells), track "
+		.. count(g.road, n) .. " (joints " .. job.joints .. ", junctions " .. job.junctions .. ", " .. count(g.junction, n) .. " cells), track "
 		.. count(g.track, n) .. ", water " .. count(g.water, n) .. " (shore cells sampled finer " .. job.shoreCells
 		.. "), invalid "
 		.. job.invalidCells)

@@ -330,6 +330,13 @@ local function stepStreet(b : Build, first : integer, last : integer)
 				end
 			end
 			if not snapped then
+				for __, n in ipairs(ends) do
+					if n ~= nil and dist2(n, c.p) < 10.0 then
+						fail(b, { ("a level crossing %.1f m from a road joint (the game refuses them closer than about 10 m)")
+							:format(dist2(n, c.p)) }, c.p.x, c.p.y)
+						return
+					end
+				end
 				table.insert(splits, { i, c.s, c.u })
 			end
 		end
