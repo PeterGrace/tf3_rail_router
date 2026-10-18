@@ -611,7 +611,7 @@ local function repairLanes(name : string, nodes : {integer}, andThen : function(
 	nextSegment()
 end
 
-function probe.levelCrossing(settings : Settings, angle ?: number) : {function()}
+function probe.levelCrossing(settings : Settings, angle ?: number, fromJoint ?: number) : {function()}
 	local c = camera()
 	-- The track's angle to the street (degrees; 90: square across).
 	local crossAngle = math.rad(angle or 90)
@@ -628,7 +628,17 @@ function probe.levelCrossing(settings : Settings, angle ?: number) : {function()
 		log("P9", ("camera (%.1f %.1f): street edge %d (%s), nodes %d %d, at (%.1f %.1f) height %.2f, crossing at %.0f degrees")
 			:format(c.x, c.y, found.entity, tostring(street.roadTemplate), node0, node1, found.p.x, found.p.y, found.z,
 			math.deg(crossAngle)))
-		-- The track runs square across the street through found.p; its two tracks cross the street 2.5 m either side.
+		-- With fromJoint: the crossing's middle that far along the street from its first node (a joint between two
+		-- pieces of the road, if it has two pieces), instead of the point nearest the camera.
+		if fromJoint ~= nil then
+			local a, b2 = h.p0, h.p1
+			local len = math.sqrt((b2.x - a.x) ^ 2 + (b2.y - a.y) ^ 2)
+			local dir : Pt = { x = (b2.x - a.x) / len, y = (b2.y - a.y) / len }
+			found.p = { x = a.x + dir.x * fromJoint, y = a.y + dir.y * fromJoint }
+			found.dir = dir
+			log("P9", ("crossing %.0f m from node %s (street length %.0f m)"):format(fromJoint,
+				segmentCounts(node0), len))
+		end
 		-- The track's direction, crossAngle from the street's; its two tracks, 2.5 m either side of its centre line,
 		-- cross the street 2.5 / sin(angle) m either side of found.p.
 		local across = geo.rotate(found.dir, crossAngle)

@@ -930,6 +930,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.levelCrossing(settings)
 			elseif work.name == "P9b" then
 				work.tasks = probe.levelCrossing(settings, 70)
+			elseif work.name == "P9c" then
+				work.tasks = probe.levelCrossing(settings, 90, 12)
+			elseif work.name == "P9d" then
+				work.tasks = probe.levelCrossing(settings, 90, 25)
 			elseif work.name == "P10" then
 				work.tasks = probe.buildStation(settings)
 			elseif work.name == "P11" then
@@ -1351,6 +1355,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P6", "Probe P6: dry-run a station" },
 			{ "P9", "Probe P9: level crossing (builds; test map only)" },
 			{ "P9b", "Probe P9b: level crossing at 70 degrees (builds; test map only)" },
+			{ "P9c", "Probe P9c: level crossing 12 m from a road joint (builds)" },
+			{ "P9d", "Probe P9d: level crossing 25 m from a road joint (builds)" },
 			{ "P10", "Probe P10: build a station (test map only)" },
 			{ "P11", "Probe P11: join track to the station (test map only)" },
 		}) do
