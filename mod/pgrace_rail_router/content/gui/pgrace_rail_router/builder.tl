@@ -82,6 +82,8 @@ local function findIn(find : function(string) : integer, name : string) : intege
 	return -1
 end
 
+local SIGNAL_IDS = -400000000
+
 function builder.chunkProposal(net : Network, first : integer, last : integer, settings : Settings) : SimpleProposal,
 		string
 	local templateId = findIn(api.res.streetTemplateRep.find, settings.track)
@@ -122,6 +124,7 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 		return nodeIds[index]
 	end
 	local edges : {Proposal.SegmentAndEntity} = {}
+	local signals : {SimpleStreetProposal.EdgeObject} = {}
 	for i = first, last do
 		local e = net.edges[i]
 		local seg = api.type.SegmentAndEntity.new()
@@ -147,8 +150,8 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 		-- The distance between parallel tracks, as the game's own track carries it (probe P1: 5 on a double track the
 		-- player built; left at 0, the game took the two tracks for one in their parallel strip, and drew overhead wire
 		-- over one of them only).
-		-- A crossover (track 0) isn't one of a pair: left at 0.
-		if e.track ~= 0 then
+		-- A crossover (track 0) or a fan's piece (3) isn't one of a pair: left at 0.
+		if e.track == 1 or e.track == 2 then
 			seg.comp.distance = 2 * settings.network.offset
 		end
 		-- Owned by the player, as the game's own track is (P1: ours had no owner). The constructor isn't in the
@@ -165,11 +168,33 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 		seg.comp.roadTemplate = settings.track
 		seg.comp.roadStyle = template.streetStyle
 		seg.comp.roadType = api.type["enum"].RoadType.TRACK
+		-- One-way signals (Halt 2+2): new edge objects numbered from SIGNAL_IDS down, listed on the edge too (the
+		-- Express & Local mod's way; other ids were refused with "Unknown exception").
+		if e.signals ~= nil and settings.signal ~= nil then
+			local objects : {{integer}} = {}
+			for __, sg in ipairs(e.signals) do
+				local id = SIGNAL_IDS - #signals
+				table.insert(objects, { id, api.type["enum"].EdgeObjectType.SIGNAL as integer })
+				local obj = api.type.SimpleStreetProposal.EdgeObject.new()
+				obj.edgeEntity = seg.entity
+				obj.param = sg.param
+				obj.oneWay = true
+				-- On the train's right (right-hand running), measured against the edge's own direction.
+				obj.left = not sg.forward
+				obj.model = settings.signal
+				obj.playerEntity = api.engine.util.getPlayer()
+				table.insert(signals, obj)
+			end
+			(seg.comp as any as {string : any}).objects = objects
+		end
 		table.insert(edges, seg)
 	end
 	local proposal = api.type.SimpleProposal.new()
 	proposal.streetProposal.nodesToAdd = nodes
 	proposal.streetProposal.edgesToAdd = edges
+	if #signals > 0 then
+		proposal.streetProposal.edgeObjectsToAdd = signals
+	end
 	return proposal
 end
 
@@ -206,7 +231,7 @@ function builder.stationLayout(plan : Plan, index : integer, settings : Settings
 	if station.town ~= nil and station.town.pos ~= nil then
 		dir = sl.facing(station.site.centre, dir, station.town.pos)
 	end
-	return sl.layout(station.site.centre, dir, plan.platformLength, settings.era)
+	return sl.layout(station.site.centre, dir, plan.platformLength, settings.era, settings.style)
 end
 
 function builder.stationProposal(plan : Plan, index : integer, settings : Settings) : SimpleProposal, string
@@ -220,7 +245,7 @@ function builder.stationProposal(plan : Plan, index : integer, settings : Settin
 	end
 	local all : {{integer : PgraceRailRouterStationLayout.Module}} = { layout.modules }
 	if settings.addons ~= nil then
-		table.insert(all, sl.addons(plan.platformLength, settings.addons))
+		table.insert(all, sl.addons(plan.platformLength, settings.addons, settings.style))
 	end
 	-- Only modules the game knows: a construction script reads each module's metadata, and a missing one is malformed.
 	local modules : {integer : table} = {}

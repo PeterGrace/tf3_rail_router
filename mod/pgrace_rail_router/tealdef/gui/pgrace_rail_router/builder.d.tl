@@ -64,6 +64,10 @@ global record PgraceRailRouterBuilder
 		-- The plan crosses roads on the level (Weights.bridgeRoads false): a collision with streets alone is a level
 		-- crossing, not an error.
 		levelCrossings : boolean
+		-- Station style: nil for 2 tracks, "halt" for Halt 2+2 (with network.fan set), and the one-way signal's
+		-- resource name for its signals (e.g. "::/infrastructure/signal/signal_path_c.con"; probe P14).
+		style : string
+		signal : string
 	end
 
 	record Check

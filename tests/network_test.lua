@@ -441,3 +441,94 @@ t.test("network: beside a switch's branch, the main track runs on in one edge of
 		end
 	end
 end)
+
+local function halt()
+	local o = network.defaults()
+	o.fan = network.turnoutLength(300)
+	o.blockSpacing = 2000
+	return o
+end
+
+t.test("network: a Halt 2+2 fan's turnout length follows the radius, as the Express & Local mod's", function()
+	t.eq(network.turnoutLength(150), 55, "simple")
+	t.eq(network.turnoutLength(300), 75, "standard")
+	t.eq(network.turnoutLength(600), 110, "high-speed")
+	t.eq(network.fanLength(75), 125, "20 m apron, the turnout, 30 m on")
+end)
+
+t.test("network: Halt 2+2 fans run each local track into the line's track on its side", function()
+	local net = network.build(plan({ leg({ straight(0, 0, 3000, 0) }) }), halt())
+	local uses = {}
+	for __, e in ipairs(net.edges) do
+		uses[e.node0] = (uses[e.node0] or 0) + 1
+		uses[e.node1] = (uses[e.node1] or 0) + 1
+	end
+	local fans = {}
+	for __, e in ipairs(net.edges) do
+		if e.track == 3 then
+			table.insert(fans, e)
+		end
+	end
+	t.eq(#fans, 4, "two at each end")
+	for __, e in ipairs(fans) do
+		local atStart = e.s0 == 0
+		local tip = atStart and net.nodes[e.node0] or net.nodes[e.node1]
+		local merge = atStart and net.nodes[e.node1] or net.nodes[e.node0]
+		t.near(math.abs(tip.y), 7.5, 1e-9, "the local track's end 7.5 m off the axis")
+		t.near(math.abs(merge.y), 2.5, 1e-9, "merging into the line's track")
+		t.ok(tip.y * merge.y > 0, "on its own side")
+		t.near(math.abs(tip.x - merge.x), 95, 1e-9, "20 m apron and 75 m turnout")
+		t.near(atStart and tip.x or 3000 - tip.x, 0, 1e-9, "at the platforms")
+		t.eq(uses[atStart and e.node1 or e.node0], 3, "a switch at the merge")
+		t.eq(uses[atStart and e.node0 or e.node1], 1, "the station's track end, joined when built")
+	end
+	-- The line's track from the platforms to the merge is one edge (the main edge beside the branch).
+	for __, e in ipairs(net.edges) do
+		if e.track == 1 or e.track == 2 then
+			t.ok(not (e.s0 < 95 - 1e-6 and e.s1 > 1e-6 and (e.s0 > 1e-6 or e.s1 < 95 - 1e-6)) or e.s0 >= 95 - 1e-6,
+				"no node between the platforms and the merge")
+		end
+	end
+	local crossovers = 0
+	for __, e in ipairs(net.edges) do
+		crossovers = crossovers + (e.track == 0 and 1 or 0)
+	end
+	t.eq(crossovers, 4, "one leg: both its ends are the line's ends, a pair each")
+end)
+
+t.test("network: Halt 2+2 crossovers only at the line's ends, after the fans", function()
+	local net = network.build(plan({ leg({ straight(0, 0, 3000, 0) }), leg({ straight(0, 0, 3000, 0) }) }), halt())
+	local byLeg = { {}, {} }
+	for __, e in ipairs(net.edges) do
+		if e.track == 0 then
+			table.insert(byLeg[e.leg], e.s0)
+		end
+	end
+	t.eq(#byLeg[1], 2, "leg 1: a pair at its start only")
+	t.eq(#byLeg[2], 2, "leg 2: a pair at its end only")
+	for __, s in ipairs(byLeg[1]) do
+		t.ok(s >= 125, "after the fan")
+	end
+	for __, s in ipairs(byLeg[2]) do
+		t.ok(s <= 3000 - 125 - 45, "after the fan")
+	end
+end)
+
+t.test("network: Halt 2+2 signals face their tracks' trains: right-hand running", function()
+	local net = network.build(plan({ leg({ straight(0, 0, 6000, 0) }) }), halt())
+	local forward, backward = 0, 0
+	for __, e in ipairs(net.edges) do
+		for __, sg in ipairs(e.signals or {}) do
+			t.ok(sg.param > 0 and sg.param < 1, "on the edge")
+			if e.track == 1 then
+				t.ok(not sg.forward, "track 1 (the left) runs against the leg")
+			elseif e.track == 2 then
+				t.ok(sg.forward, "track 2 runs with it")
+			end
+			if sg.forward then forward = forward + 1 else backward = backward + 1 end
+		end
+	end
+	-- Each way: 2 starters (local and express) leaving one end, a home signal arriving at the other, and blocks.
+	t.ok(forward == backward, "as many each way")
+	t.ok(forward >= 3 + 2, "starters, home and block signals (6 km, 2 km apart)")
+end)

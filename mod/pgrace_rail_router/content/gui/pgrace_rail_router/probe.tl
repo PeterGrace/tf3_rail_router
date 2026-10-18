@@ -526,6 +526,150 @@ function probe.stationStreets() : {function()}
 	end) }
 end
 
+-- P14 ------------------------------------------------------------------------------------------------------------
+
+-- A built edge's signals as the game has them: for each of its transport edges, the signal each way and its type.
+local function signalsOn(entity : integer) : string
+	local parts : {string} = {}
+	local tn = api.engine.getComponent(entity, api.type.ComponentType.TRANSPORT_NETWORK) as {string : any}
+	local count = tn ~= nil and #(tn.edges as {any}) or 1
+	for k = 0, count - 1 do
+		for __, reversed in ipairs({ false, true }) do
+			local ok, text = pcall(function() : string
+				local id = api.engine.system.signalSystem.getSignal(api.type.EdgeId.new(entity, k), reversed)
+				if id == nil or id.entity == nil or (id.entity as integer) < 0 then
+					return nil
+				end
+				local list = api.engine.getComponent(id.entity, api.type.ComponentType.SIGNAL_LIST) as {string : any}
+				local sig = (list.signals as {{string : any}})[id.index + 1]
+				return ("edge %d %s: signal %d type %s"):format(k, reversed and "reversed" or "forward", id.entity as integer,
+					tostring(sig ~= nil and sig.type))
+			end)
+			if ok and text ~= nil then
+				table.insert(parts, text as string)
+			end
+		end
+	end
+	return #parts > 0 and table.concat(parts, "; ") or "no signals"
+end
+
+function probe.halt(settings : Settings) : {function()}
+	local c = camera()
+	local east : Pt = { x = 1, y = 0 }
+	local ground = groundAt(c)
+	local era = sl.eraLetter(settings.year)
+	local opts : Options = {}
+	for k, v in pairs(settings.network as {string : any}) do
+		(opts as {string : any})[k] = v
+	end
+	opts.fan = network.turnoutLength(300)
+	opts.blockSpacing = 200
+	opts.chunkLength = 100000
+	local s = with(settings, function(copy : Settings)
+		copy.addons = { building = MODULE_DIR .. "main_building_1_era_" .. era .. ".module",
+			stairs = MODULE_DIR .. "addon_platform_passenger_stairs_era_" .. era .. ".module" }
+		copy.style = "halt"
+		copy.network = opts
+	end)
+	s.levelCrossings = settings.levelCrossings
+	-- The station at the camera facing east, a 600 m line off its east end.
+	local plan = testPlan({ straight(geo.add(c, geo.scale(east, 80)), east, 600) }, ground, 0, "ground")
+	plan.stations = { { town = { id = -1, name = "Probe", pos = { x = c.x, y = c.y - 200 } },
+		site = { centre = c, dir = east, distance = 0 }, z = ground } }
+	return { guarded("P14", function()
+		-- Which signal resource name the game knows.
+		local letter = settings.year < 1950 and "a" or "c"
+		for __, name in ipairs({ "::/infrastructure/signal/signal_path_" .. letter .. ".con",
+				"::/infrastructure/signal/signal_path_" .. letter .. ".mdl",
+				"infrastructure/signal/signal_path_" .. letter .. ".con" }) do
+			local okM, m = pcall(function() : integer return api.res.modelRep.find(name) end)
+			local okC, con = pcall(function() : integer return api.res.constructionRep.find(name) end)
+			log("P14", ("signal %s: modelRep %s, constructionRep %s"):format(name, tostring(okM and m), tostring(okC and con)))
+			if s.signal == nil and ((okM and m as integer >= 0) or (okC and con as integer >= 0)) then
+				s.signal = name
+			end
+		end
+		s.signal = s.signal or "::/infrastructure/signal/signal_path_" .. letter .. ".con"
+		log("P14", "using signal " .. s.signal)
+		local net = network.build(plan, opts)
+		local fans, crossovers, marks = 0, 0, 0
+		for __, e in ipairs(net.edges) do
+			fans = fans + (e.track == 3 and 1 or 0)
+			crossovers = crossovers + (e.track == 0 and 1 or 0)
+			for __, sg in ipairs(e.signals or {}) do
+				marks = marks + 1
+				local at = network.hermiteAt({ p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }, sg.param)
+				log("P14", ("planned signal on track %d edge (%.1f %.1f)->(%.1f %.1f) at %.2f (%.1f %.1f), facing %s"):format(
+					e.track, e.p0.x - c.x, e.p0.y - c.y, e.p1.x - c.x, e.p1.y - c.y, sg.param, at.x - c.x, at.y - c.y,
+					sg.forward and "node0->node1" or "node1->node0"))
+			end
+		end
+		log("P14", ("network: %d edges, %d chunks, %d fan pieces, %d crossovers, %d signals"):format(#net.edges,
+			#net.chunks, fans, crossovers, marks))
+		local station, why = builder.stationProposal(plan, 1, s)
+		if station == nil then
+			log("P14", "no station proposal: " .. tostring(why))
+			return
+		end
+		local ok, cost, messages = builder.dryRun(station)
+		log("P14", ("station dry run: %s, %d"):format(ok and "clean" or table.concat(messages, "; "), cost))
+		if not ok then
+			return
+		end
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(station, builder.newContext(), false, true),
+			function(__ : any, success : boolean)
+				guarded("P14", function()
+					log("P14", "station built: " .. tostring(success))
+					if not success then
+						return
+					end
+					log("P14", "station joined: " .. tostring(builder.builtStation(plan, 1, net)))
+					local joined = 0
+					for __, n in ipairs(net.nodes) do
+						joined = joined + (n.entity ~= nil and 1 or 0)
+					end
+					log("P14", ("%d network nodes joined to the station's track ends"):format(joined))
+					local chunk = net.chunks[1]
+					local proposal, whyNot = builder.chunkProposal(net, chunk.first, chunk.last, s)
+					if proposal == nil then
+						log("P14", "no line proposal: " .. tostring(whyNot))
+						return
+					end
+					local okL, costL, messagesL, __, data = builder.dryRun(proposal)
+					local hits : {string} = {}
+					for __, h in ipairs(builder.collisions(data)) do
+						table.insert(hits, ("%s %d"):format(h.what, h.entity))
+					end
+					log("P14", ("line dry run: %s, %d %s"):format(okL and "clean" or table.concat(messagesL, "; "), costL,
+						table.concat(hits, ", ")))
+					if not okL then
+						return
+					end
+					api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(proposal, builder.newContext(), false, true),
+						function(res : WorldBuildProposalCommandData, built : boolean)
+							guarded("P14", function()
+								log("P14", "line built: " .. tostring(built))
+								if not built then
+									return
+								end
+								for __, seg in ipairs(res.proposal.proposal.addedSegments) do
+									local e = seg.entity as integer
+									local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as
+										Engine.Component.BaseEdge
+									if edge ~= nil and #(edge.objects or {}) > 0 then
+										log("P14", ("built edge %d (%.1f %.1f)->(%.1f %.1f), %d objects: %s"):format(e,
+											edge.position0.x - c.x, edge.position0.y - c.y, edge.position1.x - c.x,
+											edge.position1.y - c.y, #edge.objects, signalsOn(e)))
+									end
+								end
+								log("P14", "done")
+							end)()
+						end)
+				end)()
+			end)
+	end) }
+end
+
 -- P6 -------------------------------------------------------------------------------------------------------------
 
 local function moduleLookup(name : string) : string
