@@ -430,12 +430,12 @@ end
 -- is listed instead.
 -- How far from the entrance a street node may be (metres), and how many of the nearest are tried.
 local ROAD_REACH = 300.0
-local ROAD_TRIES = 8
+local ROAD_TRIES = 12
 -- A street node this close to the entrance means the road is there already (a build carried on after a restart).
 local ROAD_SNAP = 3.0
--- The road leaves the building at most this far off square (the cosine): a node behind or alongside the station
--- isn't tried.
-local ROAD_SQUARE = 0.3
+-- How far behind the building's front a node may be (the cosine of the angle off straight out): one alongside is
+-- tried (Mercer Island's nearest dead ends ended beside the station), one behind it isn't.
+local ROAD_SQUARE = -0.3
 
 local function streetNodesNear(p : Pt3, reach : number) : {Pt3}
 	local seen : {integer : boolean} = {}
@@ -468,10 +468,10 @@ local function streetNodesNear(p : Pt3, reach : number) : {Pt3}
 end
 
 -- A road from the entrance (leaving it outward) to an existing street node, typed like a street at that node; nil
--- if the node is behind or alongside the station. It meets a dead end straight on, continuing the street, and a node
--- along a street square to it, as a T: arriving at an angle, it overlapped the street there (Collision, Mercer
--- Island).
-local function roadProposal(e : Pt3, out : Pt3, node : Pt3) : SimpleProposal
+-- if the node is behind the station. It meets a node along a street square to it, as a T, and a dead end either
+-- straight on (`square` false), continuing the street, or square to it, as a corner: arriving at an angle, it
+-- overlapped the street there (Collision, Mercer Island).
+local function roadProposal(e : Pt3, out : Pt3, node : Pt3, square : boolean) : SimpleProposal
 	local l = dist2(e, node)
 	local cx, cy = (node.x - e.x) / l, (node.y - e.y) / l
 	if cx * out.x + cy * out.y < ROAD_SQUARE then
@@ -498,7 +498,7 @@ local function roadProposal(e : Pt3, out : Pt3, node : Pt3) : SimpleProposal
 	ax, ay = ax / al, ay / al
 	-- The way the road runs as it reaches the node.
 	local dx, dy : number, number
-	if #pieces == 1 then
+	if #pieces == 1 and not square then
 		dx, dy = -ax, -ay
 	else
 		-- Square to the street, from the entrance's side.
@@ -559,11 +559,19 @@ local function stepRoad(b : Build)
 	end
 	local nodes = streetNodesNear(e, ROAD_REACH)
 	local tried = 0
+	local tries : {{Pt3, boolean}} = {}
 	for __, node in ipairs(nodes) do
+		table.insert(tries, { node, true })
+		if #api.engine.system.streetSystem.getNodeStreetSegments(node.entity) == 1 then
+			table.insert(tries, { node, false })
+		end
+	end
+	for __, try in ipairs(tries) do
+		local node = try[1]
 		if tried >= ROAD_TRIES then
 			break
 		end
-		local made, proposal = pcall(roadProposal, e, out, node)
+		local made, proposal = pcall(roadProposal, e, out, node, try[2])
 		if made and proposal ~= nil then
 			tried = tried + 1
 			local ok, cost, messages, __, data = builder.dryRun(proposal as SimpleProposal)
@@ -571,7 +579,8 @@ local function stepRoad(b : Build)
 			for __, c in ipairs(builder.collisions(data)) do
 				table.insert(hits, ("%s %d"):format(c.what, c.entity))
 			end
-			log(("road to station %d (%s) from node %d, %.0f m: %s%s"):format(b.road, name, node.entity, dist2(e, node),
+			log(("road to station %d (%s) from node %d (%s), %.0f m: %s%s"):format(b.road, name, node.entity,
+				try[2] and "square" or "straight on", dist2(e, node),
 				ok and ("clean, " .. tostring(cost)) or table.concat(messages, "; "),
 				#hits > 0 and (" (" .. table.concat(hits, ", ") .. ")") or ""))
 			if ok then
