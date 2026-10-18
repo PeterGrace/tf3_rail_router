@@ -11,6 +11,7 @@ local type Result = PgraceRailRouterExisting.Result
 -- How far out from the platform end, and how far across the axis (at least; a station's outer tracks widen it),
 -- the approach is looked for (metres).
 local REACH = 1500.0
+existing.REACH = REACH
 local WIDE = 12.0
 local STEP = 5.0
 local EPS = 1e-6

@@ -84,8 +84,9 @@ global record PgraceRailRouterSurvey
 	-- groups' centroids, dir the unit vector between them, half half their distance. A terminus (ends all at one side)
 	-- is left out.
 	existingStations : function(town : PgraceRailRouterCorridor.Town, reach : number) : {PgraceRailRouterExisting.Station}
-	-- Every track piece (BASE_EDGE without BASE_EDGE_STREET) within radius of centre (the analyser reads 1.5 km out
-	-- from a platform end, so about 1700 m), with its one-way signals and each of its nodes' track piece count. Logs
-	-- its size and the time it took.
+	-- Every track piece (BASE_EDGE without BASE_EDGE_STREET) within radius of centre, with its one-way signals and each
+	-- of its nodes' track piece count. The analyser reads existing.REACH out from each platform end, so pass the
+	-- station's centre and radius ≥ station.half + existing.REACH + 50. A piece whose signals can't all be read is
+	-- "unknown" (the analyser stops there). Logs its size, the time it took and the failed reads.
 	trackSnapshot : function(centre : PgraceRailRouterGeo.Pt, radius : number) : PgraceRailRouterExisting.Snapshot
 end

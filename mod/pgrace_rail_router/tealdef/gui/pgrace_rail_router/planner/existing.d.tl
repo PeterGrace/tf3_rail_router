@@ -9,12 +9,16 @@ global record PgraceRailRouterExisting
 		p1 : PgraceRailRouterNetwork.Pt3
 		t0 : PgraceRailRouterNetwork.Pt3
 		t1 : PgraceRailRouterNetwork.Pt3
-		-- "ground", "bridge" or "tunnel"
+		-- "ground", "bridge" or "tunnel"; "unknown" when the survey couldn't read all its signals (the analyser stops
+		-- there, as at any piece that isn't "ground")
 		kind : string
 		-- One-way signals only (the survey leaves out two-way path signals, type 0): param along the piece, and +1
 		-- facing node0 → node1 trains, −1 the other way.
 		signals : {{number}}
 	end
+
+	-- How far out from each platform end the analyser reads (metres).
+	REACH : number
 
 	record Snapshot
 		pieces : {Piece}

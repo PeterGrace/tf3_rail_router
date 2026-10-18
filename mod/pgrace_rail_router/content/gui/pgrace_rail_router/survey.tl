@@ -709,7 +709,8 @@ function survey.existingStations(town : Town, reach : number) : {Station}
 		elseif station ~= nil then
 			local s = station as Station
 			table.insert(result, s)
-			debugPrint(LOG_PREFIX .. ("existing station %d in %s: %d ends"):format(entity, tostring(town.name), #s.ends))
+			debugPrint(LOG_PREFIX .. ("existing station %d in %s: %d ends, centre (%.1f %.1f), dir (%.3f %.3f), half %.1f")
+				:format(entity, tostring(town.name), #s.ends, s.centre.x, s.centre.y, s.dir.x, s.dir.y, s.half))
 		elseif why ~= nil then
 			logOnce("existing" .. tostring(entity), ("existing station %d in %s left out: %s"):format(entity,
 				tostring(town.name), tostring(why)))
@@ -718,49 +719,92 @@ function survey.existingStations(town : Town, reach : number) : {Station}
 	return result
 end
 
-local function isFinite01(x : any) : boolean
+local function inUnit(x : any) : boolean
 	return type(x) == "number" and (x as number) >= 0 and (x as number) <= 1
 end
 
+local function p3(v : Vec3f) : Pt3
+	return { x = v.x, y = v.y, z = v.z }
+end
+
 -- A piece's one-way signals as {param, facing}: for each of its transport edges k and each way, the signal there
--- (signalSystem.getSignal, as probe P14 read them), kept if its SIGNAL_LIST type is 1 (one-way). P14: a signal facing
--- node1 → node0 trains is found with reversed = false, so facing is +1 for reversed = true. The param is the signal's
--- EDGE_OBJECT param along the piece if readable, else the middle of its transport edge.
-local function signalsOf(entity : integer) : {{number}}
+-- (signalSystem.getSignal, as probe P14 read them), kept if its SIGNAL_LIST type is 1 (one-way), each signal once. P14:
+-- a signal facing node1 → node0 trains is found with reversed = false, so facing is +1 for reversed = true. The param
+-- is the signal's EDGE_OBJECT param along the piece if readable, else the middle of its transport edge. Also returns
+-- how many reads threw (each in a pcall of its own, logged once): a piece with any is "unknown".
+local function signalsOf(piece : Piece) : {{number}}, integer
+	local entity = piece.entity
 	local result : {{number}} = {}
-	local tn = api.engine.getComponent(entity, api.type.ComponentType.TRANSPORT_NETWORK) as Engine.Component.TransportNetwork
+	local failures = 0
 	local count = 1
-	if tn ~= nil and tn.edges ~= nil and #tn.edges > 0 then
-		count = #tn.edges
+	local okN, n = pcall(function() : integer
+		local tn = api.engine.getComponent(entity, api.type.ComponentType.TRANSPORT_NETWORK) as Engine.Component.TransportNetwork
+		if tn ~= nil and tn.edges ~= nil and #tn.edges > 0 then
+			return #tn.edges
+		end
+		return 1
+	end)
+	if okN then
+		count = n as integer
+	else
+		failures = failures + 1
+		logOnce("snapshotNetwork", ("snapshot: transport network of piece %d: %s"):format(entity, tostring(n)))
 	end
+	local seen : {string : boolean} = {}
 	for k = 0, count - 1 do
 		for __, reversed in ipairs({ false, true }) do
-			local id = api.engine.system.signalSystem.getSignal(api.type.EdgeId.new(entity, k), reversed)
-			if id ~= nil and id.entity ~= nil and (id.entity as integer) >= 0 then
+			local ok, err = pcall(function() : boolean
+				local id = api.engine.system.signalSystem.getSignal(api.type.EdgeId.new(entity, k), reversed)
+				if id == nil or id.entity == nil or (id.entity as integer) < 0 then
+					return true
+				end
+				local key = tostring(id.entity) .. ":" .. tostring(id.index)
+				if seen[key] then
+					return true
+				end
+				seen[key] = true
 				local list = api.engine.getComponent(id.entity, api.type.ComponentType.SIGNAL_LIST) as {string : any}
 				local sig : {string : any} = nil
 				if list ~= nil and list.signals ~= nil then
 					sig = (list.signals as {{string : any}})[id.index + 1]
 				end
-				if sig ~= nil and tonumber(sig.type) == 1 then
-					local param = (k + 0.5) / count
-					pcall(function() : boolean
-						local eo = api.engine.getComponent(id.entity, api.type.ComponentType.EDGE_OBJECT) as {string : any}
-						if eo ~= nil and isFinite01(eo.param) then
-							param = eo.param as number
-						end
-						return true
-					end)
-					table.insert(result, { param, reversed and 1 or -1 })
+				if sig == nil or tonumber(sig.type) ~= 1 then
+					return true
 				end
+				local param = (k + 0.5) / count
+				local eoParam : any = nil
+				local transl = "?"
+				pcall(function() : boolean
+					local eo = api.engine.getComponent(id.entity, api.type.ComponentType.EDGE_OBJECT) as Engine.Component.EdgeObject
+					if eo ~= nil then
+						eoParam = eo.param
+						if inUnit(eoParam) then
+							param = eoParam as number
+						end
+						local okT, t = pcall(function() : Vec3f
+							return eo.transf:getTransl()
+						end)
+						if okT and t ~= nil then
+							local v = t as Vec3f
+							transl = ("(%.1f %.1f %.1f)"):format(v.x, v.y, v.z)
+						end
+					end
+					return true
+				end)
+				table.insert(result, { param, reversed and 1 or -1 })
+				-- PROBE (remove before release): where the param came from, its direction and the facing.
+				debugPrint(LOG_PREFIX .. ("probe signal: piece %d edge %d/%d reversed %s, list %d index %d, EDGE_OBJECT param %s, param used %.3f, node0 (%.1f %.1f) node1 (%.1f %.1f), transf %s")
+					:format(entity, k, count, tostring(reversed), id.entity as integer, id.index, tostring(eoParam), param,
+						piece.p0.x, piece.p0.y, piece.p1.x, piece.p1.y, transl))
+				return true
+			end)
+			if not ok then
+				failures = failures + 1
+				logOnce("snapshotSignals", ("snapshot: signal of piece %d edge %d: %s"):format(entity, k, tostring(err)))
 			end
 		end
 	end
-	return result
-end
-
-local function p3(v : Vec3f) : Pt3
-	return { x = v.x, y = v.y, z = v.z }
+	return result, failures
 end
 
 function survey.trackSnapshot(centre : Pt, radius : number) : Snapshot
@@ -776,51 +820,63 @@ function survey.trackSnapshot(centre : Pt, radius : number) : Snapshot
 	end
 	local bridge = api.type["enum"].BaseEdgeType.BRIDGE
 	local tunnel = api.type["enum"].BaseEdgeType.TUNNEL
-	local failed = 0
+	local failed, unknown, signalFailures, degreeFailures = 0, 0, 0, 0
+	local function readPiece(entity : integer) : boolean
+		local edge = api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if edge == nil then
+			return true
+		end
+		local kind = "ground"
+		if edge.type == bridge then
+			kind = "bridge"
+		elseif edge.type == tunnel then
+			kind = "tunnel"
+		end
+		-- Plain numbers now: engine data read later goes stale.
+		local piece : Piece = { entity = entity, node0 = edge.node0 as integer, node1 = edge.node1 as integer,
+			p0 = p3(edge.position0), p1 = p3(edge.position1), t0 = p3(edge.tangent0), t1 = p3(edge.tangent1),
+			kind = kind, signals = {} }
+		local signals, failures = signalsOf(piece)
+		piece.signals = signals
+		if failures > 0 then
+			-- Fail closed: its running direction is unknown, so the analyser stops at it.
+			piece.kind = "unknown"
+			unknown = unknown + 1
+			signalFailures = signalFailures + failures
+		end
+		table.insert(snap.pieces, piece)
+		return true
+	end
+	local function isStreet(entity : integer) : boolean
+		return api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE_STREET) ~= nil
+	end
 	for __, e in ipairs(found as {Engine.Entity}) do
 		local entity = e as integer
-		local okP, err = pcall(function() : boolean
-			local edge = api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-			if edge == nil or api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE_STREET) ~= nil then
-				return true
+		local okStreet, street = pcall(isStreet, entity)
+		if okStreet and not (street as boolean) then
+			local okP, err = pcall(readPiece, entity)
+			if not okP then
+				failed = failed + 1
+				logOnce("snapshotPiece", ("snapshot: piece %d: %s"):format(entity, tostring(err)))
 			end
-			local kind = "ground"
-			if edge.type == bridge then
-				kind = "bridge"
-			elseif edge.type == tunnel then
-				kind = "tunnel"
-			end
-			-- Plain numbers now: engine data read later goes stale.
-			local piece : Piece = { entity = entity, node0 = edge.node0 as integer, node1 = edge.node1 as integer,
-				p0 = p3(edge.position0), p1 = p3(edge.position1), t0 = p3(edge.tangent0), t1 = p3(edge.tangent1),
-				kind = kind, signals = {} }
-			local okS, signals = pcall(function() : {{number}}
-				return signalsOf(entity)
-			end)
-			if okS then
-				piece.signals = signals as {{number}}
-			else
-				logOnce("snapshotSignals", ("snapshot: signals of piece %d: %s"):format(entity, tostring(signals)))
-			end
-			table.insert(snap.pieces, piece)
-			return true
-		end)
-		if not okP then
+		elseif not okStreet then
 			failed = failed + 1
-			logOnce("snapshotPiece", ("snapshot: piece %d: %s"):format(entity, tostring(err)))
+			logOnce("snapshotPiece", ("snapshot: piece %d: %s"):format(entity, tostring(street)))
 		end
+	end
+	local function trackSegments(node : integer) : integer
+		return #api.engine.system.streetSystem.getNodeTrackSegments(node)
 	end
 	for __, piece in ipairs(snap.pieces) do
 		for __, node in ipairs({ piece.node0, piece.node1 }) do
 			if snap.degree[node] == nil then
-				local okD, n = pcall(function() : integer
-					return #api.engine.system.streetSystem.getNodeTrackSegments(node)
-				end)
+				local okD, n = pcall(trackSegments, node)
 				if okD then
 					snap.degree[node] = n as integer
 				else
 					-- Unknown: counted as no plain node, which stops the analyser's reading there.
 					snap.degree[node] = 0
+					degreeFailures = degreeFailures + 1
 					logOnce("snapshotDegree", ("snapshot: node %d: %s"):format(node, tostring(n)))
 				end
 			end
@@ -830,8 +886,8 @@ function survey.trackSnapshot(centre : Pt, radius : number) : Snapshot
 	for __, piece in ipairs(snap.pieces) do
 		signals = signals + #piece.signals
 	end
-	debugPrint(LOG_PREFIX .. ("snapshot: %d pieces, %d us (%d one-way signals, %d pieces unreadable)"):format(
-		#snap.pieces, math.floor(clock:getTime()), signals, failed))
+	debugPrint(LOG_PREFIX .. ("snapshot: %d pieces, %d us (%d one-way signals; %d pieces unreadable, %d unknown after %d failed signal reads, %d node degrees unreadable)")
+		:format(#snap.pieces, math.floor(clock:getTime()), signals, failed, unknown, signalFailures, degreeFailures))
 	return snap
 end
 

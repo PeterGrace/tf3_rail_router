@@ -485,6 +485,8 @@ end
     the midpoint of the two groups' centroids, dir is the unit vector from one to the other, and half is half the
     distance between them.
   - Wrap everything in `pcall` and log per station: `[rail_router] existing station %d in %s: %d ends`.
+  - Termini (every track end on one side, ends under 20 m apart) aren't supported in 4b-1: they're left out, so
+    such a stop town gets a new station.
 - [ ] **Step 2: Add `survey.trackSnapshot(centre : Pt, radius : number) : PgraceRailRouterExisting.Snapshot`.**
   - Read every BASE_EDGE without BASE_EDGE_STREET within radius 1700 m, as `markEdge` reads curves.
   - Each piece's signals: for each transport edge k and reversed ∈ {false, true}, call
@@ -503,6 +505,9 @@ end
 - Modify: `content/gui/pgrace_rail_router/planner/route.tl`
 - Modify: `tealdef/gui/pgrace_rail_router/planner/route.d.tl`
 - Test: `tests/route_test.lua`
+
+The caller (Task 9) snapshots each existing station with `survey.trackSnapshot(station.centre, station.half +
+existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
 
 - [ ] **Step 1: Declare.**
   - `Input.existing : {integer : PgraceRailRouterExisting.Result}`, keyed by stop index; nil means no existing
