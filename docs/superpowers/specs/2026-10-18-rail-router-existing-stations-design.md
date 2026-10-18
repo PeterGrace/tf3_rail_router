@@ -61,7 +61,8 @@ A record per usable end, `ExistingStation.ends[k]`, holds:
 
 The frame for one junction:
 - **x** runs along the existing axis, outward from the station.
-- **y** runs across it. The new line comes from the +y side.
+- **y** runs across it, positive to the left of outward. The new line comes from either side; the frame is drawn
+  for the +y side and mirrored for −y.
 - The existing tracks sit at y = ±2.5. "Near" means the existing track at +2.5.
 
 The pieces, from the station outward:
@@ -69,26 +70,27 @@ The pieces, from the station outward:
    the near track at x = m. Its length is L₁₀ = max(40, √(4 R × 10)), where R is the turnout radius
    (`turnoutLength` for a 10 m offset: standard track 110 m).
 2. **The crossing.** Further out than the merge, our near track, at y = +7.5, runs in to the existing far track
-   (−2.5) with an S-curve of 10 m offset, from x = c₁ (outer) to x = c₀ = c₁ − L₁₀ (inner). It ends in a switch on
-   the far track at c₀. On the way it crosses the existing near track where the S-curve passes y = +2.5, which is a
-   level crossing. Its x range lies wholly outside the merge's, so our far track (+12.5, straight there) is never
-   crossed, and by the time the merge brings our far track down across y = +7.5, our near track has already left.
+   (−2.5) as two circular arcs of the turnout radius R, each turning θ = acos(1 − 5 / R) and climbing 5 m over
+   C = R sin θ along x (standard track: θ = 10.5°, C = 55 m). The inner arc leaves a switch on the far track at
+   x = c₀ and ends at the **crossing node**, a node cut into the existing near track at x = c₀ + C. The outer arc
+   leaves that node, tangent to the inner one, and ends on our near track's line at x = c₁ = c₀ + 2C. Each arc is
+   one piece: the game refuses a new piece over existing track unless they share a node (P15). The crossing's x
+   range lies wholly outside the merge's, so our far track (+12.5, straight there) is never crossed, and by the time
+   the merge brings our far track down across y = +7.5, our near track has already left.
 3. **Our approach.** Two parallel tracks at y = +7.5 and +12.5, straight for 30 m, then the leg proper.
 
-**Order.** Which of our tracks crosses and which merges is set by the running directions:
-- Our track that runs **towards** the station must end on the existing track that runs towards it.
-- Our track that runs **away** must start from the existing track that runs away.
+**Order.** With right-hand running on both lines, the existing near track runs the same way as our far track,
+whichever side the line comes from. So our far track always **merges** into the existing near track, and our near
+track always **crosses** to the existing far track. Coming from +y: inward trains use the existing near track
+(+2.5) and our far track (+12.5); outward trains leave on the existing far track (−2.5) and turn off onto our near
+track (+7.5). An end whose signals show left-hand running is not usable.
 
-With right-hand running and the line arriving from +y, the existing near track runs away from the station. So
-our far track (+12.5) is the "away" track and merges into the near existing track. Our near track (+7.5) is the
-"towards" track and crosses to the far one.
-
-The crossing S-curve sits further out than the merge, so the two never cross each other. If the station is
-mirrored, or the existing directions are swapped, the frame is mirrored to match.
+The crossing sits further out than the merge, so the two never cross each other. Both connections face the
+station: trains from our line can only run into it, and trains reach our line only from it (P15).
 
 **Length needed:** 15 m clear of the station's last switch or signal, plus L₁₀ for the merge, plus 20 m between,
-plus L₁₀ for the crossing, plus 30 m of approach, plus 15 m of signal clearance. On standard track that is
-2 × 110 + 80 = 300 m. On high-speed track, with R = 600 and L₁₀ = 155, it is 390 m.
+plus 2C for the crossing, plus 30 m of approach, plus 15 m of signal clearance. On standard track that is
+110 + 109 + 80 = 299 m. On high-speed track, with R = 600, L₁₀ = 155 and 2C = 155, it is 390 m.
 
 **Signals of ours:**
 - one-way home signals on our two approach tracks before the junction, facing trains coming in;
@@ -176,9 +178,10 @@ crossing.
 - **The built junction:** switch on track 1 at x = 60 with a single 110 m S-curve to +12.5; switch on track 2 at
   x = 152.4; crossing at x = 200. Both connections face the station (west): a train off our line can only turn
   towards the station, as designed.
-- **Junction geometry, revised:** the crossing S-curve is two circular arcs of angle θ meeting at the crossing node,
-  each `2 off / tan(θ/2)` long along x. For 12° that's 95 m in all. Its switch must keep the 16.6 m rule and the
-  15 m signal clearance like any other.
+- **Junction geometry, revised:** the crossing is two circular arcs meeting at the crossing node (see "Junction
+  geometry"), at the turnout radius rather than P15's 12°, so the crossing angle is 7.4° to 14.8° by track type;
+  P16's 6.5° built, so all are within what the game accepts. Its switch keeps the 16.6 m rule and the 15 m signal
+  clearance like any other.
 
 ## Testing
 
