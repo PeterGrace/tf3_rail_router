@@ -487,20 +487,30 @@ What the probes found:
 - **Timing:** Bangor → Imperial Beach (15 km, 5 stations, 16 chunks): 0.4 s of dry runs over 21 frames; stations
   30 ms each but the first about 100 ms, chunks 3–40 ms.
 
-**Milestone 3: Build.**
+**Milestone 3: Build** (`build.tl`). After a clean check, **Build** builds the line one command at a time, each
+waiting for the game's callback before the next:
 
-1. **Stations first:** each station's proposal, dry-run clean before it's sent.
-2. **Then the track**, chunk by chunk, joined to each other and to the stations' end nodes. Each chunk is dry-run
-   before it's sent, and its callback starts the next. Level crossings split the street they cross.
-3. **On a failed dry run**, stop. The window shows what was built and what failed, and offers **Retry from here**.
-   Nothing already built is rolled back.
-4. Track type and electrification come from the settings. No signals, lines or vehicles.
+1. **Stations first**, each dry-run again just before it's sent (the map may have changed since the check). Once
+   built, its free track ends (the nodes of its frozen edges with one track piece; probe P10: they aren't among its
+   frozen nodes) are matched to the network's nodes within 1 m: they're exactly where `stationlayout` puts them.
+2. **Then the track, chunk by chunk** from the first station. A chunk joins the node entities already there (a
+   station's ends, the previous chunk's far ends: `Pt3.entity`); new track can't start with a node of its own on an
+   existing one (P11: "Construction Not Possible"), and its tangents must follow the track it joins. After a chunk is
+   built, its new nodes' entities are recorded by place, for the next chunk.
+3. **Level crossings** (P9): where a chunk's dry run collides only with streets, each crossed street is split at the
+   points where the track crosses it (the engine's `replaceSegment` proposal edited into pieces, as Bus Loops splits
+   a street; it can't be dry-run), then each piece at the new nodes is sent again unedited (`replaceSegment`) so the
+   engine works out its lane connections, then the chunk, cut at the crossings and joined to the new nodes, is
+   dry-run and sent. A crossing within 3 m of an existing street node uses that node. A bus route over P9's crossing
+   worked.
+4. **On a failure** (a dry run that isn't clean, a refused command), stop. The window shows what failed and where
+   (**Show**), and offers **Retry from here**. Nothing already built is rolled back; a street split before a chunk
+   that then fails keeps its extra nodes, which is harmless.
+5. Track type and electrification come from the settings. No signals, lines or vehicles.
 
-Rules carried over from Bus Loops: never send a proposal that didn't dry-run clean; copy positions out of engine data;
-don't keep engine components across a `sendCommand`.
-
-**To probe for milestone 3 (P7):** where the station's track end nodes are and how the main line joins them; how a
-level crossing is made from a script.
+Rules carried over from Bus Loops: never send a proposal that didn't dry-run clean (the street split is the one
+exception, a shape the engine made); copy positions out of engine data; don't keep engine components across a
+`sendCommand`.
 
 ## Testing
 
