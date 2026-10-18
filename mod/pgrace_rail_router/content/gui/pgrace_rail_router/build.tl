@@ -411,6 +411,14 @@ local function stepChunk(b : Build)
 		end
 		if not check.settings.levelCrossings or others > 0
 				or builder.levelCrossings(messages, collisions, onLevel) == 0 then
+			-- PROBE (remove before release): what it hit, and which edges the game refuses on their own.
+			local hits : {string} = {}
+			for __, c in ipairs(collisions) do
+				table.insert(hits, ("%s %d at (%.0f %.0f)%s"):format(c.what, c.entity, c.x, c.y,
+					c.components ~= nil and (" [" .. c.components .. "]") or ""))
+			end
+			log(("chunk %d dry run: %s; hit %s"):format(b.chunk, table.concat(messages, "; "), table.concat(hits, ", ")))
+			pcall(builder.diagnose, net, chunk.first, chunk.last, check.settings)
 			fail(b, messages, p.x, p.y)
 			return
 		end
