@@ -61,6 +61,33 @@ A record per usable end, `ExistingStation.ends[k]`, holds:
 - the entities of the existing pieces along the stretch;
 - the positions of its signals.
 
+## Bare ends: stations with free track ends (added 2026-10-19)
+
+A station with nothing attached at an end (a station the player placed for a line not yet laid) needs no junction:
+the line joins its free track ends, as it joins a station of ours. Asked for after the first in-game test, where a
+hand-placed station without track was turned down for having no double track.
+
+- **Which ends:** at an end the line uses, the station's track end nodes there (its `ends`, split by side of its
+  centre) are **bare** when each has only the station's own piece on it (the snapshot's node degree is 1). Some
+  free and some not: not usable ("can't be used: some of its tracks at the X end lead on and some don't").
+- **What fits,** by the end nodes' offsets across the axis (from their midpoint), within 0.5 m:
+  - **2 tracks 5 m apart** (side platforms): our double track joins them directly.
+  - **2 tracks 10 m apart** (an island platform): each of our tracks eases out 2.5 m to its station track over an
+    S-curve (both of a track's ends tangent to the axis), before any crossover.
+  - **4 tracks 5 m apart** (offsets ±2.5 and ±7.5, as our Halt 2+2): a fan, the outer two merging into ours as Halt
+    2+2's fan does, whatever the window's station style.
+  - Anything else falls back: "The station in X can't be used: it has N tracks at its Y end (Rail Router joins 2 or
+    4); a new station was planned."
+- **The plan:** the stop is the existing station: its centre and direction, its own half-length (not the window's
+  platform length) wherever the planner places things beside it (approach, room to turn, footprint, the next
+  station's spacing). Beyond the bare end, our approach and crossovers as at a station of ours (Input.approach), its
+  straight checked clear the same way. An end can be bare and the other a junction.
+- **Heights:** the leg's end is at the end nodes' height.
+- **Network:** our two tracks end on the station's end nodes themselves (their entities and exact positions, the
+  inner two of four), with the fan, S-curves, crossovers and one-way signals of a station end of ours.
+- **Builder:** nothing is built for the station (no construction, no road); the leg's track joins its nodes by
+  entity, as track joins existing nodes anywhere. The plan, check and build say "joins the existing station in X".
+
 ## Junction geometry (flat)
 
 The frame for one junction:
