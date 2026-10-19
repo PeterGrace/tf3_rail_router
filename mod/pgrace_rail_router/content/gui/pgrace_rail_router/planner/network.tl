@@ -1070,7 +1070,11 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			local out = k == 1 and 1 or -1
 			for __, atStart in ipairs(fanEnds) do
 				local merge = atStart and mergeStart or mergeEnd
-				local b = atStart and bStart or bEnd
+				-- Not `atStart and bStart or bEnd`: with no bare end at the start (our own station) that gives bEnd.
+				local b : PgraceRailRouterExisting.Bare = bEnd
+				if atStart then
+					b = bStart
+				end
 				local edge = atStart and list[1] or list[#list]
 				local tip = atStart and edge.p0 or edge.p1
 				local tan = atStart and edge.t0 or edge.t1

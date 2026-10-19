@@ -1151,6 +1151,38 @@ t.test("network: a bare end with 2 tracks 5 m apart: our tracks end on its nodes
 	end
 end)
 
+-- A Halt 2+2 station of ours at one end and a bare end at the other: our station's fan stays ours. The fans' bare end
+-- was picked as `atStart and bStart or bEnd`, which gives bEnd at the start when bStart is nil, so our start fan's
+-- local node was the far station's: a 2 km edge to it, refused in-game as Too Much Curvature (Mercer Island →
+-- Antelope).
+t.test("network: our Halt 2+2 station at one end, a bare end at the other: each end's pieces stay at that end", function()
+	for kind in pairs(KINDS) do
+		for __, ourStart in ipairs({ true, false }) do
+			local label = kind .. (ourStart and ", ours at the start" or ", ours at the end")
+			local net, stations, total
+			if ourStart then
+				net, stations, total = bareNet(nil, kind, halt())
+			else
+				net, stations, total = bareNet(kind, nil, halt())
+			end
+			for i, e in ipairs(net.edges) do
+				local chord = math.sqrt((e.p1.x - e.p0.x) ^ 2 + (e.p1.y - e.p0.y) ^ 2)
+				t.ok(chord <= e.s1 - e.s0 + 15, label .. ": edge " .. i .. " (track " .. e.track .. ") spans "
+					.. string.format("%.0f m for %.0f m of line", chord, e.s1 - e.s0))
+				for __, n in ipairs({ net.nodes[e.node0], net.nodes[e.node1] }) do
+					if n.entity ~= nil then
+						t.ok((n.x < total / 2) == not ourStart, label .. ": the station's node " .. n.entity .. " at its end")
+					end
+				end
+			end
+			local b = ourStart and stations[2].bare[-1] or stations[1].bare[1]
+			if kind ~= "island" then
+				checkJoined(net, b, label)
+			end
+		end
+	end
+end)
+
 t.test("network: a bare end with 4 tracks: its outer two merge into ours as Halt 2+2's fan, whatever the style", function()
 	for __, o in ipairs({ network.defaults(), halt() }) do
 		local label = o.fan and "halt" or "simple"
