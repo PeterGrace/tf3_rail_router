@@ -26,6 +26,11 @@ local APPROACH = 100.0
 local function approachOf(input : Input) : number
 	return input.approach or APPROACH
 end
+-- Our straight beyond an existing station's junction, before the leg may turn. Not the station approach
+-- (Input.approach, 225 m with Halt 2+2): that's room for a station's fan and crossovers, which a junction end hasn't
+-- got, and it made a junction need 524 m of straight existing double track. With none, a leg in line with the
+-- station came off the junction in curves tighter than its radius; 50 m was enough.
+local JUNCTION_STRAIGHT = 50.0
 -- The estimate's price for a metre of bridge and of tunnel, as a multiple of plain track: what the game charged.
 -- Probe P3 (300 m of each on flat ground): 1.8 and 3.0; Bangor - Imperial Beach, Fastest, 985 m of bridges: 1.8.
 -- Not the planner's own weights (Weights.bridgeCostFactor, tunnelCostFactor), which also steer it off structures.
@@ -210,15 +215,14 @@ local function extensionLength(input : Input, radius : number) : number
 end
 
 -- Where a leg meets an existing station's junction, on the leg's leaving side (forward = true) or its arriving side:
--- the junction's approach start, on our tracks' midline (in place of a platform end), and the approach's length
--- (Input.approach) out along the existing axis from it (in place of the approach point), as at a station of ours, so
--- the leg's search's room behind its first corner holds; the unit outward direction; and the track's heights at the
--- two points, on the existing stretch's grade.
+-- the junction's approach start, on our tracks' midline (in place of a platform end), and JUNCTION_STRAIGHT out along
+-- the existing axis from it (in place of the approach point); the unit outward direction; and the track's heights at
+-- the two points, on the existing stretch's grade.
 local function junctionEnds(input : Input, station : Station, forward : boolean) : Pt, Pt, Pt, number, number
 	local k = station.endOf[forward]
 	local e, j = station.ends[k], station.junctions[k]
 	local left : Pt = { x = -e.dir.y, y = e.dir.x }
-	local x, a = j.approachX, approachOf(input)
+	local x, a = j.approachX, JUNCTION_STRAIGHT
 	local platformEnd = geo.add(geo.add(e.origin, geo.scale(e.dir, x)), geo.scale(left, JUNCTION_OFFSET * station.sides[k]))
 	local approach = geo.add(platformEnd, geo.scale(e.dir, a))
 	return platformEnd, approach, e.dir, e.z + e.grade * x, e.z + e.grade * (x + a)
@@ -256,7 +260,7 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 		-- No farther than the stretch runs (junction.fit left it room for the approach).
 		local k = station.endOf[forward]
 		local ext = math.min(extensionLength(input, radius),
-			station.ends[k].length - station.junctions[k].approachX - approachOf(input))
+			station.ends[k].length - station.junctions[k].approachX - JUNCTION_STRAIGHT)
 		if other ~= nil then
 			local ahead = geo.dot(geo.sub(other.site.centre, approach), out)
 			ext = math.min(ext, (ahead - (input.platformLength / 2 + approachOf(input))) / 4)
@@ -339,7 +343,7 @@ local function addFootprint(input : Input, station : Station, cells : {integer :
 			-- In the stretch's frame (x from its start, across from its midline): from back at the station's centre out
 			-- to where our straight may reach (its approach, room to turn at the full radius, and run, and a cell more).
 			local x = -geo.dot(geo.sub(e.origin, c), e.dir)
-			local reach = station.junctions[k].approachX + approachOf(input) + extensionLength(input, nil) + MAX_END_RUN
+			local reach = station.junctions[k].approachX + JUNCTION_STRAIGHT + extensionLength(input, nil) + MAX_END_RUN
 				+ g.cell
 			local far = math.min(reach, existing.REACH - geo.dot(geo.sub(e.origin, c), e.dir) + station.existing.half)
 			reach = math.min(e.length, reach)
@@ -1458,7 +1462,7 @@ local function existingStop(input : Input, i : integer) : Station, string
 	end
 	-- The junction, and our approach beyond it along the stretch (see junctionEnds).
 	local room = note(("has no room for a junction (needs %d m of straight double track)"):format(
-		math.floor(junction.needed(input.radius) + approachOf(input) + 0.5)))
+		math.floor(junction.needed(input.radius) + JUNCTION_STRAIGHT + 0.5)))
 	local snap : PgraceRailRouterExisting.Snapshot = input.snapshots ~= nil and input.snapshots[i] or nil
 	if snap == nil then
 		return nil, ("The track at the station in %s couldn't be read; a new station was planned."):format(town.name)
@@ -1476,7 +1480,7 @@ local function existingStop(input : Input, i : integer) : Station, string
 			elseif e == nil then
 				return nil, room
 			end
-			local j = junction.fit(e.length - approachOf(input), input.radius, sides[k], e.signals, e.nodes)
+			local j = junction.fit(e.length - JUNCTION_STRAIGHT, input.radius, sides[k], e.signals, e.nodes)
 			if j == nil then
 				return nil, room
 			end

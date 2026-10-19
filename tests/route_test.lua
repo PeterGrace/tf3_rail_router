@@ -1104,7 +1104,7 @@ end
 t.test("route: an existing station with no room for a junction falls back to a new station, with a note", function()
 	-- Only 200 m of double track beyond the +x end: short of a 300 m radius junction.
 	local station, snap = existingStation(3000, { [1] = 200, [-1] = 1000 })
-	fellBack(runExisting(AXC, 2, station, snap), "The station in B has no room for a junction (needs 399 m of straight "
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B has no room for a junction (needs 349 m of straight "
 		.. "double track); a new station was planned.")
 end)
 

@@ -242,6 +242,10 @@ local function turnoutRadius(track : TrackType) : number
 	return 600
 end
 
+-- The turnouts' radius at a junction into an existing station's track, whatever the track: Simple's 150 m keeps a
+-- junction short (about 230 m of straight double track), where trains are slowing for the station anyway.
+local JUNCTION_RADIUS = 150.0
+
 -- The straight a station of a style needs at each platform end: Halt 2+2's fan and the crossovers' room after it.
 local function approachFor(style : string, track : TrackType) : number
 	if style == "simple" or track == nil then
@@ -1005,7 +1009,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.routeJob = route.start({ grid = survey.grid(work.surveyJob), stops = work.stops,
 					weights = work.weights, platformLength = work.platform, approach = work.approach,
 					existingStations = work.existingStations, snapshots = work.snapshots,
-					radius = turnoutRadius(work.track) })
+					radius = JUNCTION_RADIUS })
 				setProgress(work, "plan", 0)
 			else
 				setProgress(work, "survey", survey.progress(work.surveyJob))
