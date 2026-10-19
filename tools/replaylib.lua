@@ -41,6 +41,7 @@ return function(root)
 	lib.area = ug_require(base .. "area.tl")
 	lib.network = ug_require(base .. "network.tl")
 	lib.stations = ug_require(base .. "stations.tl")
+	lib.existing = ug_require(base .. "existing.tl")
 	lib.maplib = dofile(root .. "/tools/maplib.lua")
 	lib.capture = dofile(root .. "/tools/capture_file.lua")
 	local grid, route, corridor, modes, area, maplib = lib.grid, lib.route, lib.corridor, lib.modes, lib.area, lib.maplib
@@ -75,10 +76,15 @@ return function(root)
 	-- costs most beyond the work itself: the game's Lua (5.2) collects incrementally, and pays a step's garbage
 	-- collection debt (as much work as bytes allocated) at its next allocation, so a step that allocates megabytes (a
 	-- search's tables doubling) makes a hitch there that the desktop, with the collector held off, never shows.
-	function lib.runPlan(g, stops, weights, platform, expansions, approach)
+	function lib.runPlan(g, stops, weights, platform, expansions, approach, joins)
 		expansions = expansions or lib.STEP_EXPANSIONS
 		local start = clock()
-		local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform, approach = approach })
+		-- joins (optional): existing stations to join, as the window passes them: bareApproach, existingStations,
+		-- snapshots (by stop index) and radius.
+		joins = joins or {}
+		local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform, approach = approach,
+			bareApproach = joins.bareApproach, existingStations = joins.existingStations, snapshots = joins.snapshots,
+			radius = joins.radius })
 		local paths = {}
 		local slowest, worst = {}, 0
 		local alloc = { total = 0, max = 0, maxKind = nil, worst = 0, worstKind = nil }
@@ -200,10 +206,76 @@ return function(root)
 		return g, stats
 	end
 
+	-- An existing rail station from a whole-map capture, as the window reads it in-game (survey.existingStations,
+	-- trackSnapshot): the station construction nearest the town (within `reach`, default 1500 m) with track pieces
+	-- inside its box; its end nodes are its track pieces' nodes that only one piece inside the box reaches (each
+	-- station track's two extremes), stationFromEnds then gives its centre, direction and half-length. The snapshot
+	-- is every track piece within half + existing.REACH + 100 m of its centre, ground unless the capture marks a
+	-- bridge or tunnel, with no signals (captures don't record them; right-hand running is assumed). Returns
+	-- station, snapshot; or nil and why.
+	function lib.existingFromMap(map, townKey, reach)
+		reach = reach or 1500
+		local towns = maplib.towns(map)
+		local town = assert(lib.findTown(towns, townKey), "no town " .. tostring(townKey))
+		local best, bestD
+		for _, o in ipairs(map.objects) do
+			if o.kind == "station" and o.min and o.max and o.file and o.file:match("rail") then
+				local cx, cy = (o.min.x + o.max.x) / 2, (o.min.y + o.max.y) / 2
+				local d = math.sqrt((cx - town.pos.x) ^ 2 + (cy - town.pos.y) ^ 2)
+				if d <= reach and (not bestD or d < bestD) then
+					best, bestD = o, d
+				end
+			end
+		end
+		if not best then
+			return nil, "no rail station within reach"
+		end
+		local function inBox(p)
+			return p.x >= best.min.x - 1 and p.x <= best.max.x + 1 and p.y >= best.min.y - 1 and p.y <= best.max.y + 1
+		end
+		local count, at = {}, {}
+		for _, e in ipairs(map.edges) do
+			if e.kind == "t" and inBox(e.p0) and inBox(e.p1) then
+				for _, nd in ipairs({ { e.node0, e.p0 }, { e.node1, e.p1 } }) do
+					count[nd[1]] = (count[nd[1]] or 0) + 1
+					at[nd[1]] = nd[2]
+				end
+			end
+		end
+		local ends = {}
+		for n, c in pairs(count) do
+			if c == 1 then
+				ends[#ends + 1] = { x = at[n].x, y = at[n].y, z = at[n].z, entity = n }
+			end
+		end
+		table.sort(ends, function(a, b) return a.entity < b.entity end)
+		local st, why = lib.existing.stationFromEnds(best.id, ends)
+		if not st then
+			return nil, why
+		end
+		st.box = { minX = best.min.x, minY = best.min.y, maxX = best.max.x, maxY = best.max.y }
+		local r = st.half + lib.existing.REACH + 100
+		local kinds = { n = "ground", b = "bridge", u = "tunnel" }
+		local pieces, degree = {}, {}
+		for _, e in ipairs(map.edges) do
+			if e.kind == "t" then
+				degree[e.node0] = (degree[e.node0] or 0) + 1
+				degree[e.node1] = (degree[e.node1] or 0) + 1
+				local mx, my = (e.p0.x + e.p1.x) / 2, (e.p0.y + e.p1.y) / 2
+				if math.sqrt((mx - st.centre.x) ^ 2 + (my - st.centre.y) ^ 2) <= r then
+					pieces[#pieces + 1] = { entity = e.id, node0 = e.node0, node1 = e.node1, p0 = e.p0, p1 = e.p1,
+						t0 = e.t0, t1 = e.t1, kind = kinds[e.edgeType] or "unknown", signals = {} }
+				end
+			end
+		end
+		return st, { pieces = pieces, degree = degree }
+	end
+
 	-- Plans from one town to another on a map, as the window does. opts: from, to (names, case-insensitive, or ids),
 	-- mode ("cheapest" default, or "fastest"), track (label or name; default the mode's for the map's year), stops
 	-- (a list of town names or ids between from and to: replaces corridor.select's choice; {} for none), platform
-	-- (default 160), overrides ({key = value} weights), expansions (per step). Errors on unknown towns or tracks.
+	-- (default 160), overrides ({key = value} weights), expansions (per step), existing (a list of town names or ids
+	-- whose existing rail station the line joins, as ticked in the window; they must be among the planned stops). Errors on unknown towns or tracks.
 	function lib.planOnMap(map, opts)
 		local towns = maplib.towns(map)
 		local year = tonumber(map.meta.gameYear) or 0
@@ -234,6 +306,25 @@ return function(root)
 		end
 		local r = { year = year, track = track, mode = mode, weights = weights, stops = stops, candidates = candidates,
 			platform = platform, areas = {} }
+		-- As the window: each ticked stop's existing station and its track snapshot, by stop index, the junctions'
+		-- radius and the bare ends' approach for the track's turnouts.
+		local joins
+		for _, key in ipairs(opts.existing or {}) do
+			local town = assert(lib.findTown(towns, key), "no town " .. tostring(key))
+			for i, stop in ipairs(stops) do
+				if stop.id == town.id then
+					local st, snap = lib.existingFromMap(map, key)
+					if st then
+						joins = joins or { existingStations = {}, snapshots = {}, radius = 150.0 }
+						joins.existingStations[i], joins.snapshots[i] = st, snap
+					end
+				end
+			end
+		end
+		if joins then
+			local radius = track.speed < 30 and 150 or (track.speed < 60 and 300 or 600)
+			joins.bareApproach = lib.network.bareApproach(lib.network.turnoutLength(radius))
+		end
 		-- As the window: the area cut to the map's extent, and on "no path" a wider one, unless widening gives the same
 		-- box (already the whole map that way).
 		local bounds = { minX = map.extent.x0, minY = map.extent.y0, maxX = map.extent.x1, maxY = map.extent.y1 }
@@ -243,7 +334,7 @@ return function(root)
 			local g, stats = lib.gridFor(map, box)
 			table.insert(r.areas, { box = box, margin = margin, stats = stats })
 			r.grid = g
-			r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, platform, opts.expansions, opts.approach)
+			r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, platform, opts.expansions, opts.approach, joins)
 			if r.plan.ok or r.plan.failure ~= "no_path" or retry == lib.MAX_RETRIES then
 				break
 			end

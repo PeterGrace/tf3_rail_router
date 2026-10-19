@@ -602,4 +602,51 @@ function existing.bareEnd(station : Station, snap : Snapshot, k : integer) : Pgr
 	return { kind = kind, nodes = nodes, dirs = dirs, mid = mid, out = { x = ox, y = oy } }, nil
 end
 
+-- Track ends closer together than this along the station's axis are one end of it (metres): a station with all its
+-- ends at one side (a terminus) has no platforms' centre to read.
+local MIN_STATION_SPAN = 20.0
+
+-- A station from its track ends: they split into two groups along the line between the two furthest apart; the
+-- centre is the midpoint of the groups' centroids, dir the unit vector from one to the other, half half the distance
+-- between them. nil (with why) if they don't make two groups.
+function existing.stationFromEnds(entity : integer, ends : {PgraceRailRouterNetwork.Pt3}) : Station, string
+	if #ends < 2 then
+		return nil, "fewer than two track ends"
+	end
+	local a, b : PgraceRailRouterNetwork.Pt3, PgraceRailRouterNetwork.Pt3 = ends[1], ends[2]
+	local far = -1.0
+	for i = 1, #ends do
+		for j = i + 1, #ends do
+			local d = (ends[i].x - ends[j].x) ^ 2 + (ends[i].y - ends[j].y) ^ 2
+			if d > far then
+				a, b, far = ends[i], ends[j], d
+			end
+		end
+	end
+	local len = math.sqrt(far)
+	if len < MIN_STATION_SPAN then
+		return nil, ("track ends only %.1f m apart"):format(len)
+	end
+	local ux, uy = (b.x - a.x) / len, (b.y - a.y) / len
+	local sums : {{number}} = { { 0, 0, 0 }, { 0, 0, 0 } }
+	local ids : {integer} = {}
+	for __, e in ipairs(ends) do
+		local s = (e.x - a.x) * ux + (e.y - a.y) * uy
+		local g = s < len / 2 and 1 or 2
+		sums[g][1] = sums[g][1] + e.x
+		sums[g][2] = sums[g][2] + e.y
+		sums[g][3] = sums[g][3] + 1
+		table.insert(ids, e.entity)
+	end
+	local c1 : PgraceRailRouterGeo.Pt = { x = sums[1][1] / sums[1][3], y = sums[1][2] / sums[1][3] }
+	local c2 : PgraceRailRouterGeo.Pt = { x = sums[2][1] / sums[2][3], y = sums[2][2] / sums[2][3] }
+	local dx, dy = c2.x - c1.x, c2.y - c1.y
+	local d = math.sqrt(dx * dx + dy * dy)
+	if d < MIN_STATION_SPAN then
+		return nil, ("its ends' groups only %.1f m apart"):format(d)
+	end
+	return { entity = entity, centre = { x = (c1.x + c2.x) / 2, y = (c1.y + c2.y) / 2 }, dir = { x = dx / d, y = dy / d },
+		half = d / 2, ends = ids }, nil
+end
+
 return existing

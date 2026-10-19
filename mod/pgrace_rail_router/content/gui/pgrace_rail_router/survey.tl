@@ -2,6 +2,8 @@ local grid = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/gri
 local modes = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/modes.tl" as PgraceRailRouterModes
 local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/area.tl" as PgraceRailRouterArea
 
+local existing = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/existing.tl" as PgraceRailRouterExisting
+
 local survey : PgraceRailRouterSurvey = {}
 
 local type Town = PgraceRailRouterCorridor.Town
@@ -646,53 +648,6 @@ function survey.trackEnds(station : integer) : {Pt3}
 	return ends
 end
 
--- Track ends closer together than this along the station's axis are one end of it (metres): a station with all its
--- ends at one side (a terminus) has no platforms' centre to read.
-local MIN_STATION_SPAN = 20.0
-
--- A station from its track ends: they split into two groups along the line between the two furthest apart; the
--- centre is the midpoint of the groups' centroids, dir the unit vector from one to the other, half half the distance
--- between them. nil (with why) if they don't make two groups.
-local function stationOf(entity : integer, ends : {Pt3}) : Station, string
-	if #ends < 2 then
-		return nil, "fewer than two track ends"
-	end
-	local a, b : Pt3, Pt3 = ends[1], ends[2]
-	local far = -1.0
-	for i = 1, #ends do
-		for j = i + 1, #ends do
-			local d = (ends[i].x - ends[j].x) ^ 2 + (ends[i].y - ends[j].y) ^ 2
-			if d > far then
-				a, b, far = ends[i], ends[j], d
-			end
-		end
-	end
-	local len = math.sqrt(far)
-	if len < MIN_STATION_SPAN then
-		return nil, ("track ends only %.1f m apart"):format(len)
-	end
-	local ux, uy = (b.x - a.x) / len, (b.y - a.y) / len
-	local sums : {{number}} = { { 0, 0, 0 }, { 0, 0, 0 } }
-	local ids : {integer} = {}
-	for __, e in ipairs(ends) do
-		local s = (e.x - a.x) * ux + (e.y - a.y) * uy
-		local g = s < len / 2 and 1 or 2
-		sums[g][1] = sums[g][1] + e.x
-		sums[g][2] = sums[g][2] + e.y
-		sums[g][3] = sums[g][3] + 1
-		table.insert(ids, e.entity)
-	end
-	local c1 : Pt = { x = sums[1][1] / sums[1][3], y = sums[1][2] / sums[1][3] }
-	local c2 : Pt = { x = sums[2][1] / sums[2][3], y = sums[2][2] / sums[2][3] }
-	local dx, dy = c2.x - c1.x, c2.y - c1.y
-	local d = math.sqrt(dx * dx + dy * dy)
-	if d < MIN_STATION_SPAN then
-		return nil, ("its ends' groups only %.1f m apart"):format(d)
-	end
-	return { entity = entity, centre = { x = (c1.x + c2.x) / 2, y = (c1.y + c2.y) / 2 }, dir = { x = dx / d, y = dy / d },
-		half = d / 2, ends = ids }, nil
-end
-
 function survey.existingStations(town : Town, reach : number) : {Station}
 	local result : {Station} = {}
 	local ok, found = pcall(function() : {Engine.Entity}
@@ -729,7 +684,7 @@ function survey.existingStations(town : Town, reach : number) : {Station}
 				-- No frozen track: a bus, tram, ship or air station.
 				return nil, nil
 			end
-			local station, why = stationOf(entity, ends)
+			local station, why = existing.stationFromEnds(entity, ends)
 			-- Its box, as markConstruction blocks it: the planner treats the cells it covers out of a bare end as the
 			-- station's own.
 			local bv = boundingBox(entity)

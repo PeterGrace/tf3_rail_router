@@ -104,4 +104,8 @@ global record PgraceRailRouterExisting
 	-- the snapshot's pieces; nodes it has no piece at are left out). nil and nil where none is free (track leads on:
 	-- a junction end), nil and "mixed" where some are free and some not.
 	bareEnd : function(station : Station, snap : Snapshot, k : integer) : Bare, string
+	-- A station from its track end nodes (survey.trackEnds in-game, a map capture offline): the two groups of ends
+	-- either side of the middle of the farthest pair, their centres giving the platforms' centre, direction (first
+	-- group to second) and half-length. nil and why where the ends are fewer than two or closer than 20 m.
+	stationFromEnds : function(entity : integer, ends : {PgraceRailRouterNetwork.Pt3}) : Station, string
 end

@@ -548,3 +548,74 @@ t.test("existing: a usable end carries its frame, a line along the stretch", fun
 	t.near(p.z, e.z + e.grade * 50, 1e-9, "z on its grade")
 	t.near(e.frame.length, e.length, 1e-9, "as long as the stretch")
 end)
+
+-- The kit's maps folder, found as regression_test.lua does: RAIL_ROUTER_MAPS, ../maps beside the repo, or beside the
+-- main checkout from a worktree (through git's common directory). nil when there is none.
+local function findMapsDir()
+	local env = os.getenv("RAIL_ROUTER_MAPS")
+	if env ~= nil and env ~= "" then
+		return env
+	end
+	local dir = t.root .. "/../maps"
+	local f = io.open(dir .. "/README.md", "r")
+	if f ~= nil then
+		f:close()
+		return dir
+	end
+	local p = io.popen('git -C "' .. t.root .. '" rev-parse --path-format=absolute --git-common-dir 2>/dev/null')
+	local common = p and p:read("l")
+	if p then
+		p:close()
+	end
+	if common ~= nil and common:match("/%.git$") then
+		dir = common:sub(1, -6) .. "/../maps"
+		f = io.open(dir .. "/README.md", "r")
+		if f ~= nil then
+			f:close()
+			return dir
+		end
+	end
+	return nil
+end
+
+t.test("existing: line1 map: Aloha's station reads as Rail Router built it (offline, from the capture)", function()
+	local maps = findMapsDir()
+	local mapFile = maps and (maps .. "/rail-router-test-5x14km-line1.map")
+	local f = mapFile and io.open(mapFile, "r")
+	if not f then
+		print("SKIP existing line1: no rail-router-test-5x14km-line1.map (the kit's maps/ folder)")
+		return
+	end
+	f:close()
+	local lib = dofile(t.root .. "/tools/replaylib.lua")(t.root)
+	local map = lib.maplib.load(mapFile)
+	local st, snap = lib.existingFromMap(map, "Aloha")
+	t.ok(st ~= nil, "a station")
+	t.near(st.half, 160, 1, "320 m platforms")
+	t.ok(#st.ends >= 4, "its track ends")
+	t.ok(#snap.pieces > 50, "its track snapshot")
+	local r = existing.analyse(st, snap, { [1] = 1, [-1] = 1 }, 150)
+	-- Today (straight stretches only) neither end has room. Past the platforms' fans the tracks merge to two, but
+	-- Halt 2+2's crossovers (every 48 m) cut the straight double track into stretches of 29 m at +dir and 66 m at
+	-- -dir, and the line curves 141-195 m past the fans.
+	t.ok(r.ends[1] == nil and r.ends[-1] == nil, "no straight stretch long enough yet")
+	t.eq(r.why[1], "short", "+dir")
+	t.eq(r.why[-1], "short", "-dir")
+	t.near(r.longest[1], 29, 2, "the longest stretch read at +dir")
+	t.near(r.longest[-1], 66, 3, "the longest stretch read at -dir")
+end)
+
+t.test("existing: stationFromEnds: two groups of ends give the centre, direction and half-length", function()
+	local ends = {
+		{ x = -100, y = -2.5, z = 0, entity = 1 }, { x = -100, y = 2.5, z = 0, entity = 2 },
+		{ x = 100, y = -2.5, z = 0, entity = 3 }, { x = 100, y = 2.5, z = 0, entity = 4 },
+	}
+	local st = existing.stationFromEnds(7, ends)
+	t.eq(st.entity, 7, "entity")
+	t.near(st.half, 100, 1e-6, "half")
+	t.near(math.abs(st.dir.x), 1, 1e-6, "dir along x")
+	t.near(st.centre.x, 0, 1e-6, "centre x")
+	t.eq(#st.ends, 4, "ends")
+	local none, why = existing.stationFromEnds(7, { ends[1] })
+	t.ok(none == nil and why ~= nil, "fewer than two ends")
+end)
