@@ -313,9 +313,18 @@ local function outcomePlace(check : PgraceRailRouterBuilder.Check, outcome : Pgr
 		return fill(_("Station {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
 	end
 	local chunk = check.net.chunks[outcome.item.index]
+	if outcome.item.kind ~= "chunk" or chunk == nil or check.net.edges[chunk.first] == nil then
+		return _("Track")
+	end
 	-- The legs run between platform ends: the platforms of the stations passed (one per leg before this one, and
-	-- the leg's own first station) count too.
-	local s = check.net.edges[chunk.first].s0 + chunk.leg * (check.plan.platformLength or 0)
+	-- the leg's own first station) count too, ours only (as the plan's length: an existing station's are its own).
+	local s = check.net.edges[chunk.first].s0
+	for i = 1, chunk.leg do
+		local station = check.plan.stations[i]
+		if station ~= nil and station.existing == nil then
+			s = s + (check.plan.platformLength or 0)
+		end
+	end
 	for i = 1, chunk.leg - 1 do
 		s = s + (check.plan.legs[i].length or 0)
 	end
@@ -526,6 +535,24 @@ local function plannedJunctions(plan : Plan) : integer
 	return count
 end
 
+-- A row naming the towns whose existing stations the line joins (at a junction or a bare end; nothing is built for
+-- them), or nil where it joins none.
+local function joinsRow(plan : Plan) : TreeNodeId
+	local towns : {string} = {}
+	for __, station in ipairs(plan ~= nil and plan.stations or {}) do
+		if station.existing ~= nil then
+			table.insert(towns, station.town ~= nil and station.town.name or "?")
+		end
+	end
+	if #towns == 0 then
+		return nil
+	elseif #towns == 1 then
+		return textRow(fill(_("Joins the existing station in {town}"), { town = towns[1] }), "font-scale-annotation")
+	end
+	return textRow(fill(_("Joins the existing stations in {towns}"), { towns = table.concat(towns, ", ") }),
+		"font-scale-annotation")
+end
+
 -- The station nearest the town's centre among those found (nil if none).
 local function nearestStation(town : Town, found : {PgraceRailRouterExisting.Station}) : PgraceRailRouterExisting.Station
 	local best : PgraceRailRouterExisting.Station = nil
@@ -572,6 +599,10 @@ local function resultRows(plan : Plan, priceFactor : number) : {TreeNodeId}
 	local junctions = plannedJunctions(plan)
 	if junctions > 0 then
 		table.insert(rows, textRow(fill(_("Junctions: {count}"), { count = tostring(junctions) }), "font-scale-annotation"))
+	end
+	local joins = joinsRow(plan)
+	if joins ~= nil then
+		table.insert(rows, joins)
 	end
 	return rows
 end
@@ -691,6 +722,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				table.insert(rows, textRow(fill(_("Junctions: {count}"), { count = tostring(b.junctions) }),
 					"font-scale-annotation"))
 			end
+			local joins = joinsRow(checked.plan)
+			if joins ~= nil then
+				table.insert(rows, joins)
+			end
 			table.insert(rows, textRow(fill(_("Roads to {count} of {total} stations."), { count = tostring(b.roads),
 				total = tostring(build.ownStations(checked.plan)) }), "font-scale-annotation"))
 			if #b.roadsMissing > 0 then
@@ -703,6 +738,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			if f.item.kind == "station" then
 				local station = checked.plan.stations[f.item.index]
 				what = fill(_("Station {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
+			elseif f.item.kind == "road" then
+				local station = checked.plan.stations[f.item.index]
+				what = fill(_("Road to {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
 			else
 				what = outcomePlace(checked, { item = f.item, ok = false, cost = 0, messages = f.messages, x = f.x, y = f.y,
 					us = 0, collisions = {}, crossings = 0 })
@@ -1583,6 +1621,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				if (checked.junctions or 0) > 0 then
 					table.insert(body, textRow(fill(_("Junctions: {count}"),
 						{ count = tostring(checked.junctions) }), "font-scale-annotation"))
+				end
+				local joins = joinsRow(checked.plan)
+				if joins ~= nil then
+					table.insert(body, joins)
 				end
 				if checked.failures > 0 then
 					table.insert(body, textRow(fill(_("{count} of {total} parts can't be built as planned:"),

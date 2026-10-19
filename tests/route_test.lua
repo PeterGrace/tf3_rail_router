@@ -1348,7 +1348,19 @@ end)
 t.test("route: an existing station with 3 tracks at a bare end falls back, with a note", function()
 	local station, snap = bareStation(3000, 120, { 5, 0, -5 }, 0)
 	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: it has 3 tracks at its A end (Rail "
-		.. "Router joins 2 or 4); a new station was planned.")
+		.. "Router joins 2 tracks 5 or 10 m apart, or 4 tracks 5 m apart); a new station was planned.")
+end)
+
+t.test("route: an existing station with 2 tracks 7 m apart at a bare end falls back, with a note saying so", function()
+	local station, snap = bareStation(3000, 120, { 3.5, -3.5 }, 0)
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: it has 2 tracks 7 m apart at its A "
+		.. "end (Rail Router joins 2 tracks 5 or 10 m apart, or 4 tracks 5 m apart); a new station was planned.")
+end)
+
+t.test("route: an existing station with 4 tracks 6 m apart at a bare end falls back, with a note saying so", function()
+	local station, snap = bareStation(3000, 120, { 9, 3, -3, -9 }, 0)
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: it has 4 tracks at its A end, not "
+		.. "5 m apart (Rail Router joins 2 tracks 5 or 10 m apart, or 4 tracks 5 m apart); a new station was planned.")
 end)
 
 t.test("route: an existing station whose tracks at an end partly lead on falls back, with a note", function()
@@ -1471,3 +1483,21 @@ for __, case in ipairs({ { "direct", { 2.5, -2.5 } }, { "island", { 5, -5 } }, {
 		end
 	end)
 end
+
+t.test("route: time lost at an existing station counts its own half platform, not the window's", function()
+	local speed = t.requireTl("gui/pgrace_rail_router/planner/speed.tl")
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 0)
+	local w = withWeights({ minRadius = 1500, minSearchRadius = 220, lateralAccel = 2, topSpeed = math.sqrt(2 * 1500) })
+	local stops = { town(1, "A", 1500, -1300), town(2, "B", 3000, 0), town(3, "C", 4500, 1300) }
+	local plan = runExisting(stops, 2, station, snap, { weights = w })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[2].existing == station, "existing")
+	for k, leg in ipairs(plan.legs) do
+		-- Leg 1 runs from A's centre (80 m) to B's (120 m), leg 2 from B's to C's.
+		local lead, tail = k == 1 and 80 or 120, k == 1 and 120 or 80
+		local limits, length = speed.pieceLimits(leg.pieces, lead, w)
+		local expected = speed.timeLost(length + lead + tail, limits, w.topSpeed)
+		t.ok(expected > 0, "leg " .. k .. " loses time to its curves")
+		t.near(leg.timeLost, expected, 1e-9, "leg " .. k .. " time lost")
+	end
+end)

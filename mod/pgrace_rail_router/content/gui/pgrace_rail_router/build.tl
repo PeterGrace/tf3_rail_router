@@ -45,6 +45,9 @@ local function fail(b : Build, messages : {string}, x : number, y : number)
 	local item : PgraceRailRouterBuilder.Item
 	if b.phase == "stations" then
 		item = { kind = "station", index = b.station }
+	elseif b.phase == "roads" then
+		-- The station whose road was being built (b.road runs one past the last once the roads are done).
+		item = { kind = "road", index = math.max(1, math.min(b.road, #b.check.plan.stations)) }
 	else
 		item = { kind = "chunk", index = b.chunk }
 	end
@@ -1217,7 +1220,8 @@ function build.ownStations(plan : PgraceRailRouterRoute.Plan) : integer
 end
 
 function build.start(check : PgraceRailRouterBuilder.Check) : Build
-	log(("start: %d stations, %d chunks"):format(#check.plan.stations, #check.net.chunks))
+	log(("start: %d stations (%d ours), %d chunks"):format(#check.plan.stations, build.ownStations(check.plan),
+		#check.net.chunks))
 	return { check = check, phase = "stations", station = 1, chunk = 1, road = 1, waiting = false, levelCrossings = 0,
 		junctions = 0, charged = 0, roads = 0, roadsMissing = {}, roadRepair = {}, repairNodes = {}, trackRepair = {} }
 end
@@ -1313,7 +1317,8 @@ function build.retry(b : Build)
 	if b.phase ~= "failed" then
 		return
 	end
-	b.phase = b.failure.item.kind == "station" and "stations" or "track"
+	local kind = b.failure.item.kind
+	b.phase = kind == "station" and "stations" or kind == "road" and "roads" or "track"
 	b.failure = nil
 	b.crossings = nil
 	-- Splits already made are found again (their pieces are gone: builder.splitDone).

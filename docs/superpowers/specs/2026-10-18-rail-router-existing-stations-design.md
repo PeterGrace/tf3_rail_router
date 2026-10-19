@@ -76,8 +76,9 @@ hand-placed station without track was turned down for having no double track.
     S-curve (both of a track's ends tangent to the axis), before any crossover.
   - **4 tracks 5 m apart** (offsets ±2.5 and ±7.5, as our Halt 2+2): a fan, the outer two merging into ours as Halt
     2+2's fan does, whatever the window's station style.
-  - Anything else falls back: "The station in X can't be used: it has N tracks at its Y end (Rail Router joins 2 or
-    4); a new station was planned."
+  - Anything else falls back: "The station in X can't be used: it has N tracks at its Y end (Rail Router joins 2
+    tracks 5 or 10 m apart, or 4 tracks 5 m apart); a new station was planned." With 2 tracks it says how far apart
+    they are ("2 tracks 7 m apart"), with 4 "4 tracks at its Y end, not 5 m apart".
 - **The plan:** the stop is the existing station: its centre and direction, its own half-length (not the window's
   platform length) wherever the planner places things beside it (approach, room to turn, footprint, the next
   station's spacing). Beyond the bare end, our approach and crossovers as at a station of ours (Input.approach), its

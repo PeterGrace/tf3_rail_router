@@ -1252,20 +1252,21 @@ local function startHeights(input : Input, indexes : {PgraceRailRouterRoute.Trac
 end
 
 -- Seconds a train stopping at both stations loses to a fitted leg's curves below the mode's radius (speed.tl), from
--- station centre to station centre: half a platform either side of the pieces (half of ours at an existing station
--- too, though its platforms are its own and the junction lies between). 0 without the speed model's weights.
-local function legTimeLost(input : Input, fitted : PgraceRailRouterSmooth.Result) : number
+-- station centre to station centre (a, the station the leg leaves, and b, the one it arrives at): each station's half
+-- platform beyond the pieces (halfOf: an existing station's own, though at a junction the junction lies between).
+-- 0 without the speed model's weights.
+local function legTimeLost(input : Input, fitted : PgraceRailRouterSmooth.Result, a : Station, b : Station) : number
 	local w = input.weights
 	if w.topSpeed == nil or w.lateralAccel == nil then
 		return 0
 	end
-	local half = input.platformLength / 2
-	local limits, length = speed.pieceLimits(fitted.pieces, half, w)
-	return speed.timeLost(length + 2 * half, limits, w.topSpeed)
+	local halfA, halfB = halfOf(input, a), halfOf(input, b)
+	local limits, length = speed.pieceLimits(fitted.pieces, halfA, w)
+	return speed.timeLost(length + halfA + halfB, limits, w.topSpeed)
 end
 
 -- The leg, once its heights are fitted.
-local function finishLeg(input : Input, heights : LegHeights) : Leg
+local function finishLeg(input : Input, heights : LegHeights, a : Station, b : Station) : Leg
 	local w = input.weights
 	local fitted, samples, fit = heights.fitted, heights.samples, heights.fit.result
 	local tight = 0
@@ -1280,7 +1281,7 @@ local function finishLeg(input : Input, heights : LegHeights) : Leg
 	end
 	return { pieces = fitted.pieces, samples = samples, z = fit.z, spans = fit.spans, length = length,
 		minRadius = fitted.minRadius, maxGrade = fit.maxGrade, tightCurves = tight, steepEnds = not fit.feasible,
-		blockedSamples = heights.blockedSamples, guarded = fitted.guarded, timeLost = legTimeLost(input, fitted) }
+		blockedSamples = heights.blockedSamples, guarded = fitted.guarded, timeLost = legTimeLost(input, fitted, a, b) }
 end
 
 local function summarise(input : Input, plan : Plan) : Summary
@@ -1460,7 +1461,8 @@ local function stepResite(job : Job, maxExpansions : integer)
 	if rs.k == 0 and timed then
 		local cost, seconds : number, number = nil, nil
 		if rs.stage == "in" and i == job.legIndex + 1 or rs.stage == "out" and i == job.legIndex then
-			cost, seconds = rs.keep.cost, legTimeLost(input, rs.keep.fitted)
+			cost, seconds = rs.keep.cost, legTimeLost(input, rs.keep.fitted, plan.stations[job.legIndex],
+				plan.stations[job.legIndex + 1])
 		elseif rs.stage == "in" and i == job.legIndex then
 			local before = plan.legs[i - 1]
 			cost, seconds = before.searchCost, before.timeLost
@@ -1501,7 +1503,7 @@ local function stepResite(job : Job, maxExpansions : integer)
 			return
 		end
 		rs.leg = nil
-		local seconds = legTimeLost(input, fitted)
+		local seconds = legTimeLost(input, fitted, from, to)
 		local total = leg.cost + w.timeCost * seconds
 		if rs.legBest == nil or total < rs.legBest then
 			rs.legBest, rs.legBestTime = total, seconds
@@ -1606,7 +1608,7 @@ end
 -- tightest curve), else the one the leg arrives at; each station once, and never an existing one.
 local function checkLeg(job : Job, a : Station, b : Station)
 	local input = job.input
-	local slow = timePriced(input.weights) and legTimeLost(input, job.fitted) > RESITE_TIME_LOST
+	local slow = timePriced(input.weights) and legTimeLost(input, job.fitted, a, b) > RESITE_TIME_LOST
 	if belowBuild(input, job.fitted) == 0 and sweepOf(job.fitted) <= SWEEP_LIMIT and not slow then
 		return
 	end
@@ -1677,8 +1679,20 @@ local function existingStop(input : Input, i : integer) : Station, string
 			return nil, note(("can't be used: some of its tracks at the %s end lead on and some don't")
 				:format(neighbours[forward].name))
 		elseif b ~= nil and b.kind == "other" then
-			return nil, note(("can't be used: it has %d track%s at its %s end (Rail Router joins 2 or 4)"):format(#b.nodes,
-				#b.nodes == 1 and "" or "s", neighbours[forward].name))
+			local joins = "(Rail Router joins 2 tracks 5 or 10 m apart, or 4 tracks 5 m apart)"
+			local y = neighbours[forward].name
+			local has : string
+			if #b.nodes == 2 then
+				local p, q = b.nodes[1], b.nodes[2]
+				local apart = math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2)
+				local text = ("%.1f"):format(apart):gsub("%.0$", "")
+				has = ("2 tracks %s m apart at its %s end"):format(text, y)
+			elseif #b.nodes == 4 then
+				has = ("4 tracks at its %s end, not 5 m apart"):format(y)
+			else
+				has = ("%d track%s at its %s end"):format(#b.nodes, #b.nodes == 1 and "" or "s", y)
+			end
+			return nil, note(("can't be used: it has %s %s"):format(has, joins))
 		elseif b ~= nil then
 			bare[k] = b
 			z, n = z + b.mid.z, n + 1
@@ -1912,7 +1926,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			job.fitting = nil
 			if job.radii ~= nil then
 				-- One of several radii being weighed (time priced): its fitted curves tell what time it loses.
-				local t = job.pathCost + input.weights.timeCost * legTimeLost(input, job.fitted)
+				local t = job.pathCost + input.weights.timeCost * legTimeLost(input, job.fitted, a, b)
 				if job.best == nil or t < job.bestTotal then
 					job.best = { path = job.path, simplified = job.simplified, fitted = job.fitted, radius = job.searchRadius,
 						cost = job.pathCost }
@@ -1933,7 +1947,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		if not profile.step(job.heights.fit, PROFILE_WORK_PER_STEP) then
 			return false
 		end
-		local leg = finishLeg(input, job.heights)
+		local leg = finishLeg(input, job.heights, a, b)
 		job.simplified, job.fitted, job.heights = nil, nil, nil
 		leg.searchRadius, leg.searchExpansions, leg.searchCost = job.searchRadius, job.searchExpansions, job.pathCost
 		table.insert(plan.legs, leg)

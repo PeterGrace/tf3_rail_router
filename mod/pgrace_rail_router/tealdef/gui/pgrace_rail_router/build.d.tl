@@ -6,7 +6,8 @@
 -- advanced by the commands' callbacks. Main thread only.
 global record PgraceRailRouterBuild
 	record Failure
-		-- What failed, for the window: "station" (index into plan.stations) or "chunk" (index into net.chunks).
+		-- What failed, for the window: "station" (index into plan.stations), "chunk" (index into net.chunks) or "road"
+		-- (an error in the roads phase: index into plan.stations, the station whose road was being built).
 		item : PgraceRailRouterBuilder.Item
 		-- The game's messages, or why the step couldn't be made.
 		messages : {string}
