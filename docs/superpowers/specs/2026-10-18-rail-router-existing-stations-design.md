@@ -20,7 +20,9 @@ Each step ends with an in-game test.
 
 1. **Probe P15.** Splitting existing track, a track-over-track level crossing, and a switch into signalled track,
    all from a script (see "Unknowns").
-2. **4b-1:** finding the stations, the window option, and the flat junction.
+2. **4b-1:** finding the stations, the window option, and the flat junction. Done 2026-10-19: bare ends built and
+   ran trains in-game (see "Second in-game test"); the flat junction falls back at every station tried so far (Rail
+   Router's own have too little straight), so it hasn't been built in-game yet.
 3. **4b-2:** the flying junction where the straight stretch is long enough. Otherwise the junction stays flat.
 4. **Junctions on curves (later, its own milestone and probe):** a junction that follows the existing line into its
    curve. Needed for stations Rail Router built (see "First in-game test").
@@ -266,6 +268,19 @@ crossing.
   bridge crossing a line at a shallow angle dipping below 8 m over it in cells not marked track. Both now check the
   streets' and track's own points (`Grid.streets`, `Grid.tracks`). Also: an existing station within reach of two
   towns was offered to both (now only the nearer), and captures now record the station approach.
+
+### Second in-game test (2026-10-19): bare ends
+
+- **Built:** Mercer Island → Antelope, joined to a station the player placed in Antelope with no track (2 tracks 5 m
+  apart at both ends: "direct"). Check was clean, nothing was built or charged for Antelope, our two tracks were
+  built onto the station's own end nodes by entity, and trains ran both ways. No lane repair was needed at the
+  join, and clicking the joined nodes didn't crash.
+- **Bug found by the first try:** Halt 2+2's fan at our own station (Mercer Island) took the far end's bare nodes:
+  `atStart and bStart or bEnd` gives bEnd when bStart is nil. Two 2 km fan edges, refused as Too Much Curvature.
+  Replayed offline from the route capture with the station's pieces from the earlier map capture; fixed, with a
+  test for our station at one end and each bare kind at the other.
+- **Roads:** the road to the new station and its junction repair built ("roads to 1 of 1"). The first test's "roads
+  to 0 of 2" (two new stations, before bare ends) wasn't investigated and didn't recur.
 
 ## Testing
 

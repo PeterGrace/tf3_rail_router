@@ -813,7 +813,6 @@ local function signalsOf(piece : Piece) : {{number}}, integer
 				end
 				local param = (k + 0.5) / count
 				local eoParam : any = nil
-				local transl = "?"
 				pcall(function() : boolean
 					local eo = api.engine.getComponent(id.entity, api.type.ComponentType.EDGE_OBJECT) as Engine.Component.EdgeObject
 					if eo ~= nil then
@@ -821,21 +820,10 @@ local function signalsOf(piece : Piece) : {{number}}, integer
 						if inUnit(eoParam) then
 							param = eoParam as number
 						end
-						local okT, t = pcall(function() : Vec3f
-							return eo.transf:getTransl()
-						end)
-						if okT and t ~= nil then
-							local v = t as Vec3f
-							transl = ("(%.1f %.1f %.1f)"):format(v.x, v.y, v.z)
-						end
 					end
 					return true
 				end)
 				table.insert(result, { param, reversed and 1 or -1 })
-				-- PROBE (remove before release): where the param came from, its direction and the facing.
-				debugPrint(LOG_PREFIX .. ("probe signal: piece %d edge %d/%d reversed %s, list %d index %d, EDGE_OBJECT param %s, param used %.3f, node0 (%.1f %.1f) node1 (%.1f %.1f), transf %s")
-					:format(entity, k, count, tostring(reversed), id.entity as integer, id.index, tostring(eoParam), param,
-						piece.p0.x, piece.p0.y, piece.p1.x, piece.p1.y, transl))
 				return true
 			end)
 			if not ok then
