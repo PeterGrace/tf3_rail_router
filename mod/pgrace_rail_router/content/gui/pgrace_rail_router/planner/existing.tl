@@ -29,8 +29,10 @@ local SAMPLE = 2.0
 -- Another track counts beside a pair when within this along the midline of its midpoint (half the pairs' spacing,
 -- and a little over, so that the checks leave no gap even on the outside of a curve).
 local WINDOW = SAMPLE / 2 + 0.1
--- Another piece within this across of one of our two tracks meets it there (at a switch).
+-- A piece touching a node of our two tracks meets one of them where it lies within this across of it (at a switch).
 local MEETS = 1.5
+-- A bridge or tunnel piece more than this above or below the midline crosses over or under it: not beside it.
+local CLEARANCE = 6.0
 -- The grid cell other tracks' samples are bucketed by (metres): over twice WIDE + WINDOW, so the 2 × 2 cells nearest a
 -- point hold every sample that could lie beside it.
 local CELL = 25.0
@@ -369,7 +371,7 @@ local function refArrive(r : Ref) : number, number
 end
 
 -- The whole snapshot, read once per analysis: each node's piece ends; and for the third-track check, each piece's
--- points about every SAMPLE metres along it (x, y flat, aligned with `pieces`), sampled when first needed.
+-- points about every SAMPLE metres along it (x, y, z flat, aligned with `pieces`), sampled when first needed.
 local record Index
 	at : {integer : {Ref}}
 	pieces : {Piece}
@@ -399,8 +401,8 @@ local function samplesOf(ix : Index, i : integer) : {number}
 		pts = {}
 		local n = samples(p)
 		for j = 0, n do
-			local x, y = hermite(p, j / n)
-			pts[2 * j + 1], pts[2 * j + 2] = x, y
+			local x, y, z = hermite(p, j / n)
+			pts[3 * j + 1], pts[3 * j + 2], pts[3 * j + 3] = x, y, z
 		end
 		ix.samples[i] = pts
 	end
@@ -432,8 +434,9 @@ end
 -- Whether the piece end r, leaving the switch at node n on a track running outward along (ox, oy) there, is one leg
 -- of a crossover to the other track: it leads through plain nodes (at most LEG_PIECES pieces) to another switch, 4.5–5.5
 -- m across to the `side` of n (−1 right, +1 left). Across is measured square to the mean of the two tracks' outward
--- directions at the two switches, so it reads true on a curve too (two points on concentric circles lie their radii's
--- difference apart square to that mean, however far apart along). The other track's direction is its own piece's
+-- directions at the two switches, so it reads nearly true on a curve too: two points on concentric circles lie
+-- (r2 − r1)·cos(Δ/2) apart square to that mean, Δ the angle between them (4.99 m for 5 m with a 45 m leg on a 300 m
+-- curve). The other track's direction is its own piece's
 -- leaving the far switch outward (the game's switches are tangent, but a leg may meet the track at an angle).
 -- Returns the far switch's node, or nil.
 local function legFrom(ix : Index, snap : Snapshot, n : integer, ox : number, oy : number, r : Ref,
@@ -488,7 +491,8 @@ end
 -- past it. At a plain node (degree 2) it carries on, unless the next piece turns back. At a switch it carries on along
 -- its own track only where the switch is one side of a crossover to the other track (at `side`, see legFrom): at a
 -- facing switch on the piece that isn't the leg, at a trailing one (the leg coming in from behind) on the one ahead.
--- Any other switch, a dead end, a node with pieces the snapshot lacks or a piece turning back ends the walk ("stop");
+-- Any other switch (a node with four pieces too, such as a scissors crossover or a diamond, which may be
+-- overcautious), a dead end, a node with pieces the snapshot lacks or a piece turning back ends the walk ("stop");
 -- so does the budget ("reach"). Bridges and tunnels are walked like any piece. far[k]: where a crossover leaves the
 -- outer node of links[k], its far switch's node.
 local record Walk
@@ -735,6 +739,19 @@ local function pair(left : Line, right : Line, ix : Index) : {Run}
 			end
 		end
 	end
+	-- The nodes of our two tracks (the crossovers' far switches among them): only a piece touching one can be where
+	-- another track meets ours at a switch.
+	local ours : {integer : boolean} = {}
+	for __, ln in ipairs({ left, right }) do
+		for __, l in ipairs(ln.walk.links) do
+			ours[l.nodeA], ours[l.nodeB] = true, true
+		end
+		for __, m in pairs(ln.walk.far) do
+			ours[m] = true
+		end
+	end
+	-- Each sample in its cell as x, y, z, whether its piece touches our tracks (1 or 0) and whether it's a bridge or
+	-- tunnel (1 or 0).
 	local cells : {integer : {number}} = {}
 	for i, p in ipairs(ix.pieces) do
 		if not own[p.entity] then
@@ -751,8 +768,10 @@ local function pair(left : Line, right : Line, ix : Index) : {Run}
 				end
 			end
 			if meets then
+				local touches = (ours[p.node0] or ours[p.node1]) and 1 or 0
+				local structure = (p.kind == "bridge" or p.kind == "tunnel") and 1 or 0
 				local pts = samplesOf(ix, i)
-				for j = 1, #pts, 2 do
+				for j = 1, #pts, 3 do
 					local key = cellKey(math.floor(pts[j] / CELL), math.floor(pts[j + 1] / CELL))
 					if near[key] then
 						local cell = cells[key]
@@ -760,7 +779,9 @@ local function pair(left : Line, right : Line, ix : Index) : {Run}
 							cell = {}
 							cells[key] = cell
 						end
-						cell[#cell + 1], cell[#cell + 2] = pts[j], pts[j + 1]
+						local m = #cell
+						cell[m + 1], cell[m + 2], cell[m + 3], cell[m + 4], cell[m + 5] = pts[j], pts[j + 1], pts[j + 2],
+							touches, structure
 					end
 				end
 			end
@@ -871,12 +892,14 @@ local function pair(left : Line, right : Line, ix : Index) : {Run}
 		end
 	end
 
-	-- Whether another track's sample lies beside the midpoint (mx, my), the tracks running along (dx, dy) there:
-	-- within WINDOW along and WIDE across, but not where it meets one of our tracks (within MEETS of the left or right
-	-- track's offset yl, yr): there it's a piece joining ours at a switch (a crossover's leg, a fan's merge), which the
-	-- crossovers and the walk's switches account for. A track coming in beside, or crossing, ends the stretch where it
-	-- comes within WIDE of the midline. Checked at every pair, as the pairs are SAMPLE apart.
-	local function crowded(mx : number, my : number, dx : number, dy : number, yl : number, yr : number) : boolean
+	-- Whether another track's sample lies beside the midpoint (mx, my, height mz), the tracks running along (dx, dy)
+	-- there: within WINDOW along and WIDE across. Not where a piece touching our tracks' nodes meets one of them (within
+	-- MEETS of the left or right track's offset yl, yr): there it's joining ours at a switch (a crossover's leg, a fan's
+	-- merge), which the crossovers and the walk's switches account for. Nor a bridge or tunnel more than CLEARANCE
+	-- above or below: a line crossing over or under. A track coming in beside, or crossing on the level, ends the
+	-- stretch where it comes within WIDE of the midline. Checked at every pair, as the pairs are SAMPLE apart.
+	local function crowded(mx : number, my : number, mz : number, dx : number, dy : number, yl : number,
+			yr : number) : boolean
 		local fx, fy = mx / CELL, my / CELL
 		local cx, cy = math.floor(fx), math.floor(fy)
 		local x0 = fx - cx < 0.5 and cx - 1 or cx
@@ -885,11 +908,13 @@ local function pair(left : Line, right : Line, ix : Index) : {Run}
 			for gy = y0, y0 + 1 do
 				local cell = cells[cellKey(gx, gy)]
 				if cell ~= nil then
-					for i = 1, #cell, 2 do
+					for i = 1, #cell, 5 do
 						local rx, ry = cell[i] - mx, cell[i + 1] - my
 						if math.abs(rx * dx + ry * dy) <= WINDOW then
 							local off = dx * ry - dy * rx
-							if math.abs(off) <= WIDE and math.abs(off - yl) > MEETS and math.abs(off - yr) > MEETS then
+							local meets = cell[i + 3] == 1 and (math.abs(off - yl) <= MEETS or math.abs(off - yr) <= MEETS)
+							local apart = cell[i + 4] == 1 and math.abs(cell[i + 2] - mz) > CLEARANCE
+							if math.abs(off) <= WIDE and not meets and not apart then
 								return true
 							end
 						end
@@ -941,7 +966,8 @@ local function pair(left : Line, right : Line, ix : Index) : {Run}
 			local gap = math.sqrt(ex * ex + ey * ey)
 			if gap < GAP_MIN or gap > GAP_MAX or math.abs(pz - qz) > LEVEL or math.abs(dx * ex + dy * ey) > ACROSS * gap
 					or dx * ey - dy * ex >= 0
-					or crowded(mx, my, dx, dy, dx * (py - my) - dy * (px - mx), dx * (qy - my) - dy * (qx - mx)) then
+					or crowded(mx, my, (pz + qz) / 2, dx, dy, dx * (py - my) - dy * (px - mx),
+						dx * (qy - my) - dy * (qx - mx)) then
 				why = "drift"
 			end
 		end
@@ -1052,8 +1078,8 @@ end
 -- the tracks behind that start lead anywhere but the station (see `fromStation`), nothing is read ("short"). From
 -- there each track is walked outward through curves (see `walk`), and the stretches are read off the pair (see `pair`):
 -- past a bridge or tunnel, a crossover or a drift (a third track, the tracks parting or one rising over the other)
--- the reading carries on along the tracks, and a stretch starts again where the pair holds again; any other switch,
--- the track's end or REACH ends it.
+-- the reading carries on along the tracks, and a stretch starts again where the pair holds again; any other switch
+-- (a scissors crossover's four-piece node among them), the track's end or REACH ends it.
 function existing.analyse(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 	local result : Result = { ends = {}, why = {}, longest = {}, stretches = {} }
 	local needed = junction.needed(radius)

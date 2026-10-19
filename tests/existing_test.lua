@@ -224,6 +224,25 @@ t.test("existing: a third track beside the stretch ends it, and the next starts 
 	t.near(s2.origin.x + s2.length, 1200, 1e-6, "to the track's end")
 end)
 
+t.test("existing: a line bridging over the stretch doesn't end it; one crossing on the level does", function()
+	for __, case in ipairs({ { "bridge", 8, 1 }, { "ground", 0, 2 } }) do
+		local b = builder()
+		local station = fanStation(b)
+		b.track(2.5, steps(180, 1200, 100))
+		b.track(-2.5, steps(180, 1200, 100))
+		-- A single track square across at x = 700 (not joined to ours), 8 m up on a bridge, or on the ground.
+		local p = b.piece(700, -60, 700, 60)
+		p.kind, p.p0.z, p.p1.z = case[1], case[2], case[2]
+		local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+		t.eq(#r.stretches[1], case[3], case[1] .. ": stretches")
+		if case[3] == 2 then
+			t.near(r.stretches[1][1].length, 520, 3, "ends where the crossing track comes beside the midline")
+		else
+			t.near(r.stretches[1][1].length, 1020, 1e-6, "the whole double track")
+		end
+	end
+end)
+
 t.test("existing: a bridge past a curve ends a stretch, and the next starts past it", function()
 	local b, station, __, tails = curved(300, 40, 600)
 	tails[1][2].kind, tails[2][2].kind = "bridge", "bridge"
@@ -843,6 +862,14 @@ t.test("existing: line1 map: Aloha's ends read on past the crossovers and throug
 		t.near(along, 382, 1, "end " .. k .. ": starts at the last crossover's switch")
 		t.ok(e.length >= 600, "end " .. k .. ": at least 600 m")
 		t.ok(midline.straightUntil(e.frame, 0, 0.005) < e.length, "end " .. k .. ": the frame turns (the curve)")
+		-- The turn: the largest angle between the start's direction and any later one along the frame.
+		local __, d0 = midline.at(e.frame, 0)
+		local most = 0
+		for x = 0, e.length, midline.STEP do
+			local __, d = midline.at(e.frame, x)
+			most = math.max(most, math.deg(math.acos(math.max(-1, math.min(1, d0.x * d.x + d0.y * d.y)))))
+		end
+		t.ok(most > 10, ("end %d: the frame turns by more than 10° (%.1f°)"):format(k, most))
 		t.ok(r.stretches[k][1] == e, "end " .. k .. ": the first stretch")
 	end
 end)

@@ -79,11 +79,12 @@ global record PgraceRailRouterExisting
 	-- and goes on up to 1.5 km out along the track. The tracks behind that start must lead back only to the station's
 	-- end nodes (through the fan's merges and crossovers), or nothing is read. Each track is then walked piece by
 	-- piece, whatever their shape, through plain nodes (degree 2) and through crossovers to the other track (keeping
-	-- to its own track); any other switch, a dead end or a piece turning back ends the reading. Sampled every 2 m,
-	-- the two tracks make a stretch while they are 4.5–5.5 m apart square across, level within 0.3 m, both on the
-	-- ground, and no other track comes within 12 m of their midline. A bridge or tunnel, a crossover (between and at
-	-- its switches) or such a drift ends a stretch, and the next starts where the pair holds again. Each stretch's
-	-- frame is the midline through the pairs' midpoints.
+	-- to its own track); any other switch (a node with four pieces too: a scissors crossover or a diamond), a dead
+	-- end or a piece turning back ends the reading. Sampled every 2 m, the two tracks make a stretch while they are
+	-- 4.5–5.5 m apart square across, level within 0.3 m, both on the ground, and no other track comes within 12 m of
+	-- their midline (a bridge or tunnel more than 6 m above or below it crosses over or under, and doesn't count). A
+	-- bridge or tunnel, a crossover (between and at its switches) or such a drift ends a stretch, and the next starts
+	-- where the pair holds again. Each stretch's frame is the midline through the pairs' midpoints.
 	-- `side[k]`: which side of end k our line comes from (+1 left of outward, −1 right; nil +1).
 	analyse : function(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 
