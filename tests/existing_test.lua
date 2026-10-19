@@ -619,3 +619,27 @@ t.test("existing: stationFromEnds: two groups of ends give the centre, direction
 	local none, why = existing.stationFromEnds(7, { ends[1] })
 	t.ok(none == nil and why ~= nil, "fewer than two ends")
 end)
+
+t.test("existing: planOnMap with Aloha's station: it falls back to a new station of ours, with a note", function()
+	local maps = findMapsDir()
+	local mapFile = maps and (maps .. "/rail-router-test-5x14km-line1.map")
+	local f = mapFile and io.open(mapFile, "r")
+	if not f then
+		print("SKIP existing planOnMap: no rail-router-test-5x14km-line1.map (the kit's maps/ folder)")
+		return
+	end
+	f:close()
+	local lib = dofile(t.root .. "/tools/replaylib.lua")(t.root)
+	local map = lib.maplib.load(mapFile)
+	local r = lib.planOnMap(map, { from = "Aloha", to = "Mercer Island", stops = {}, existing = { "Aloha" } })
+	t.ok(r.plan.ok, "the plan is made")
+	local noted = false
+	for __, note in ipairs(r.plan.notes) do
+		if note:find("Aloha", 1, true) then
+			noted = true
+		end
+	end
+	t.ok(noted, "a note about Aloha's station (its ends are short today)")
+	t.ok(not pcall(lib.planOnMap, map, { from = "Aloha", to = "Mercer Island", stops = {}, existing = { "Antelope" } }),
+		"an existing town that isn't a stop is an error")
+end)

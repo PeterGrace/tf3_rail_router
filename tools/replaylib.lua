@@ -207,62 +207,93 @@ return function(root)
 	end
 
 	-- An existing rail station from a whole-map capture, as the window reads it in-game (survey.existingStations,
-	-- trackSnapshot): the station construction nearest the town (within `reach`, default 1500 m) with track pieces
-	-- inside its box; its end nodes are its track pieces' nodes that only one piece inside the box reaches (each
-	-- station track's two extremes), stationFromEnds then gives its centre, direction and half-length. The snapshot
-	-- is every track piece within half + existing.REACH + 100 m of its centre, ground unless the capture marks a
-	-- bridge or tunnel, with no signals (captures don't record them; right-hand running is assumed). Returns
-	-- station, snapshot; or nil and why.
+	-- nearestStation, trackSnapshot). Every station construction within `reach` (default 1500 m) of the town is
+	-- read: its end nodes are its track pieces' nodes that only one piece inside its box reaches (each station
+	-- track's two extremes), and stationFromEnds gives its centre, direction and half-length. Candidates that don't
+	-- read (fewer than two ends, ends not at +-half along the axis) or whose centre is nearer another town are
+	-- dropped, and the one whose centre is nearest the town is taken. Offline only constructions whose file matches
+	-- "rail" count (in-game: any construction with stations and frozen track). The snapshot is every track piece
+	-- whose end points' box meets the circle of half + existing.REACH + 50 m (the window's SNAPSHOT_MARGIN) round
+	-- the centre, ground unless the capture marks a bridge or tunnel, with no signals (captures don't record them;
+	-- right-hand running is assumed). Returns station, snapshot; or nil and why.
 	function lib.existingFromMap(map, townKey, reach)
 		reach = reach or 1500
 		local towns = maplib.towns(map)
 		local town = assert(lib.findTown(towns, townKey), "no town " .. tostring(townKey))
-		local best, bestD
+		local function nearerTown(p)
+			local d = (p.x - town.pos.x) ^ 2 + (p.y - town.pos.y) ^ 2
+			for _, other in ipairs(towns) do
+				if other.id ~= town.id and (p.x - other.pos.x) ^ 2 + (p.y - other.pos.y) ^ 2 < d then
+					return other
+				end
+			end
+			return nil
+		end
+		local best, bestD, whyNot = nil, nil, "no rail station within reach"
 		for _, o in ipairs(map.objects) do
 			if o.kind == "station" and o.min and o.max and o.file and o.file:match("rail") then
 				local cx, cy = (o.min.x + o.max.x) / 2, (o.min.y + o.max.y) / 2
-				local d = math.sqrt((cx - town.pos.x) ^ 2 + (cy - town.pos.y) ^ 2)
-				if d <= reach and (not bestD or d < bestD) then
-					best, bestD = o, d
+				if math.sqrt((cx - town.pos.x) ^ 2 + (cy - town.pos.y) ^ 2) <= reach then
+					local function inBox(p)
+						return p.x >= o.min.x - 1 and p.x <= o.max.x + 1 and p.y >= o.min.y - 1 and p.y <= o.max.y + 1
+					end
+					local count, at = {}, {}
+					for _, e in ipairs(map.edges) do
+						if e.kind == "t" and inBox(e.p0) and inBox(e.p1) then
+							for _, nd in ipairs({ { e.node0, e.p0 }, { e.node1, e.p1 } }) do
+								count[nd[1]] = (count[nd[1]] or 0) + 1
+								at[nd[1]] = nd[2]
+							end
+						end
+					end
+					local ends = {}
+					for n, c in pairs(count) do
+						if c == 1 then
+							ends[#ends + 1] = { x = at[n].x, y = at[n].y, z = at[n].z, entity = n }
+						end
+					end
+					table.sort(ends, function(a, b) return a.entity < b.entity end)
+					local st, why = lib.existing.stationFromEnds(o.id, ends)
+					if st then
+						-- A misread from track that merely lies inside the box: every end sits at +-half along the axis.
+						for _, e in ipairs(ends) do
+							local along = (e.x - st.centre.x) * st.dir.x + (e.y - st.centre.y) * st.dir.y
+							if math.abs(math.abs(along) - st.half) > 3 then
+								st, why = nil, "ends don't line up"
+								break
+							end
+						end
+					end
+					if st and nearerTown(st.centre) then
+						st, why = nil, "nearer " .. nearerTown(st.centre).name
+					end
+					if st then
+						local d = math.sqrt((st.centre.x - town.pos.x) ^ 2 + (st.centre.y - town.pos.y) ^ 2)
+						if not bestD or d < bestD then
+							st.box = { minX = o.min.x, minY = o.min.y, maxX = o.max.x, maxY = o.max.y }
+							best, bestD = st, d
+						end
+					else
+						whyNot = why
+					end
 				end
 			end
 		end
 		if not best then
-			return nil, "no rail station within reach"
+			return nil, whyNot
 		end
-		local function inBox(p)
-			return p.x >= best.min.x - 1 and p.x <= best.max.x + 1 and p.y >= best.min.y - 1 and p.y <= best.max.y + 1
-		end
-		local count, at = {}, {}
-		for _, e in ipairs(map.edges) do
-			if e.kind == "t" and inBox(e.p0) and inBox(e.p1) then
-				for _, nd in ipairs({ { e.node0, e.p0 }, { e.node1, e.p1 } }) do
-					count[nd[1]] = (count[nd[1]] or 0) + 1
-					at[nd[1]] = nd[2]
-				end
-			end
-		end
-		local ends = {}
-		for n, c in pairs(count) do
-			if c == 1 then
-				ends[#ends + 1] = { x = at[n].x, y = at[n].y, z = at[n].z, entity = n }
-			end
-		end
-		table.sort(ends, function(a, b) return a.entity < b.entity end)
-		local st, why = lib.existing.stationFromEnds(best.id, ends)
-		if not st then
-			return nil, why
-		end
-		st.box = { minX = best.min.x, minY = best.min.y, maxX = best.max.x, maxY = best.max.y }
-		local r = st.half + lib.existing.REACH + 100
+		local st = best
+		local r = st.half + lib.existing.REACH + 50
 		local kinds = { n = "ground", b = "bridge", u = "tunnel" }
 		local pieces, degree = {}, {}
 		for _, e in ipairs(map.edges) do
 			if e.kind == "t" then
 				degree[e.node0] = (degree[e.node0] or 0) + 1
 				degree[e.node1] = (degree[e.node1] or 0) + 1
-				local mx, my = (e.p0.x + e.p1.x) / 2, (e.p0.y + e.p1.y) / 2
-				if math.sqrt((mx - st.centre.x) ^ 2 + (my - st.centre.y) ^ 2) <= r then
+				-- The end points' box meets the circle, as the octree query finds them.
+				local nx = math.max(math.min(e.p0.x, e.p1.x), math.min(st.centre.x, math.max(e.p0.x, e.p1.x)))
+				local ny = math.max(math.min(e.p0.y, e.p1.y), math.min(st.centre.y, math.max(e.p0.y, e.p1.y)))
+				if math.sqrt((nx - st.centre.x) ^ 2 + (ny - st.centre.y) ^ 2) <= r then
 					pieces[#pieces + 1] = { entity = e.id, node0 = e.node0, node1 = e.node1, p0 = e.p0, p1 = e.p1,
 						t0 = e.t0, t1 = e.t1, kind = kinds[e.edgeType] or "unknown", signals = {} }
 				end
@@ -275,7 +306,9 @@ return function(root)
 	-- mode ("cheapest" default, or "fastest"), track (label or name; default the mode's for the map's year), stops
 	-- (a list of town names or ids between from and to: replaces corridor.select's choice; {} for none), platform
 	-- (default 160), overrides ({key = value} weights), expansions (per step), existing (a list of town names or ids
-	-- whose existing rail station the line joins, as ticked in the window; they must be among the planned stops). Errors on unknown towns or tracks.
+	-- whose existing rail station the line joins, as ticked in the window; they must be among the planned stops).
+	-- Errors on unknown towns or tracks, or an existing town that isn't a stop. A stop whose station can't be read
+	-- is planned without it, as in the window, and r.existing[stop index] says why.
 	function lib.planOnMap(map, opts)
 		local towns = maplib.towns(map)
 		local year = tonumber(map.meta.gameYear) or 0
@@ -309,17 +342,23 @@ return function(root)
 		-- As the window: each ticked stop's existing station and its track snapshot, by stop index, the junctions'
 		-- radius and the bare ends' approach for the track's turnouts.
 		local joins
+		r.existing = {}
 		for _, key in ipairs(opts.existing or {}) do
 			local town = assert(lib.findTown(towns, key), "no town " .. tostring(key))
+			local found = false
 			for i, stop in ipairs(stops) do
 				if stop.id == town.id then
+					found = true
 					local st, snap = lib.existingFromMap(map, key)
 					if st then
 						joins = joins or { existingStations = {}, snapshots = {}, radius = 150.0 }
 						joins.existingStations[i], joins.snapshots[i] = st, snap
+					else
+						r.existing[i] = snap
 					end
 				end
 			end
+			assert(found, "existing: " .. tostring(key) .. " is not among the planned stops")
 		end
 		if joins then
 			local radius = track.speed < 30 and 150 or (track.speed < 60 and 300 or 600)
@@ -334,7 +373,8 @@ return function(root)
 			local g, stats = lib.gridFor(map, box)
 			table.insert(r.areas, { box = box, margin = margin, stats = stats })
 			r.grid = g
-			r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, platform, opts.expansions, opts.approach, joins)
+			r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, platform,
+				opts.expansions, opts.approach, joins)
 			if r.plan.ok or r.plan.failure ~= "no_path" or retry == lib.MAX_RETRIES then
 				break
 			end
