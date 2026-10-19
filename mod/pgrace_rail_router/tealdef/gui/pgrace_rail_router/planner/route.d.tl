@@ -13,6 +13,10 @@ global record PgraceRailRouterRoute
 		-- The straight before and after each platform (metres; nil: 100). Halt 2+2 stations need their fans' length
 		-- and the crossovers' room after it (network.fanLength + 100).
 		approach : number
+		-- The straight an existing station's bare end needs beyond its nodes, by its kind ("direct", "island",
+		-- "fan"; network.bareApproach): a bare end's approach is the longer of this and `approach` (and reaches past
+		-- the station's own box). nil: `approach` alone.
+		bareApproach : {string : number}
 		-- Existing stations to use (milestone 4b), by stop index (nil: none at that stop), and a snapshot of each
 		-- one's track (existing.Snapshot, covering existing.REACH beyond its platform ends). The route reads each
 		-- one's ends itself (existing.analyse), since which side of an end the line comes from depends on the
@@ -52,6 +56,9 @@ global record PgraceRailRouterRoute
 		bare : {integer : PgraceRailRouterExisting.Bare}
 		sides : {integer : number}
 		endOf : {boolean : integer}
+		-- Per bare end, the cells (by grid index) of the station's own box along its axis, which a leg at that end may
+		-- use though the survey blocked them (route.tl's ownCells). Internal, filled in as needed.
+		own : {integer : {integer : boolean}}
 	end
 
 	-- From one station's platform end to the next one's (at an existing station's junction, its approach start, 10 m
@@ -145,6 +152,8 @@ global record PgraceRailRouterRoute
 	record Simplified
 		pts : {PgraceRailRouterGeo.Pt}
 		guard : PgraceRailRouterSmooth.Guard
+		-- The leg's bare ends' own cells (route.tl's ownCells), which don't count as blocked; nil: none.
+		own : {integer : boolean}
 	end
 
 	-- A leg's curves being fitted (spread over steps, a fillet each): the stage next, the leg as fitted so far, which

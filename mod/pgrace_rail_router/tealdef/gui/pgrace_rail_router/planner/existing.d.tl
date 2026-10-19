@@ -27,13 +27,17 @@ global record PgraceRailRouterExisting
 	end
 
 	-- A station: its platforms' centre and direction (a unit vector; normalised anyway), half their length, and its
-	-- track end nodes.
+	-- track end nodes. box: its construction's bounding box (world, axis-aligned; nil where the survey couldn't read
+	-- it), which the survey blocks on the grid (with area.BUILDING_BUFFER round it) like any construction's: a modular
+	-- station's runs about 10 m past its platform ends, so the planner treats those cells along the axis out of a bare
+	-- end as the station's own there (route.tl's ownCells).
 	record Station
 		entity : integer
 		centre : PgraceRailRouterGeo.Pt
 		dir : PgraceRailRouterGeo.Pt
 		half : number
 		ends : {integer}
+		box : PgraceRailRouterArea.Bounds
 	end
 
 	-- A usable end: the straight double-track stretch's start on the two tracks' midline (and its height), its grade

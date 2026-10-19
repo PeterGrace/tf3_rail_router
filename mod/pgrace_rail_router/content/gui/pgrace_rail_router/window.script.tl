@@ -113,6 +113,9 @@ local record Work
 	platform : integer
 	-- The straight at each platform end the stations need (route Input.approach; nil: the planner's 100 m).
 	approach : number
+	-- The straight an existing station's bare end needs, by kind (route Input.bareApproach; network.bareApproach for
+	-- the turnout settingsFor gives a bare fan).
+	bareApproach : {string : number}
 	-- The survey margin in use, and how many times the work was started over with a wider one.
 	margin : number
 	retries : integer
@@ -887,7 +890,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		workRef:set({ stops = stops, track = track, useExisting = useExisting,
 			weights = modes.weights(settings.mode, track),
-			platform = settings.platform, approach = approachFor(settings.style, track), margin = SURVEY_MARGIN,
+			platform = settings.platform, approach = approachFor(settings.style, track),
+			bareApproach = track ~= nil and network.bareApproach(network.turnoutLength(turnoutRadius(track))) or nil,
+			margin = SURVEY_MARGIN,
 			retries = 0, slowestStepUs = {},
 			planUs = 0, planFrames = 0 })
 		resetCheck()
@@ -1011,6 +1016,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				pcall(captureProbe, work, survey.grid(work.surveyJob)) -- PROBE (remove before release)
 				work.routeJob = route.start({ grid = survey.grid(work.surveyJob), stops = work.stops,
 					weights = work.weights, platformLength = work.platform, approach = work.approach,
+					bareApproach = work.bareApproach,
 					existingStations = work.existingStations, snapshots = work.snapshots,
 					radius = JUNCTION_RADIUS })
 				setProgress(work, "plan", 0)

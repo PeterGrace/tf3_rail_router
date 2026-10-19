@@ -729,7 +729,14 @@ function survey.existingStations(town : Town, reach : number) : {Station}
 				-- No frozen track: a bus, tram, ship or air station.
 				return nil, nil
 			end
-			return stationOf(entity, ends)
+			local station, why = stationOf(entity, ends)
+			-- Its box, as markConstruction blocks it: the planner treats the cells it covers out of a bare end as the
+			-- station's own.
+			local bv = boundingBox(entity)
+			if station ~= nil and bv ~= nil then
+				station.box = { minX = bv.bbox.min.x, minY = bv.bbox.min.y, maxX = bv.bbox.max.x, maxY = bv.bbox.max.y }
+			end
+			return station, why
 		end)
 		if not okS then
 			logOnce("existing" .. tostring(entity), ("existing station %d in %s: %s"):format(entity, tostring(town.name),
@@ -740,8 +747,10 @@ function survey.existingStations(town : Town, reach : number) : {Station}
 		elseif station ~= nil then
 			local s = station as Station
 			table.insert(result, s)
-			debugPrint(LOG_PREFIX .. ("existing station %d in %s: %d ends, centre (%.1f %.1f), dir (%.3f %.3f), half %.1f")
-				:format(entity, tostring(town.name), #s.ends, s.centre.x, s.centre.y, s.dir.x, s.dir.y, s.half))
+			local box = s.box ~= nil and ("box (%.1f %.1f)-(%.1f %.1f)"):format(s.box.minX, s.box.minY, s.box.maxX,
+				s.box.maxY) or "no box"
+			debugPrint(LOG_PREFIX .. ("existing station %d in %s: %d ends, centre (%.1f %.1f), dir (%.3f %.3f), half %.1f, %s")
+				:format(entity, tostring(town.name), #s.ends, s.centre.x, s.centre.y, s.dir.x, s.dir.y, s.half, box))
 		elseif why ~= nil then
 			logOnce("existing" .. tostring(entity), ("existing station %d in %s left out: %s"):format(entity,
 				tostring(town.name), tostring(why)))

@@ -786,6 +786,11 @@ local ISLAND_EASE = 70.0
 local BARE_FAN_DEFAULT = 55.0
 local MIN_TURNOUT = 40.0
 
+function network.bareApproach(fan : number) : {string : number}
+	return { direct = CROSSOVER_STRAIGHT, island = ISLAND_EASE + CROSSOVER_STRAIGHT,
+		fan = network.fanLength(fan or BARE_FAN_DEFAULT) + CROSSOVER_STRAIGHT }
+end
+
 -- The bare end a leg leaving an existing station (forward = true), or arriving at it, uses; nil at a station of ours
 -- or a junction end.
 local function bareOf(station : PgraceRailRouterRoute.Station, forward : boolean) : PgraceRailRouterExisting.Bare
@@ -825,8 +830,8 @@ end
 -- The turnout length of the fan at a leg's end (nil: none). At a station of ours, Halt 2+2's (options.fan). At a bare
 -- end with 4 tracks, whatever the style: options.fan, else options.bareFan, else BARE_FAN_DEFAULT, shortened in 5 m
 -- steps to keep the merge on the leg's straight there (`piece`, its first or last: the planner gives a bare end
--- Input.approach of straight, only 100 m in the simple style), and none where not even MIN_TURNOUT fits (the
--- station's outer tracks are then left unjoined). None at any other bare end.
+-- the straight network.bareApproach asks for, where the window passes it as Input.bareApproach), and none where not
+-- even MIN_TURNOUT fits (the station's outer tracks are then left unjoined). None at any other bare end.
 local function fanAt(b : PgraceRailRouterExisting.Bare, piece : Piece, options : Options) : number
 	if b == nil then
 		return options.fan

@@ -1383,3 +1383,91 @@ t.test("route: an existing station with a bare end at the end of the line", func
 	t.near(legEnd(plan.legs[1]).x, 2880, 1e-6, "x")
 	t.near(plan.legs[1].z[#plan.legs[1].z], 2, 1e-9, "z")
 end)
+
+-- The survey blocks every construction's box, and BUILDING_BUFFER round it, the existing station's own included: a
+-- modular station's box runs about 10 m past its platform ends (and `width` either side of its axis here). Records
+-- the box on the station, as the survey does, and marks its platforms' track as track cells.
+local area = t.requireTl("gui/pgrace_rail_router/planner/area.tl")
+local function surveyed(station, snap, width)
+	local g = markTrack(flatGrid(), station, snap)
+	local c, h = station.centre, station.half + 10
+	station.box = { minX = c.x - h, minY = c.y - width, maxX = c.x + h, maxY = c.y + width }
+	local b = area.BUILDING_BUFFER
+	area.markBox(g, station.box.minX - b, station.box.minY - b, station.box.maxX + b, station.box.maxY + b, g.blocked)
+	return g
+end
+
+-- The leg's bridges within `reach` metres of its ends.
+local function endBridges(leg, reach)
+	local found = {}
+	for __, span in ipairs(leg.spans) do
+		if span.kind == "bridge" and (span.s0 < reach or span.s1 > leg.length - reach) then
+			found[#found + 1] = ("%.0f-%.0f"):format(span.s0, span.s1)
+		end
+	end
+	return table.concat(found, " ")
+end
+
+for __, case in ipairs({ { "direct", { 2.5, -2.5 } }, { "island", { 5, -5 } }, { "fan", { 7.5, 2.5, -2.5, -7.5 } } }) do
+	t.test("route: an existing station blocked by its own box, as surveyed, is joined at its bare ends, " .. case[1],
+			function()
+		local station, snap = bareStation(3000, 120, case[2], 0)
+		local g = surveyed(station, snap, 40)
+		local plan = runExisting(AXC, 2, station, snap, { grid = g })
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		t.eq(plan.notes[1], nil, "no note")
+		t.ok(plan.stations[2].existing == station, "B uses the existing station")
+		t.eq(plan.summary.blockedSamples, 0, "no samples on blocked cells")
+		t.eq(endBridges(plan.legs[1], 300), "", "no bridge at the leg in's ends")
+		t.eq(endBridges(plan.legs[2], 300), "", "no bridge at the leg out's ends")
+		t.eq(plan.summary.bridges, 0, "no bridges on flat ground")
+	end)
+end
+
+t.test("route: a building beside an existing station's bare end still blocks its approach", function()
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 0)
+	local g = surveyed(station, snap, 40)
+	-- Something else 60–80 m past the +x platform end, on the axis.
+	area.markBox(g, 3180, -10, 3200, 10, g.blocked)
+	local ix, iy = grid.cellOf(g, { x = 3250, y = 0 })
+	g.blocked[grid.index(g, ix, iy)] = true
+	local plan = runExisting(AXC, 2, station, snap, { grid = g })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(plan.stations[2].existing, nil, "a new station")
+	t.eq(#plan.notes, 1, "one note")
+	-- The approach reaches past the station's own cells (to the cell boundary 130 m out, within a step).
+	t.ok(plan.notes[1]:find("^The station in B has no room for the line's approach past its C end %(1[34]%d m of "
+		.. "straight track%); a new station was planned%.$") ~= nil, "note: " .. plan.notes[1])
+end)
+
+-- A bare end's straight is sized by its kind (Input.bareApproach, as the window passes it): in the simple style
+-- (Input.approach 100 m) an island end needs its S-curves and a fan end its fan before the crossovers.
+local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+for __, case in ipairs({ { "direct", { 2.5, -2.5 } }, { "island", { 5, -5 } }, { "fan", { 7.5, 2.5, -2.5, -7.5 } } }) do
+	t.test("route: a bare " .. case[1] .. " end's straight has room for its crossovers, in the simple style", function()
+		local station, snap = bareStation(3000, 120, case[2], 0)
+		local need = network.bareApproach(55)
+		-- Neighbours well off the axis, so the legs turn as soon as they may.
+		local stops = { town(1, "A", 1500, -1300), town(2, "B", 3000, 0), town(3, "C", 4500, 1300) }
+		local plan = runExisting(stops, 2, station, snap, { bareApproach = need })
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		t.ok(plan.stations[2].existing == station, "existing")
+		local inLast, outFirst = plan.legs[1].pieces[#plan.legs[1].pieces], plan.legs[2].pieces[1]
+		t.eq(inLast.kind, "straight", "leg in arrives straight")
+		t.ok(inLast.length >= need[case[1]] - 1e-6, ("leg in's last straight %.1f m"):format(inLast.length))
+		t.eq(outFirst.kind, "straight", "leg out leaves straight")
+		t.ok(outFirst.length >= need[case[1]] - 1e-6, ("leg out's first straight %.1f m"):format(outFirst.length))
+		local o = network.defaults()
+		o.bareFan = 55
+		local net = network.build(plan, o)
+		for li = 1, 2 do
+			local n = 0
+			for __, e in ipairs(net.edges) do
+				if e.track == 0 and e.leg == li then
+					n = n + 1
+				end
+			end
+			t.eq(n, 4, "leg " .. li .. ": a pair of crossovers at each end")
+		end
+	end)
+end

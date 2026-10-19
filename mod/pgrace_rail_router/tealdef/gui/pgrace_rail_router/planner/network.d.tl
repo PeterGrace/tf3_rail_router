@@ -160,6 +160,10 @@ global record PgraceRailRouterNetwork
 	turnoutLength : function(radius : number) : number
 	-- How far a fan reaches from the platforms for a turnout length: 20 + L + 30.
 	fanLength : function(l : number) : number
+	-- The straight an existing station's bare end needs beyond its nodes, by kind (route Input.bareApproach), for
+	-- the crossovers (100 m) after what comes first: "direct" nothing, "island" its 70 m S-curves, "fan" its fan
+	-- (fanLength of turnout length `fan`, as options.fan or options.bareFan give it; nil: simple track's 55 m).
+	bareApproach : function(fan : number) : {string : number}
 	-- The whole plan's network. Where a leg starts or ends at an existing station (route.Station.existing), that end
 	-- has no fan and no crossovers: its junction's pieces (track 4) run from the cuts in the existing track (nodes
 	-- with `existing`; the crossing node shared by the two crossing pieces) to our two tracks, and a straight on each
