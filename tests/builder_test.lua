@@ -77,3 +77,21 @@ t.test("builder: junctions are counted per leg end", function()
 	t.eq(builder.junctionCount(net, 4, 6), 1, "at the end")
 	t.eq(builder.junctionCount(net, 3, 5), 0, "none")
 end)
+
+t.test("builder: the check leaves out a junction's pieces and edges ending on their cuts", function()
+	local nodes = { {}, {}, { existing = { piece = 10, s = 0.4 } }, {}, {} }
+	local function edge(a, b, whole)
+		return { node0 = a, node1 = b, whole = whole, leg = 1 }
+	end
+	local net = { nodes = nodes, chunks = {}, edges = { edge(1, 2), edge(2, 4), edge(3, 4, true), edge(3, 5), edge(5, 1) } }
+	local sub, whole, touching = builder.checkedEdges(net, 1, 5)
+	t.eq(whole, 1, "the junction piece")
+	t.eq(touching, 1, "the edge on its cut")
+	t.eq(#sub.edges, 3, "the rest")
+	t.eq(sub.edges[3], net.edges[5], "in order")
+	t.eq(sub.nodes, nodes, "net's own nodes")
+	t.eq(sub.chunks[1].last, 3, "one chunk over them")
+	local sub2, w2 = builder.checkedEdges(net, 1, 2)
+	t.eq(#sub2.edges, 2, "a chunk with no junction keeps every edge")
+	t.eq(w2, 0, "nothing left out")
+end)

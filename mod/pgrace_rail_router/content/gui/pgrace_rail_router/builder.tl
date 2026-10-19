@@ -360,6 +360,23 @@ function builder.junctionHits(collisions : {Collision}, splits : {PgraceRailRout
 	return #collisions > 0 and #rest == 0, rest
 end
 
+function builder.checkedEdges(net : Network, first : integer, last : integer) : Network, integer, integer
+	local sub : Network = { nodes = net.nodes, edges = {}, chunks = {} }
+	local whole, touching = 0, 0
+	for i = first, last do
+		local e = net.edges[i]
+		if e.whole then
+			whole = whole + 1
+		elseif net.nodes[e.node0].existing ~= nil or net.nodes[e.node1].existing ~= nil then
+			touching = touching + 1
+		else
+			table.insert(sub.edges, e)
+		end
+	end
+	table.insert(sub.chunks, { first = 1, last = #sub.edges, leg = net.edges[first].leg, length = 0 })
+	return sub, whole, touching
+end
+
 function builder.junctionCount(net : Network, first : integer, last : integer) : integer
 	-- A junction's pieces lie before the leg's start (s below 0) or past its end.
 	local atStart, atEnd = false, false
@@ -827,6 +844,18 @@ function builder.step(check : Check) : boolean
 			end
 		end
 	end
+	-- A junction's pieces (`whole`) lie over existing track they don't share a node with until it is split, and the game
+	-- refuses that as "Construction Not Possible" (P15: never "Collision"), so the check leaves them out, and any other
+	-- edge that ends on one of their cuts; the build dry-runs the whole chunk after the splits.
+	local sub : PgraceRailRouterNetwork.Network = check.net
+	local leftWhole, leftTouching = 0, 0
+	if chunk ~= nil then
+		sub, leftWhole, leftTouching = builder.checkedEdges(check.net, chunk.first, chunk.last)
+		if leftWhole + leftTouching > 0 then
+			debugPrint(LOG_PREFIX .. ("dry run chunk %d: junction pieces not dry-run before the split (%d left out, and %d other edges ending on their cuts)")
+				:format(item.index, leftWhole, leftTouching))
+		end
+	end
 	local made, proposal, why = pcall(function() : SimpleProposal, string
 		if item.kind == "station" then
 			local c = check.plan.stations[item.index].site.centre
@@ -838,7 +867,10 @@ function builder.step(check : Check) : boolean
 		if problem ~= nil then
 			return nil, problem
 		end
-		return builder.chunkProposal(check.net, chunk.first, chunk.last, check.settings)
+		if #sub.edges == 0 then
+			return nil, nil
+		end
+		return builder.chunkProposal(sub, 1, #sub.edges, check.settings)
 	end)
 	local ok, cost, messages, us = false, 0, {} as {string}, 0
 	local collisions : {Collision} = {}
@@ -849,6 +881,9 @@ function builder.step(check : Check) : boolean
 	end
 	if not made then
 		messages = { "couldn't make the proposal: " .. tostring(proposal) }
+	elseif proposal == nil and why == nil and problem == nil and chunk ~= nil then
+		-- Nothing left to dry-run: the chunk is only a junction's pieces.
+		ok = true
 	elseif proposal == nil then
 		messages = { tostring(why) }
 	else
@@ -886,7 +921,7 @@ function builder.step(check : Check) : boolean
 		end
 		if not ok and item.kind == "chunk" and check.settings.levelCrossings and #rest > 0 then
 			crossings = builder.levelCrossings(messages, rest, function(street : integer) : boolean
-				local okLevel, level = pcall(builder.crossesOnLevel, check.net, chunk.first, chunk.last, street)
+				local okLevel, level = pcall(builder.crossesOnLevel, sub, 1, #sub.edges, street)
 				return okLevel and level as boolean
 			end)
 			local others = 0
@@ -925,7 +960,8 @@ function builder.step(check : Check) : boolean
 	end
 	debugPrint(LOG_PREFIX .. ("dry run %s %d%s: %s, cost %d, %d us%s%s"):format(item.kind, item.index, extra,
 		ok and (crossings > 0 and ("clean but for %d level crossings"):format(crossings)
-			or (#splits > 0 and #collisions > 0) and "clean but for the junction's existing track" or "clean") or "errors", cost,
+			or (#splits > 0 and #collisions > 0) and "clean but for the junction's existing track"
+			or leftWhole > 0 and "clean but for the junction's pieces (not dry-run)" or "clean") or "errors", cost,
 		us, #messages > 0 and (": " .. table.concat(messages, "; ")) or "",
 		#hits > 0 and ("; collided with " .. table.concat(hits, ", ")) or ""))
 	if check.done then

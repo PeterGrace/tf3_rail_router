@@ -43,9 +43,10 @@ global record PgraceRailRouterBuilder
 		-- level crossing splits the street (milestone 3). An outcome whose only errors are these is ok; one with other
 		-- collisions too still counts them.
 		crossings : integer
-		-- Junctions into an existing station's track (milestone 4b) the chunk makes, one per junction end. Before
-		-- the existing pieces are split, the dry run collides with them (and their nodes): an outcome whose only
-		-- collisions are these (and level crossings) is ok.
+		-- Junctions into an existing station's track (milestone 4b) the chunk makes, one per junction end. The check
+		-- can't dry-run a junction's pieces before the existing track is split (builder.checkedEdges leaves them out),
+		-- so their own refusal only shows at build time; collisions of the rest with the pieces to split (and their
+		-- nodes) are junction joints, and an outcome whose only collisions are these (and level crossings) is ok.
 		junctions : integer
 	end
 
@@ -126,6 +127,12 @@ global record PgraceRailRouterBuilder
 	-- joints, not errors. Also returns the collisions that aren't (for the level-crossing count). Pure.
 	junctionHits : function(collisions : {Collision}, splits : {PgraceRailRouterNetwork.Split}, nodes ?: {integer})
 		: boolean, {Collision}
+	-- Edges first..last of net that the check dry-runs, as a network of their own (net's nodes, one chunk): all but a
+	-- junction's pieces (`whole`: they lie over existing track not yet split, which the game refuses as "Construction
+	-- Not Possible") and any other edge ending on one of their cuts (a node with `existing`). Also returns how many of
+	-- each were left out. Pure.
+	checkedEdges : function(net : PgraceRailRouterNetwork.Network, first : integer, last : integer)
+		: PgraceRailRouterNetwork.Network, integer, integer
 	-- How many junctions edges first..last make: one at the leg's start if any junction piece (`whole`) lies before it
 	-- (s below 0), one at its end if any lies past it. Pure.
 	junctionCount : function(net : PgraceRailRouterNetwork.Network, first : integer, last : integer) : integer

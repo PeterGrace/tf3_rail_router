@@ -173,9 +173,12 @@ The level-crossing point becomes a node where four pieces meet.
 
 **Then the chunk**, joined to those nodes, is dry-run and sent. Our home signals are part of the chunk.
 
-**The check** dry-runs the junction chunk before any split. Collisions only with the existing pieces at the planned
-cut points count as junction joints, not errors, as level crossings are counted today. Anything else stays an
-error.
+**The check** dry-runs the junction chunk before any split, **without its junction pieces**: a new piece lying over
+existing track it shares no node with is refused as "Construction Not Possible" (P15), so they can't be dry-run until
+the track is split. Any other edge ending on a cut is left out too. Collisions of the rest only with the existing
+pieces to be split count as junction joints, not errors, as level crossings are counted today. Anything else stays an
+error. So the check can't see a junction's own refusal: that only shows at build time, when the whole chunk is
+dry-run after the splits.
 
 **A failure** stops the build with Show and "Retry from here", as now. A split already made is harmless: it leaves
 extra nodes on the existing track.

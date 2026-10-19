@@ -688,6 +688,13 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
     `getNodeTrackSegments` on the next step) sent again unedited before the next split; after a junction chunk is
     built, the existing nodes its `whole` pieces join (switches, crossing) are queued the same way, as P15 did.
   - A chunk's `problem` fails the check (no dry run) and the build (before any split).
+  - **The check can't see the junction pieces** (fix after review): a new piece over existing track it shares no node
+    with is refused as "Construction Not Possible" (P15, never "Collision"), so before the split a junction chunk's
+    dry run would always fail. `builder.checkedEdges(net, first, last)` (pure, tested) leaves out the `whole` pieces
+    and any other edge ending on a cut node (`existing`); the check dry-runs the rest, logs "junction pieces not
+    dry-run before the split", still counts `junctions`, and keeps `junctionHits` for what the rest reports against
+    the pieces to split. A junction's own refusal only shows at build time, when the whole chunk is dry-run after the
+    splits; it then fails with Show / "Retry from here" (the splits stay, harmless).
 
 ### Task 9: The window
 
