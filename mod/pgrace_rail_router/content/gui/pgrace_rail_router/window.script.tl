@@ -455,8 +455,10 @@ local function toInteger(value : integer | number | string) : integer
 	return math.floor(n)
 end
 
-local function labelled(label : string, widget : TreeNodeId) : TreeNodeId
+-- key: a fixed localKey, so rows coming and going above it don't remount it (nil: none).
+local function labelled(label : string, widget : TreeNodeId, key ?: string) : TreeNodeId
 	return builtin.BoxLayout{
+		meta = { localKey = key },
 		orientation = builtin.type.Orientation.Horizontal,
 		children = {
 			builtin.TextView{ meta = { class = "font-scale-body" }, text = label },
@@ -559,7 +561,7 @@ local function resultRows(plan : Plan, priceFactor : number) : {TreeNodeId}
 	end
 	local junctions = plannedJunctions(plan)
 	if junctions > 0 then
-		table.insert(rows, textRow(fill(_("Junctions: {count}"), { count = tostring(junctions) }), "font-scale-body"))
+		table.insert(rows, textRow(fill(_("Junctions: {count}"), { count = tostring(junctions) }), "font-scale-annotation"))
 	end
 	return rows
 end
@@ -822,6 +824,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		local id = town.id
 		return builtin.BoxLayout{
+			meta = { localKey = "existing:" .. tostring(id) },
 			orientation = builtin.type.Orientation.Horizontal,
 			children = {
 				builtin.TextView{ meta = { class = "font-scale-body" }, text = "\194\160\194\160\194\160\194\160" },
@@ -1187,10 +1190,6 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			local view = current.phase .. ":" .. tostring(done)
 			if buildViewState:old() ~= view then
 				buildViewState:set(view)
-				-- The build may have made a station in a stop town: look again.
-				if current.phase == "done" then
-					existingCacheRef:set({})
-				end
 			end
 		end
 		if joinQueuedRef:get() then
@@ -1205,6 +1204,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 					return
 				end
 				build.step(b)
+				-- The build may have made a station in a stop town: look again.
+				if b.phase == "done" then
+					existingCacheRef:set({})
+				end
 				local done = build.progress(b)
 				local view = b.phase .. ":" .. tostring(done)
 				if buildViewState:old() ~= view then
@@ -1334,11 +1337,11 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- Combo values must match an item: a remembered town that isn't on this map shows "Choose a town".
 	table.insert(body, labelled(_("From"), townCombo(data.towns, fromTown ~= nil and fromTown.id or -1, function(id : integer)
 		update(function(s : Settings) s.from = id s.ticked = {} end)
-	end)))
+	end), "from"))
 	addExistingRow(body, fromTown)
 	table.insert(body, labelled(_("To"), townCombo(data.towns, toTown ~= nil and toTown.id or -1, function(id : integer)
 		update(function(s : Settings) s.to = id s.ticked = {} end)
-	end)))
+	end), "to"))
 	addExistingRow(body, toTown)
 	table.insert(body, labelled(_("Mode"), builtin.ComboBox{
 		value = settings.mode,
