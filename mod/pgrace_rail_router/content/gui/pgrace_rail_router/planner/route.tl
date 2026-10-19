@@ -1875,7 +1875,11 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			if site ~= nil then
 				local turned : Station = { town = station.town, site = site, z = station.z }
 				for __, forward in ipairs({ true, false }) do
-					local other = forward and next or prev
+					-- Not `forward and next or prev`: at the last station (next nil) that gives prev.
+					local other = prev
+					if forward then
+						other = next
+					end
 					if other ~= nil then
 						roomy = roomy and turnRoom(input, turned, forward, others, other)
 							>= turnRoom(input, station, forward, others, other) - 1e-6
