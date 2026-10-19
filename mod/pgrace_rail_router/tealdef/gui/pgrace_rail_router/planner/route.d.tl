@@ -35,21 +35,28 @@ global record PgraceRailRouterRoute
 		-- Ground height at the station's centre (an existing station: its used ends' stretches' heights, averaged).
 		z : number
 		-- An existing station the line joins instead of a station of ours (nil: ours). Its site is its own centre
-		-- (distance from the town's centre as for ours), facing the way the line runs through it. The line joins it
-		-- at a junction on each end it uses (by end, ±1, as existing.Result's): the end's stretch (ends), the junction
-		-- fitted to it (junctions) and the side of outward our line comes from (sides: +1 left, −1 right). endOf maps
-		-- the leg leaving (true) and the leg arriving (false) to their ends. Such a station is never turned or
-		-- re-sited, its footprint is its track along the stretches used (see route.tl's addFootprint), and its
-		-- platforms aren't counted in the summary's length.
+		-- (distance from the town's centre as for ours), facing the way the line runs through it. On each end it
+		-- uses (by end, ±1, as existing.Result's) the line joins it either at a junction, where track leads on: the
+		-- end's stretch (ends) and the junction fitted to it (junctions); or, at a bare end (bare: nothing attached,
+		-- see existing.bareEnd), on its free track end nodes directly, as at a station of ours: the leg's end is then
+		-- its platform end (centre + out × existing.half, at bare.mid's height), with Input.approach and room to turn
+		-- beyond it along the axis. The two ends may differ. sides: the side of outward our line comes from (+1
+		-- left, −1 right), for every end used. endOf maps the leg leaving (true) and the leg arriving (false) to their
+		-- ends. Such a station is never turned or re-sited, the planner spaces things beside it by its own half
+		-- (existing.half, not the window's platform length), its footprint is its track along the stretches used and
+		-- its platforms and bare ends' approaches (see route.tl's addFootprint), and its platforms aren't counted in
+		-- the summary's length.
 		existing : PgraceRailRouterExisting.Station
 		ends : {integer : PgraceRailRouterExisting.End}
 		junctions : {integer : PgraceRailRouterJunction.Layout}
+		bare : {integer : PgraceRailRouterExisting.Bare}
 		sides : {integer : number}
 		endOf : {boolean : integer}
 	end
 
-	-- From one station's platform end to the next one's (at an existing station, its junction's approach start, 10 m
-	-- off the existing axis, and the approach and room to turn run along that axis): a straight approach of 100 m at
+	-- From one station's platform end to the next one's (at an existing station's junction, its approach start, 10 m
+	-- off the existing axis, and the approach and room to turn run along that axis; at its bare end, its platform end
+	-- by its own half): a straight approach of 100 m at
 	-- each end, then room for the
 	-- search's first turn at full radius before the searched path: 45° where the search turns freely, one 22.5° step
 	-- where it spaces its turns (less where buildings or the grid edge are in the way, which may leave a curve tighter
@@ -58,7 +65,7 @@ global record PgraceRailRouterRoute
 		pieces : {PgraceRailRouterSmooth.Piece}
 		samples : {PgraceRailRouterSmooth.Sample}
 		-- Track height at each sample; the first and last are the two stations' heights (an existing station's: the
-		-- existing track's at the junction's approach start).
+		-- existing track's at the junction's approach start, or at a bare end its end nodes' mean).
 		z : {number}
 		-- Ground, bridges and tunnels. Existing track (and roads, when weights.bridgeRoads) is crossed by a bridge
 		-- with at least 9 m of clearance.

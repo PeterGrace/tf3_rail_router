@@ -74,4 +74,23 @@ global record PgraceRailRouterExisting
 	-- stretch past a siding, branch or another line's switch stops the scan too.
 	-- `side[k]`: which side of end k our line comes from (+1 left of outward, −1 right; nil +1).
 	analyse : function(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
+
+	-- A bare end: one whose track end nodes are all free (only the station's own piece on each, degree 1), so the
+	-- line joins them directly, as it joins a station of ours. kind, by the nodes' offsets across the axis from their
+	-- midpoint (within 0.5 m): "direct" (2 tracks 5 m apart: our two tracks end on them), "island" (2 tracks 10 m
+	-- apart: each of ours eases out 2.5 m to its own), "fan" (4 tracks at ±2.5 and ±7.5 m: our two end on the inner
+	-- two, and the outer two merge into ours as Halt 2+2's fan does), or "other" (anything else: not joined). nodes:
+	-- the end nodes (each with its entity, at its piece's end, height included), left to right looking outward
+	-- (nodes[1] the leftmost); mid: their mean (height included); out: the unit outward direction (station.dir × k).
+	record Bare
+		kind : string
+		nodes : {PgraceRailRouterNetwork.Pt3}
+		mid : PgraceRailRouterNetwork.Pt3
+		out : PgraceRailRouterGeo.Pt
+	end
+
+	-- End k (+1 at +dir, −1 at −dir) of the station, if bare: its end nodes on that side of the centre (positions from
+	-- the snapshot's pieces; nodes it has no piece at are left out). nil and nil where none is free (track leads on:
+	-- a junction end), nil and "mixed" where some are free and some not.
+	bareEnd : function(station : Station, snap : Snapshot, k : integer) : Bare, string
 end

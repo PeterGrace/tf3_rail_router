@@ -508,4 +508,73 @@ function existing.analyse(station : Station, snap : Snapshot, side : {integer : 
 	return result
 end
 
+-- How far a bare end's nodes may be off the offsets of a layout the line joins (metres).
+local BARE_TOLERANCE = 0.5
+
+-- Which layout a bare end's offsets across its axis (descending: left to right) fit, else "other".
+local function bareKind(v : {number}) : string
+	local function fits(want : {number}) : boolean
+		if #v ~= #want then
+			return false
+		end
+		for i, w in ipairs(want) do
+			if math.abs(v[i] - w) > BARE_TOLERANCE then
+				return false
+			end
+		end
+		return true
+	end
+	if fits({ 2.5, -2.5 }) then
+		return "direct"
+	elseif fits({ 5, -5 }) then
+		return "island"
+	elseif fits({ 7.5, 2.5, -2.5, -7.5 }) then
+		return "fan"
+	end
+	return "other"
+end
+
+function existing.bareEnd(station : Station, snap : Snapshot, k : integer) : PgraceRailRouterExisting.Bare, string
+	local len = math.sqrt(station.dir.x * station.dir.x + station.dir.y * station.dir.y)
+	local ox, oy = k * station.dir.x / len, k * station.dir.y / len
+	local at : {integer : PgraceRailRouterNetwork.Pt3} = {}
+	for __, p in ipairs(snap.pieces) do
+		at[p.node0] = at[p.node0] or p.p0
+		at[p.node1] = at[p.node1] or p.p1
+	end
+	local nodes : {PgraceRailRouterNetwork.Pt3} = {}
+	local held = 0
+	for __, n in ipairs(station.ends) do
+		local p = at[n]
+		if p ~= nil and (p.x - station.centre.x) * ox + (p.y - station.centre.y) * oy > 0 then
+			if snap.degree[n] == 1 then
+				table.insert(nodes, { x = p.x, y = p.y, z = p.z, entity = n })
+			else
+				held = held + 1
+			end
+		end
+	end
+	if #nodes == 0 then
+		return nil, nil
+	elseif held > 0 then
+		return nil, "mixed"
+	end
+	local mid : PgraceRailRouterNetwork.Pt3 = { x = 0, y = 0, z = 0 }
+	for __, p in ipairs(nodes) do
+		mid.x, mid.y, mid.z = mid.x + p.x / #nodes, mid.y + p.y / #nodes, mid.z + p.z / #nodes
+	end
+	-- Across: positive to the left of outward.
+	local function across(p : PgraceRailRouterNetwork.Pt3) : number
+		return (p.y - mid.y) * ox - (p.x - mid.x) * oy
+	end
+	table.sort(nodes, function(a : PgraceRailRouterNetwork.Pt3, b : PgraceRailRouterNetwork.Pt3) : boolean
+		return across(a) > across(b)
+	end)
+	local v : {number} = {}
+	for i, p in ipairs(nodes) do
+		v[i] = across(p)
+	end
+	return { kind = bareKind(v), nodes = nodes, mid = mid, out = { x = ox, y = oy } }, nil
+end
+
 return existing

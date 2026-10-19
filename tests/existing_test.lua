@@ -447,3 +447,61 @@ t.test("existing: station end nodes a little behind the platform end still lead 
 	t.near(r.ends[1].origin.x, 77, 1e-9, "starts at the end nodes, frame x = −3")
 	t.near(r.ends[1].length, 923, 1e-9, "to the track's end")
 end)
+
+-- Bare ends (existing.bareEnd).
+
+-- A 2-track station at (0, 0) facing +x, half 80, its own pieces between end nodes at y = ±2.5.
+local function plainStation(b)
+	b.piece(-80, 2.5, 80, 2.5)
+	b.piece(-80, -2.5, 80, -2.5)
+	return { entity = 1, centre = { x = 0, y = 0 }, dir = { x = 1, y = 0 }, half = 80,
+		ends = { b.node(80, 2.5), b.node(80, -2.5), b.node(-80, 2.5), b.node(-80, -2.5) } }
+end
+
+t.test("existing: a station's free track ends are a bare end, its nodes left to right looking out", function()
+	local b = builder()
+	local station = plainStation(b)
+	local snap = b.snapshot()
+	for __, case in ipairs({ { 1, 2.5, 80 }, { -1, -2.5, -80 } }) do
+		local k = case[1]
+		local bare, why = existing.bareEnd(station, snap, k)
+		t.eq(why, nil, "no why")
+		t.eq(bare.kind, "direct", "kind")
+		t.eq(#bare.nodes, 2, "two nodes")
+		t.near(bare.nodes[1].y, case[2], 1e-9, "the left one first")
+		t.eq(bare.nodes[1].entity, b.node(case[3], case[2]), "its entity")
+		t.near(bare.mid.x, case[3], 1e-9, "mid x")
+		t.near(bare.mid.y, 0, 1e-9, "mid y")
+		t.near(bare.out.x, k, 1e-9, "outward")
+	end
+end)
+
+t.test("existing: an end whose tracks lead on isn't bare; one with some leading on is mixed", function()
+	local b = builder()
+	local station = plainStation(b)
+	b.piece(80, 2.5, 180, 2.5)
+	b.piece(80, -2.5, 180, -2.5)
+	b.piece(-80, 2.5, -180, 2.5)
+	local snap = b.snapshot()
+	local bare, why = existing.bareEnd(station, snap, 1)
+	t.eq(bare, nil, "+x: not bare")
+	t.eq(why, nil, "+x: no why")
+	bare, why = existing.bareEnd(station, snap, -1)
+	t.eq(bare, nil, "−x: not bare")
+	t.eq(why, "mixed", "−x: mixed")
+end)
+
+t.test("existing: a bare end's kind follows its tracks' offsets, within 0.5 m", function()
+	for __, case in ipairs({ { { 2.9, -2.4 }, "direct" }, { { 4.6, -5.3 }, "island" }, { { 2.5, -4 }, "other" },
+			{ { 7.5, 2.5, -2.5, -7.5 }, "fan" }, { { 7.5, 2.5, -2.5 }, "other" }, { { 2.5 }, "other" } }) do
+		local b = builder()
+		local ends = {}
+		for __, y in ipairs(case[1]) do
+			b.piece(-80, y, 80, y)
+			ends[#ends + 1] = b.node(80, y)
+		end
+		local station = { entity = 1, centre = { x = 0, y = 0 }, dir = { x = 1, y = 0 }, half = 80, ends = ends }
+		local bare = existing.bareEnd(station, b.snapshot(), 1)
+		t.eq(bare.kind, case[2], table.concat(case[1], ", "))
+	end
+end)
