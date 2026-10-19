@@ -58,10 +58,17 @@ function midline.fromPoints(pts : {Pt3}, step : number) : Frame
 	local dirs : {Pt} = {}
 	local grades : {number} = {}
 	for i = 2, n - 1 do
-		local a, b = out[i - 1], out[i + 1]
-		dirs[i] = unit(b.x - a.x, b.y - a.y)
-		local l = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
-		grades[i] = l > 1e-12 and (b.z - a.z) / l or 0
+		local a, c, b = out[i - 1], out[i], out[i + 1]
+		-- The last step may be shorter, so the central difference weights each side by the other's squared length
+		-- (the plain one when they are equal).
+		local h1 = (c.x - a.x) ^ 2 + (c.y - a.y) ^ 2
+		local h2 = (b.x - c.x) ^ 2 + (b.y - c.y) ^ 2
+		local tx = h2 * (c.x - a.x) + h1 * (b.x - c.x)
+		local ty = h2 * (c.y - a.y) + h1 * (b.y - c.y)
+		local tz = h2 * (c.z - a.z) + h1 * (b.z - c.z)
+		dirs[i] = unit(tx, ty)
+		local l = math.sqrt(tx * tx + ty * ty)
+		grades[i] = l > 1e-12 and tz / l or 0
 	end
 	-- An end sample has one neighbour only, and its chord is half a step off the tangent on a curve. Reflecting the
 	-- neighbour's central direction about the chord gives the end tangent (exact on a circle, the chord on a
@@ -164,11 +171,14 @@ function midline.project(f : Frame, p : Pt) : number, number
 		local d = rx * dir.x + ry * dir.y
 		if (e == 1 and d <= 0) or (e == n and d >= 0) then
 			local off = dir.x * ry - dir.y * rx
-			-- Taken outright: the polyline's chords cut inside the true curve and would win by a hair, with an x off by
-			-- the offset times the chord's angle to the end tangent.
-			bestD = off * off
-			bestX = e == 1 and d or f.length + d
-			bestY = off
+			-- Taken when nearly as close as the best chord (chords cut inside a curve by only step² / 8r, and would win
+			-- by a hair, with an x off by the offset times the chord's angle to the end tangent), but not when a
+			-- hairpin has brought the point round to the far side of it.
+			if off * off <= bestD + 0.25 then
+				bestD = off * off
+				bestX = e == 1 and d or f.length + d
+				bestY = off
+			end
 		end
 	end
 	return bestX, bestY

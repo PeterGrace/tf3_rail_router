@@ -117,3 +117,21 @@ t.test("midline: straightUntil from before the start, and past the end", functio
 	t.ok(u >= 0 and u < 2.5, "turns at once after 0: " .. u)
 	t.near(midline.straightUntil(f, f.length + 10, 0.005), f.length + 10, 1e-9, "past the end")
 end)
+
+t.test("midline: project round trips near the start of a hairpin", function()
+	local f = midline.fromPoints(arc(100, 330, 0, 0.01), midline.STEP)
+	for __, c in ipairs({ { 2, 0 }, { -5, 3 } }) do
+		local q = midline.world(f, c[1], c[2])
+		local px, py = midline.project(f, q)
+		t.near(px, c[1], 0.01, "x at " .. c[1]) t.near(py, c[2], 0.01, "y at " .. c[1])
+	end
+end)
+
+t.test("midline: a short last step leaves the end direction right", function()
+	local r = 220
+	local f = midline.fromPoints(arc(r, 201, 0, 0), midline.STEP)
+	local a = 201 / r
+	local d = f.dirs[#f.dirs]
+	t.near(d.x, math.cos(a), 0.002, "end x") t.near(d.y, math.sin(a), 0.002, "end y")
+	t.near(f.length, 201, 0.1, "length")
+end)
