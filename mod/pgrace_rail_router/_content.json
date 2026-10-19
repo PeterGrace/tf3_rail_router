@@ -23,6 +23,8 @@
         "gui/pgrace_rail_router/planner/grid.tl",
         "gui/pgrace_rail_router/planner/junction.d.tl",
         "gui/pgrace_rail_router/planner/junction.tl",
+        "gui/pgrace_rail_router/planner/midline.d.tl",
+        "gui/pgrace_rail_router/planner/midline.tl",
         "gui/pgrace_rail_router/planner/modes.d.tl",
         "gui/pgrace_rail_router/planner/modes.tl",
         "gui/pgrace_rail_router/planner/network.d.tl",
