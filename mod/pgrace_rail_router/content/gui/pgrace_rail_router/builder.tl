@@ -1,5 +1,6 @@
 local network = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/network.tl" as PgraceRailRouterNetwork
 local sl = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/stationlayout.tl" as PgraceRailRouterStationLayout
+local survey = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/survey.tl" as PgraceRailRouterSurvey
 
 local builder : PgraceRailRouterBuilder = {}
 
@@ -150,8 +151,9 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 		-- The distance between parallel tracks, as the game's own track carries it (probe P1: 5 on a double track the
 		-- player built; left at 0, the game took the two tracks for one in their parallel strip, and drew overhead wire
 		-- over one of them only).
-		-- A crossover (track 0) or a fan's piece (3) isn't one of a pair: left at 0.
-		if e.track == 1 or e.track == 2 then
+		-- A crossover (track 0), a fan's piece (3) or a junction's (4) isn't one of a pair: left at 0; a junction's
+		-- outer straights are (paired).
+		if e.track == 1 or e.track == 2 or e.paired then
 			seg.comp.distance = 2 * settings.network.offset
 		end
 		-- Owned by the player, as the game's own track is (P1: ours had no owner). The constructor isn't in the
@@ -327,6 +329,93 @@ function builder.levelCrossings(messages : {string}, collisions : {Collision},
 		end
 	end
 	return count
+end
+
+-- The shortest part a split of existing track may leave (metres in plan): network.build keeps cuts 0.5 m (MIN_EDGE)
+-- from a piece's ends and junction.fit 3 m from existing nodes (or puts them on one).
+builder.MIN_SPLIT_PIECE = 2.5
+
+local function chord(h : PgraceRailRouterNetwork.Hermite) : number
+	return math.sqrt((h.p1.x - h.p0.x) ^ 2 + (h.p1.y - h.p0.y) ^ 2)
+end
+
+function builder.splitParts(h : PgraceRailRouterNetwork.Hermite, us : {number}, minPiece ?: number)
+		: {PgraceRailRouterNetwork.Hermite}, string
+	local parts : {PgraceRailRouterNetwork.Hermite} = {}
+	local rest = h
+	local restU = 0.0
+	for __, u in ipairs(us) do
+		if minPiece ~= nil and (u <= restU or u >= 1) then
+			return nil, ("cut parameters %s aren't ascending inside it"):format(tostring(u))
+		end
+		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
+		table.insert(parts, here)
+		rest, restU = after, u
+	end
+	table.insert(parts, rest)
+	if minPiece ~= nil then
+		for j, part in ipairs(parts) do
+			if chord(part) < minPiece then
+				return nil, ("its part %d would be %.1f m"):format(j, chord(part))
+			end
+		end
+	end
+	return parts, nil
+end
+
+function builder.partOf(parts : {PgraceRailRouterNetwork.Hermite}, at : Pt3) : integer, number, number
+	local bestJ, bestD, bestU = 1, math.huge, 0.0
+	for j, part in ipairs(parts) do
+		local u = network.nearestParam(part, { x = at.x, y = at.y })
+		local q = network.hermiteAt(part, u)
+		local d = math.sqrt((q.x - at.x) ^ 2 + (q.y - at.y) ^ 2)
+		if d < bestD then
+			bestJ, bestD, bestU = j, d, u
+		end
+	end
+	return bestJ, bestU, bestD
+end
+
+function builder.cutFits(h : PgraceRailRouterNetwork.Hermite, p : Pt3) : boolean
+	local q = network.hermiteAt(h, network.nearestParam(h, { x = p.x, y = p.y }))
+	local function d(a : Pt3, b : Pt3) : number
+		return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+	end
+	return d(q, p) <= 0.5 and math.abs(q.z - p.z) <= 1.5 and d(q, h.p0) > builder.MIN_SPLIT_PIECE
+		and d(q, h.p1) > builder.MIN_SPLIT_PIECE
+end
+
+function builder.checkedEdges(net : Network, first : integer, last : integer) : Network, integer, integer
+	local sub : Network = { nodes = net.nodes, edges = {}, chunks = {} }
+	local whole, touching = 0, 0
+	for i = first, last do
+		local e = net.edges[i]
+		if e.whole then
+			whole = whole + 1
+		elseif net.nodes[e.node0].existing ~= nil or net.nodes[e.node1].existing ~= nil then
+			touching = touching + 1
+		else
+			table.insert(sub.edges, e)
+		end
+	end
+	table.insert(sub.chunks, { first = 1, last = #sub.edges, leg = net.edges[first].leg, length = 0 })
+	return sub, whole, touching
+end
+
+function builder.junctionCount(net : Network, first : integer, last : integer) : integer
+	-- A junction's pieces lie before the leg's start (s below 0) or past its end.
+	local atStart, atEnd = false, false
+	for i = first, last do
+		local e = net.edges[i]
+		if e.whole then
+			if (e.s0 + e.s1) / 2 < 0 then
+				atStart = true
+			else
+				atEnd = true
+			end
+		end
+	end
+	return (atStart and 1 or 0) + (atEnd and 1 or 0)
 end
 
 local function has(entity : integer, ct : Engine.ComponentType) : boolean
@@ -575,33 +664,6 @@ local function stationNear(x : number, y : number) : integer
 	return best
 end
 
--- A station's track ends: the nodes of its frozen edges that aren't among its frozen nodes (probe P10: those are the
--- ones inside it; the ends, free or joined since, aren't).
-local function trackEnds(station : integer) : {Pt3}
-	local con = api.engine.getComponent(station, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
-	local frozen : {integer : boolean} = {}
-	for __, n in ipairs(con.frozenNodes or {}) do
-		frozen[n as integer] = true
-	end
-	local ends : {Pt3} = {}
-	local seen : {integer : boolean} = {}
-	for __, e in ipairs(con.frozenEdges or {}) do
-		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-		if edge ~= nil and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) == nil then
-			for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
-				if not seen[node] and not frozen[node] then
-					seen[node] = true
-					local p = nodeAt(node)
-					if p ~= nil then
-						table.insert(ends, p)
-					end
-				end
-			end
-		end
-	end
-	return ends
-end
-
 local function dist2(a : Pt3, b : Pt3) : number
 	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
 end
@@ -613,7 +675,7 @@ function builder.builtStation(plan : Plan, i : integer, net : Network) : boolean
 		return false
 	end
 	local matches : {{Pt3, integer}} = {}
-	for __, e in ipairs(trackEnds(con)) do
+	for __, e in ipairs(survey.trackEnds(con)) do
 		for __, n in ipairs(net.nodes) do
 			if dist2(n, e) <= END_MATCH and (n.entity == nil or n.entity == e.entity) then
 				table.insert(matches, { n, e.entity })
@@ -645,6 +707,82 @@ local function trackNodeAt(p : Pt3) : integer
 	return best
 end
 
+builder.trackNodeAt = trackNodeAt
+
+function builder.cutNodes(net : Network, c : integer, piece : integer) : {Pt3}
+	local chunk = net.chunks[c]
+	local list : {Pt3} = {}
+	local seen : {Pt3 : boolean} = {}
+	for i = chunk.first, chunk.last do
+		local e = net.edges[i]
+		for __, k in ipairs({ e.node0, e.node1 }) do
+			local n = net.nodes[k]
+			if n.existing ~= nil and n.existing.piece == piece and not seen[n] then
+				seen[n] = true
+				table.insert(list, n)
+			end
+		end
+	end
+	table.sort(list, function(a : Pt3, b : Pt3) : boolean
+		return a.existing.s < b.existing.s
+	end)
+	return list
+end
+
+-- The existing piece as a track edge, or nil where it's gone (a split replaced it) or can't be read.
+local function trackPiece(piece : integer) : Engine.Component.BaseEdge
+	local ok, edge = pcall(function() : Engine.Component.BaseEdge
+		if not api.engine.entityExists(piece) then
+			return nil
+		end
+		local e = api.engine.getComponent(piece, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if e == nil or e.roadType ~= api.type["enum"].RoadType.TRACK then
+			return nil
+		end
+		return e
+	end)
+	if not ok then
+		return nil
+	end
+	return edge as Engine.Component.BaseEdge
+end
+
+function builder.splitDone(net : Network, c : integer, split : PgraceRailRouterNetwork.Split) : boolean, string,
+		{integer}
+	local cuts = builder.cutNodes(net, c, split.piece)
+	-- Still there: a track piece by that id that passes every open cut's place, clear of its ends (ids are reused:
+	-- P15's new pieces had ids below the old ones, and a part of the split piece may carry its id, ending at the cut).
+	local edge = trackPiece(split.piece)
+	if edge ~= nil then
+		local h : PgraceRailRouterNetwork.Hermite = { p0 = { x = edge.position0.x, y = edge.position0.y, z = edge.position0.z },
+			p1 = { x = edge.position1.x, y = edge.position1.y, z = edge.position1.z },
+			t0 = { x = edge.tangent0.x, y = edge.tangent0.y, z = edge.tangent0.z },
+			t1 = { x = edge.tangent1.x, y = edge.tangent1.y, z = edge.tangent1.z } }
+		local fits = true
+		for __, n in ipairs(cuts) do
+			if n.entity == nil and not builder.cutFits(h, n) then
+				fits = false
+			end
+		end
+		if fits then
+			return false, nil, {}
+		end
+	end
+	local joined : {integer} = {}
+	for __, n in ipairs(cuts) do
+		if n.entity == nil then
+			local ok, found = pcall(trackNodeAt, n)
+			if not ok or found == nil then
+				return true, ("the existing track where a junction meets it (%.0f, %.0f) has changed since the route was found (piece %d is gone, and no node is there): find the route again")
+					:format(n.x, n.y, split.piece), joined
+			end
+			n.entity = found as integer
+			table.insert(joined, n.entity)
+		end
+	end
+	return true, nil, joined
+end
+
 function builder.builtChunk(net : Network, c : integer) : boolean
 	local chunk = net.chunks[c]
 	local found : {Pt3 : integer} = {}
@@ -671,8 +809,11 @@ function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) 
 	local clock = api.type.Clock.new()
 	local net = network.build(plan, settings.network)
 	local items : {Item} = {}
-	for i = 1, #plan.stations do
-		table.insert(items, { kind = "station", index = i })
+	-- Only our own stations: an existing one the line joins is there already (nothing is built for it).
+	for i, station in ipairs(plan.stations) do
+		if station.existing == nil then
+			table.insert(items, { kind = "station", index = i })
+		end
 	end
 	for i = 1, #net.chunks do
 		table.insert(items, { kind = "chunk", index = i })
@@ -682,7 +823,7 @@ function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) 
 		settings.bridge ~= nil and settings.bridge.name or "none", settings.tunnel ~= nil and settings.tunnel.name or "none",
 		settings.year or 0, settingsUs or 0, math.floor(clock:getTime())))
 	return { plan = plan, settings = settings, net = net, items = items, next = 1, outcomes = {}, total = 0,
-		failures = 0, crossings = 0, built = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
+		failures = 0, crossings = 0, junctions = 0, built = 0, slowestUs = 0, totalUs = 0, done = #items == 0 }
 end
 
 function builder.step(check : Check) : boolean
@@ -702,7 +843,7 @@ function builder.step(check : Check) : boolean
 	end)
 	if builtOk and isBuilt then
 		table.insert(check.outcomes, { item = item, ok = true, cost = 0, messages = {}, x = x, y = y, us = 0,
-			collisions = {}, crossings = 0, built = true })
+			collisions = {}, crossings = 0, junctions = 0, built = true })
 		check.built = check.built + 1
 		debugPrint(LOG_PREFIX .. ("dry run %s %d: already built"):format(item.kind, item.index))
 		if check.done then
@@ -711,36 +852,81 @@ function builder.step(check : Check) : boolean
 		end
 		return check.done
 	end
+	local chunk : PgraceRailRouterNetwork.Chunk = nil
+	if item.kind == "chunk" then
+		chunk = check.net.chunks[item.index]
+	end
+	-- A junction's splits still to make (one made already, by a build that stopped: its cut nodes are then joined to
+	-- the nodes it made), and why the chunk can't be built. The rest of the chunk's dry run must be clean but for level
+	-- crossings: with the junction's pieces left out, a collision with the existing track is a real overlap.
+	local splits : {PgraceRailRouterNetwork.Split} = {}
+	local problem : string = chunk ~= nil and chunk.problem or nil
+	if chunk ~= nil and problem == nil then
+		for __, sp in ipairs(chunk.splits or {}) do
+			local okDone, done, whyDone = pcall(builder.splitDone, check.net, item.index, sp)
+			if not okDone then
+				problem = problem or ("couldn't read the existing track: " .. tostring(done))
+			elseif whyDone ~= nil then
+				problem = problem or whyDone as string
+			elseif not done then
+				table.insert(splits, sp)
+			end
+		end
+	end
+	-- A junction's pieces (`whole`) lie over existing track they don't share a node with until it is split, and the game
+	-- refuses that as "Construction Not Possible" (P15: never "Collision"), so the check leaves them out, and any other
+	-- edge that ends on one of their cuts; the build dry-runs the whole chunk after the splits.
+	local sub : PgraceRailRouterNetwork.Network = check.net
+	local leftWhole, leftTouching = 0, 0
+	if chunk ~= nil then
+		sub, leftWhole, leftTouching = builder.checkedEdges(check.net, chunk.first, chunk.last)
+		if leftWhole + leftTouching > 0 then
+			debugPrint(LOG_PREFIX .. ("dry run chunk %d: junction pieces not dry-run before the split (%d left out, and %d other edges ending on their cuts)")
+				:format(item.index, leftWhole, leftTouching))
+		end
+	end
 	local made, proposal, why = pcall(function() : SimpleProposal, string
 		if item.kind == "station" then
 			local c = check.plan.stations[item.index].site.centre
 			x, y = c.x, c.y
 			return builder.stationProposal(check.plan, item.index, check.settings)
 		end
-		local chunk = check.net.chunks[item.index]
 		local p = check.net.edges[chunk.first].p0
 		x, y = p.x, p.y
-		return builder.chunkProposal(check.net, chunk.first, chunk.last, check.settings)
+		if problem ~= nil then
+			return nil, problem
+		end
+		if #sub.edges == 0 then
+			return nil, nil
+		end
+		return builder.chunkProposal(sub, 1, #sub.edges, check.settings)
 	end)
 	local ok, cost, messages, us = false, 0, {} as {string}, 0
 	local collisions : {Collision} = {}
 	local crossings = 0
+	local junctions = 0
+	if chunk ~= nil then
+		junctions = builder.junctionCount(check.net, chunk.first, chunk.last)
+	end
 	if not made then
 		messages = { "couldn't make the proposal: " .. tostring(proposal) }
+	elseif proposal == nil and why == nil and problem == nil and chunk ~= nil then
+		-- Nothing left to dry-run: the chunk is only a junction's pieces.
+		ok = true
 	elseif proposal == nil then
 		messages = { tostring(why) }
 	else
 		local data : ProposalData
 		ok, cost, messages, us, data = builder.dryRun(proposal as SimpleProposal)
 		collisions = builder.collisions(data)
-		if not ok and item.kind == "chunk" and check.settings.levelCrossings then
-			local chunk = check.net.chunks[item.index]
-			crossings = builder.levelCrossings(messages, collisions, function(street : integer) : boolean
-				local okLevel, level = pcall(builder.crossesOnLevel, check.net, chunk.first, chunk.last, street)
+		local rest = collisions
+		if not ok and item.kind == "chunk" and check.settings.levelCrossings and #rest > 0 then
+			crossings = builder.levelCrossings(messages, rest, function(street : integer) : boolean
+				local okLevel, level = pcall(builder.crossesOnLevel, sub, 1, #sub.edges, street)
 				return okLevel and level as boolean
 			end)
 			local others = 0
-			for __, c in ipairs(collisions) do
+			for __, c in ipairs(rest) do
 				if c.what ~= "street" and c.what ~= "node" then
 					others = others + 1
 				end
@@ -751,8 +937,9 @@ function builder.step(check : Check) : boolean
 		end
 	end
 	table.insert(check.outcomes, { item = item, ok = ok, cost = cost, messages = messages, x = x, y = y, us = us,
-		collisions = collisions, crossings = crossings })
+		collisions = collisions, crossings = crossings, junctions = junctions })
 	check.crossings = check.crossings + crossings
+	check.junctions = check.junctions + junctions
 	check.total = check.total + cost
 	check.totalUs = check.totalUs + us
 	check.slowestUs = math.max(check.slowestUs, us)
@@ -761,8 +948,8 @@ function builder.step(check : Check) : boolean
 	end
 	local extra = ""
 	if item.kind == "chunk" then
-		local chunk = check.net.chunks[item.index]
-		extra = (" (%d edges, %.0f m)"):format(chunk.last - chunk.first + 1, chunk.length)
+		extra = (" (%d edges, %.0f m%s)"):format(chunk.last - chunk.first + 1, chunk.length,
+			junctions > 0 and (", %d junctions, %d pieces to split"):format(junctions, #splits) or "")
 	end
 	local hits : {string} = {}
 	for __, c in ipairs(collisions) do
@@ -770,16 +957,17 @@ function builder.step(check : Check) : boolean
 			c.components ~= nil and (" [" .. c.components .. "]") or ""))
 	end
 	if not ok and item.kind == "chunk" and #messages > 0 and messages[1] == "Construction Not Possible" then
-		local chunk = check.net.chunks[item.index]
-		builder.diagnose(check.net, chunk.first, chunk.last, check.settings)
+		builder.diagnose(sub, 1, #sub.edges, check.settings)
 	end
 	debugPrint(LOG_PREFIX .. ("dry run %s %d%s: %s, cost %d, %d us%s%s"):format(item.kind, item.index, extra,
-		ok and (crossings > 0 and ("clean but for %d level crossings"):format(crossings) or "clean") or "errors", cost,
+		ok and (crossings > 0 and ("clean but for %d level crossings"):format(crossings)
+			or leftWhole > 0 and "clean but for the junction's pieces (not dry-run)" or "clean") or "errors", cost,
 		us, #messages > 0 and (": " .. table.concat(messages, "; ")) or "",
 		#hits > 0 and ("; collided with " .. table.concat(hits, ", ")) or ""))
 	if check.done then
-		debugPrint(LOG_PREFIX .. ("check done: %d items, %d with errors, %d level crossings, price %d, dry runs %.1f ms, the slowest %d us")
-			:format(#check.items, check.failures, check.crossings, check.total, check.totalUs / 1000, check.slowestUs))
+		debugPrint(LOG_PREFIX .. ("check done: %d items, %d with errors, %d level crossings, %d junctions, price %d, dry runs %.1f ms, the slowest %d us")
+			:format(#check.items, check.failures, check.crossings, check.junctions, check.total, check.totalUs / 1000,
+			check.slowestUs))
 	end
 	return check.done
 end

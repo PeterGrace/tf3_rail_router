@@ -45,6 +45,9 @@ local function fail(b : Build, messages : {string}, x : number, y : number)
 	local item : PgraceRailRouterBuilder.Item
 	if b.phase == "stations" then
 		item = { kind = "station", index = b.station }
+	elseif b.phase == "roads" then
+		-- The station whose road was being built (b.road runs one past the last once the roads are done).
+		item = { kind = "road", index = math.max(1, math.min(b.road, #b.check.plan.stations)) }
 	else
 		item = { kind = "chunk", index = b.chunk }
 	end
@@ -121,6 +124,13 @@ local function stepStation(b : Build)
 	local check = b.check
 	local station = check.plan.stations[b.station]
 	local c = station.site.centre
+	-- An existing station the line joins: nothing to build.
+	if station.existing ~= nil then
+		log(("station %d (%s): the existing station, nothing to build"):format(b.station,
+			station.town ~= nil and station.town.name or "?"))
+		b.station = b.station + 1
+		return
+	end
 	-- Built before (a build that stopped, then the game restarted): join to it and go on.
 	if builder.builtStation(check.plan, b.station, check.net) then
 		log(("station %d already built"):format(b.station))
@@ -193,11 +203,38 @@ local function sendChunk(b : Build, net : Network, first : integer, last : integ
 	if #hits > 0 then
 		log(("chunk %d: dry run clean, but lists %s"):format(b.chunk, table.concat(hits, ", ")))
 	end
+	-- The existing track's nodes the junction's pieces join (the switches and the crossing, entities known): sent
+	-- again once built, as P15 did, for their lanes.
+	local joined : {integer} = {}
+	local seen : {integer : boolean} = {}
+	for i = first, last do
+		local e = net.edges[i]
+		if e.whole then
+			for __, k in ipairs({ e.node0, e.node1 }) do
+				local n = net.nodes[k]
+				if n.entity ~= nil and not seen[n.entity] then
+					seen[n.entity] = true
+					table.insert(joined, n.entity)
+				end
+			end
+		end
+	end
+	local junctions = builder.junctionCount(net, first, last)
 	send(b, proposal, x, y, function(res : WorldBuildProposalCommandData)
+		-- Queued first, so an error below still leaves them repaired; from the next step: in a build's callback a node
+		-- may list only some of its pieces (AGENTS.md).
+		for __, n in ipairs(joined) do
+			table.insert(b.repairNodes, n)
+		end
 		local matched = recordNodes(net, res)
 		log(("chunk %d built (%d edges, %d), %d new nodes recorded"):format(b.chunk, last - first + 1, cost, matched))
+		if junctions > 0 then
+			b.junctions = b.junctions + junctions
+			log(("chunk %d: %d junctions built, %d existing nodes to repair"):format(b.chunk, junctions, #joined))
+		end
 		b.chunk = b.chunk + 1
 		b.crossings = nil
+		b.splitting = nil
 	end)
 end
 
@@ -229,32 +266,157 @@ end
 -- 9.5 m; the planner keeps 10 m (grid.JOINT_CLEARANCE), and its 100 m cells let 9.8 m through.
 local JOINT_MIN = 9.5
 
--- A street in pieces at parameters us (ascending), new nodes -k-1..: the engine's replaceSegment proposal edited
--- (it can't be dry-run: the Bus Loops way, probe P9). Its lanes need repairing once sent.
-local function splitStreet(entity : integer, street : Engine.Component.BaseEdge, h : Hermite, us : {number}) : Proposal
+-- A track piece from node0 to node1 along h, typed like the one it replaces: copied from the engine's own replacement
+-- of it (probe P15, which split signalled track this way). Its signals are listed on it by the caller.
+local function trackPiece(node0 : integer, node1 : integer, h : Hermite, template : Proposal.SegmentAndEntity)
+		: Proposal.SegmentAndEntity
+	local seg = api.type.SegmentAndEntity.new()
+	seg.type = 1
+	seg.comp.node0, seg.comp.node1 = node0, node1
+	seg.comp.position0, seg.comp.position1 = v3(h.p0), v3(h.p1)
+	seg.comp.tangent0, seg.comp.tangent1 = v3(h.t0), v3(h.t1)
+	seg.comp.type = template.comp.type
+	seg.comp.typeIndex = template.comp.typeIndex
+	seg.comp.laneConfigs = template.comp.laneConfigs
+	seg.comp.roadType = template.comp.roadType
+	seg.comp.roadTemplate = template.comp.roadTemplate
+	seg.comp.roadStyle = template.comp.roadStyle
+	seg.comp.distance = template.comp.distance
+	if template.streetEdge ~= nil then
+		seg.streetEdge = template.streetEdge
+	end
+	if template.playerOwned ~= nil then
+		seg.playerOwned = template.playerOwned
+	end
+	return seg
+end
+
+-- How far a signal's model may stand from its piece's curve (metres in plan) for its place to be trusted.
+local OBJECT_OFF = 8.0
+
+-- Where an edge object (a signal) is, in the world: its EDGE_OBJECT's transform, if near the piece's curve h, else its
+-- param along h; nil and why if neither can be read.
+local function objectPlace(obj : integer, h : Hermite) : Pt3, string
+	local ok, p, how = pcall(function() : Pt3, string
+		local eo = api.engine.getComponent(obj, api.type.ComponentType.EDGE_OBJECT) as Engine.Component.EdgeObject
+		if eo == nil then
+			return nil, "it has no EDGE_OBJECT"
+		end
+		local okT, t = pcall(function() : Vec3f
+			return eo.transf:getTransl()
+		end)
+		if okT and t ~= nil then
+			local q = p3(t as Vec3f)
+			if dist2(network.hermiteAt(h, network.nearestParam(h, { x = q.x, y = q.y })), q) <= OBJECT_OFF then
+				return q, "its place"
+			end
+		end
+		local u = tonumber(eo.param as any)
+		if u ~= nil and u >= 0 and u <= 1 then
+			return network.hermiteAt(h, u), "its param"
+		end
+		return nil, "neither its place nor its param can be read"
+	end)
+	if not ok then
+		return nil, tostring(p)
+	end
+	return p as Pt3, how as string
+end
+
+-- An edge (street or track) in pieces at parameters us (ascending), new nodes -(k+2)..: the engine's replaceSegment
+-- proposal edited (it can't be dry-run: the Bus Loops way, probe P9; for track, probe P15). A street's pieces are typed
+-- like the street (Bus Loops), a track's like the engine's own replacement, with its distance and owner, and each of
+-- its signals on the piece that holds it, the signal's own entity listed there (P15: the signal survived, on its
+-- side). The new nodes need repairing once sent (their lanes). nil and why where the split would be doubtful.
+local function splitEdge(entity : integer, edge : Engine.Component.BaseEdge, h : Hermite, us : {number}) : Proposal,
+		string
+	local isTrack = edge.roadType == api.type["enum"].RoadType.TRACK
+	-- The parts; a track's no shorter than MIN_SPLIT_PIECE (a split can't be dry-run, so nothing doubtful is sent).
+	local hs, whyParts = builder.splitParts(h, us, isTrack and builder.MIN_SPLIT_PIECE or nil)
+	if hs == nil then
+		return nil, ("piece %d: %s"):format(entity, tostring(whyParts))
+	end
 	local rep = api.engine.util.proposal.replaceSegment(entity)
+	if rep == nil or rep.proposal == nil or #rep.proposal.addedSegments == 0 then
+		return nil, ("piece %d: the game gave no replacement for it"):format(entity)
+	end
 	local sp = rep.proposal
 	local template = sp.addedSegments[1]
+	-- A track's signals: which part holds each (the nearest point on each part's own curve), and its param there.
+	local lists : {{any}} = {}
+	for __ = 1, #hs do
+		table.insert(lists, {})
+	end
+	local objJ : {integer} = {}
+	local objU : {number} = {}
+	local edgeObjects : {any} = {}
+	if isTrack then
+		local objs = template.comp.objects or {}
+		edgeObjects = (sp.edgeObjectsToAdd or {}) as {any}
+		if #edgeObjects > 0 and #edgeObjects ~= #objs then
+			return nil, ("piece %d: %d edge objects to add against %d on it"):format(entity, #edgeObjects, #objs)
+		end
+		for idx, o in ipairs(objs) do
+			local okO, a, b = pcall(function() : any, any
+				return (o as {any})[1], (o as {any})[2]
+			end)
+			if not okO or a == nil or b == nil then
+				return nil, ("piece %d: its object %d can't be read"):format(entity, idx)
+			end
+			local at, how = objectPlace(a as integer, h)
+			if at == nil then
+				return nil, ("piece %d: where its signal %s is isn't known (%s)"):format(entity, tostring(a), how)
+			end
+			local bestJ, bestU, bestD = builder.partOf(hs, at)
+			log(("piece %d: signal %s (from %s) goes on part %d at %.3f, %.1f m off its curve"):format(entity, tostring(a),
+				how, bestJ, bestU, bestD))
+			objJ[idx], objU[idx] = bestJ, bestU
+			table.insert(lists[bestJ], { a, b })
+		end
+	end
+	local k = #us
 	local nodes : {Proposal.NodeAndEntity} = {}
 	local pieces : {Proposal.SegmentAndEntity} = {}
-	local rest = h
-	local restU = 0.0
-	local prev = street.node0 as integer
-	local k = #us
-	for j, u in ipairs(us) do
-		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
-		local n = api.type.NodeAndEntity.new()
-		n.entity = -(k + 1 + j)
-		n.comp.position = v3(here.p1)
-		table.insert(nodes, n)
-		local piece = streetPiece(prev, n.entity, here, street, template)
-		piece.entity = -j
-		table.insert(pieces, piece)
-		prev, rest, restU = n.entity, after, u
+	local prev = edge.node0 as integer
+	for j = 1, #hs do
+		local node1 = edge.node1 as integer
+		if j <= k then
+			local n = api.type.NodeAndEntity.new()
+			n.entity = -(k + 1 + j)
+			n.comp.position = v3(hs[j].p1)
+			table.insert(nodes, n)
+			node1 = n.entity as integer
+		end
+		local seg : Proposal.SegmentAndEntity
+		if isTrack then
+			seg = trackPiece(prev, node1, hs[j], template)
+			if #lists[j] > 0 then
+				(seg.comp as any as {string : any}).objects = lists[j]
+			end
+		else
+			seg = streetPiece(prev, node1, hs[j], edge, template)
+		end
+		seg.entity = -j
+		table.insert(pieces, seg)
+		prev = node1
 	end
-	local last_ = streetPiece(prev, street.node1 as integer, rest, street, template)
-	last_.entity = -(k + 1)
-	table.insert(pieces, last_)
+	-- The engine's own object entries (none in P15), pointed at the part that now holds each signal.
+	for i, eo in ipairs(edgeObjects) do
+		if objJ[i] ~= nil then
+			local okW, err = pcall(function() : boolean
+				local t = eo as {string : any}
+				t.edgeEntity = pieces[objJ[i]].entity
+				t.param = objU[i]
+				return true
+			end)
+			if not okW then
+				return nil, ("piece %d: its edge object %d couldn't be moved: %s"):format(entity, i, tostring(err))
+			end
+		end
+	end
+	if #edgeObjects > 0 then
+		sp.edgeObjectsToAdd = edgeObjects as any as {Proposal.EdgeObject}
+	end
 	sp.addedNodes = nodes
 	sp.addedSegments = pieces
 	sp.nodeConfigsToAdd = {}
@@ -278,9 +440,10 @@ local function stepStreet(b : Build, first : integer, last : integer)
 	local splits : {{integer, number, number}} = {}
 	for i = first, last do
 		local e = net.edges[i]
-		-- Only track on the ground crosses on the level (a bridge's deck over the street crosses it in plan too).
+		-- Only track on the ground crosses on the level (a bridge's deck over the street crosses it in plan too), and
+		-- never a junction's piece, which mustn't be split (its dry run then shows the street in the way).
 		local crossed : {PgraceRailRouterNetwork.Crossing} = {}
-		if e.kind == "ground" then
+		if e.kind == "ground" and not e.whole then
 			crossed = network.crossings({ p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }, h)
 		end
 		for __, c in ipairs(crossed) do
@@ -316,8 +479,12 @@ local function stepStreet(b : Build, first : integer, last : integer)
 	for __, sp_ in ipairs(splits) do
 		table.insert(us, sp_[3])
 	end
-	local rep = splitStreet(entity, street, h, us)
+	local rep, why = splitEdge(entity, street, h, us)
 	local at = network.hermiteAt(h, splits[1][3])
+	if rep == nil then
+		fail(b, { "a street couldn't be split: " .. tostring(why) }, at.x, at.y)
+		return
+	end
 	send(b, rep, at.x, at.y, function(res : WorldBuildProposalCommandData)
 		-- The new nodes, matched to the splits by place.
 		local made : {Pt3} = {}
@@ -356,22 +523,145 @@ local function stepStreet(b : Build, first : integer, last : integer)
 	end)
 end
 
--- Sends one street piece again unedited, so the engine works out its lane connections (Bus Loops).
+-- Sends one street or track piece again unedited, so the engine works out its lane connections (Bus Loops; P15 for
+-- track: a split's new node then has its BASE_NODE_CONFIG). A piece gone already is skipped.
 local function stepRepair(b : Build, repair : {integer})
 	local seg = table.remove(repair, 1)
 	local ok, rep = pcall(function() : Proposal
+		if not api.engine.entityExists(seg) then
+			return nil
+		end
 		return api.engine.util.proposal.replaceSegment(seg)
 	end)
 	if not ok or rep == nil then
-		log(("lane repair of street %d: replaceSegment failed: %s"):format(seg, tostring(rep)))
+		log(("lane repair of piece %d: skipped (%s)"):format(seg, ok and "gone" or ("replaceSegment failed: " .. tostring(rep))))
 		return
 	end
 	b.waiting = true
 	api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(rep as Proposal, builder.newContext(), false, true),
 		function(__ : WorldBuildProposalCommandData, success : boolean)
 			b.waiting = false
-			log(("lane repair of street %d: %s"):format(seg, tostring(success)))
+			log(("lane repair of piece %d: %s"):format(seg, tostring(success)))
 		end)
+end
+
+-- The track pieces at each node queued for repair (b.repairNodes), each piece once, onto b.trackRepair.
+local function queueNodeRepairs(b : Build)
+	local seen : {integer : boolean} = {}
+	for __, sg in ipairs(b.trackRepair) do
+		seen[sg] = true
+	end
+	for __, n in ipairs(b.repairNodes) do
+		local ok, segs = pcall(function() : {integer}
+			local list : {integer} = {}
+			for __, sg in ipairs(api.engine.system.streetSystem.getNodeTrackSegments(n)) do
+				table.insert(list, sg as integer)
+			end
+			return list
+		end)
+		if ok then
+			for __, sg in ipairs(segs as {integer}) do
+				if not seen[sg] then
+					seen[sg] = true
+					table.insert(b.trackRepair, sg)
+				end
+			end
+			log(("node %d: %d track pieces to repair"):format(n, #(segs as {integer})))
+		else
+			log(("node %d: its track pieces can't be read: %s"):format(n, tostring(segs)))
+		end
+	end
+	b.repairNodes = {}
+end
+
+-- One existing piece a junction chunk splits (chunk.splits[b.splitting]), at every cut the chunk has on it, in one
+-- proposal: the cut nodes then take the new nodes' entities (matched by place), which are repaired next. A piece gone
+-- already (a build retried, or carried on, after splitting it) has its cuts joined to the nodes at their places.
+local function stepSplit(b : Build, chunk : PgraceRailRouterNetwork.Chunk)
+	local net = b.check.net
+	local split = chunk.splits[b.splitting]
+	local done, why, joinedNow = builder.splitDone(net, b.chunk, split)
+	local cuts = builder.cutNodes(net, b.chunk, split.piece)
+	local at = cuts[1] or net.edges[chunk.first].p0
+	if why ~= nil then
+		fail(b, { why }, at.x, at.y)
+		return
+	end
+	if done then
+		-- Repaired again only where joined just now (after a game restart; a retry joined them before).
+		for __, n in ipairs(joinedNow) do
+			table.insert(b.repairNodes, n)
+		end
+		log(("chunk %d: piece %d was split before; %d of its %d cuts joined to the nodes there now"):format(b.chunk,
+			split.piece, #joinedNow, #cuts))
+		b.splitting = b.splitting + 1
+		return
+	end
+	local open : {Pt3} = {}
+	for __, n in ipairs(cuts) do
+		if n.entity == nil then
+			table.insert(open, n)
+		end
+	end
+	if #open == 0 then
+		b.splitting = b.splitting + 1
+		return
+	end
+	-- The piece as it is now, and each cut on it: at its planned parameter, or where the piece passes its place.
+	local edge = api.engine.getComponent(split.piece, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+	local h : Hermite = { p0 = p3(edge.position0), p1 = p3(edge.position1), t0 = p3(edge.tangent0), t1 = p3(edge.tangent1) }
+	local us : {number} = {}
+	for __, n in ipairs(open) do
+		local u = n.existing.s
+		if dist2(network.hermiteAt(h, u), n) > NODE_MATCH then
+			u = network.nearestParam(h, { x = n.x, y = n.y })
+		end
+		local q = network.hermiteAt(h, u)
+		if dist2(q, n) > NODE_MATCH or math.abs(q.z - n.z) > 1.5 then
+			fail(b, { ("the existing track at (%.0f, %.0f) has moved since the route was found (piece %d passes %.1f m away): find the route again")
+				:format(n.x, n.y, split.piece, dist2(q, n)) }, n.x, n.y)
+			return
+		end
+		table.insert(us, u)
+	end
+	table.sort(us)
+	local rep, whyNot = splitEdge(split.piece, edge, h, us)
+	if rep == nil then
+		fail(b, { "the existing track can't be split for the junction: " .. tostring(whyNot) }, at.x, at.y)
+		return
+	end
+	log(("chunk %d: splitting existing piece %d at %d cuts"):format(b.chunk, split.piece, #us))
+	send(b, rep, at.x, at.y, function(res : WorldBuildProposalCommandData)
+		-- The new nodes, queued for repair first (whatever follows), then read now and matched to the cuts by place;
+		-- the cuts take them only if every one is matched.
+		local made : {Pt3} = {}
+		for __, nd in ipairs(res.proposal.proposal.addedNodes) do
+			table.insert(b.repairNodes, nd.entity as integer)
+			local p = nodePos(nd.entity as integer)
+			if p ~= nil then
+				table.insert(made, p)
+			end
+		end
+		local match : {Pt3 : integer} = {}
+		for __, n in ipairs(open) do
+			local best : Pt3 = nil
+			for __, p in ipairs(made) do
+				if best == nil or dist2(p, n) < dist2(best, n) then
+					best = p
+				end
+			end
+			if best == nil or dist2(best, n) > NODE_MATCH then
+				fail(b, { "the existing track's split nodes can't be found" }, n.x, n.y)
+				return
+			end
+			match[n] = best.entity
+		end
+		for n, entity in pairs(match) do
+			n.entity = entity
+		end
+		log(("chunk %d: existing piece %d split, %d new nodes"):format(b.chunk, split.piece, #made))
+		b.splitting = b.splitting + 1
+	end)
 end
 
 local function stepChunk(b : Build)
@@ -380,9 +670,41 @@ local function stepChunk(b : Build)
 	local chunk = net.chunks[b.chunk]
 	local p = net.edges[chunk.first].p0
 	local cr = b.crossings
-	if cr == nil and builder.builtChunk(net, b.chunk) then
-		log(("chunk %d already built"):format(b.chunk))
-		b.chunk = b.chunk + 1
+	if cr == nil and b.splitting == nil then
+		if builder.builtChunk(net, b.chunk) then
+			-- A junction's nodes on the existing track go again for their lanes (in case the build stopped before;
+			-- a second repair is harmless).
+			local queued = 0
+			for i = chunk.first, chunk.last do
+				local e = net.edges[i]
+				if e.whole then
+					for __, k in ipairs({ e.node0, e.node1 }) do
+						local n = net.nodes[k]
+						if n.existing ~= nil and n.entity ~= nil then
+							table.insert(b.repairNodes, n.entity)
+							queued = queued + 1
+						end
+					end
+				end
+			end
+			log(("chunk %d already built%s"):format(b.chunk, queued > 0 and (", %d junction nodes to repair"):format(queued) or ""))
+			b.chunk = b.chunk + 1
+			return
+		end
+		-- A junction's cut on no existing piece: nothing is split, the chunk isn't built.
+		if chunk.problem ~= nil then
+			fail(b, { chunk.problem }, p.x, p.y)
+			return
+		end
+		-- A junction into existing track: its pieces split first, one a step (each sent, then its new nodes repaired).
+		if chunk.splits ~= nil and #chunk.splits > 0 then
+			log(("chunk %d: %d existing pieces to split for its junctions"):format(b.chunk, #chunk.splits))
+			b.splitting = 1
+			return
+		end
+	end
+	if b.splitting ~= nil and b.splitting <= #chunk.splits then
+		stepSplit(b, chunk)
 		return
 	end
 	if cr == nil then
@@ -750,6 +1072,11 @@ local function stepRoad(b : Build)
 	local check = b.check
 	local station = check.plan.stations[b.road]
 	local name = station.town ~= nil and station.town.name or tostring(b.road)
+	-- An existing station has its own roads (or not): none of ours.
+	if station.existing ~= nil then
+		b.road = b.road + 1
+		return
+	end
 	local layout = builder.stationLayout(check.plan, b.road, check.settings)
 	local e : Pt3 = { x = layout.entrance.x, y = layout.entrance.y, z = station.z }
 	local out : Pt3 = { x = layout.outward.x, y = layout.outward.y, z = 0 }
@@ -840,7 +1167,11 @@ local function stepRoad(b : Build)
 				-- Split the street first; the road goes to the new node on the next step.
 				local h : Hermite = { p0 = p3(street.position0), p1 = p3(street.position1), t0 = p3(street.tangent0),
 					t1 = p3(street.tangent1) }
-				local rep = splitStreet(target.piece, street, h, { target.u })
+				local rep = splitEdge(target.piece, street, h, { target.u })
+				if rep == nil then
+					next_("the street couldn't be split")
+					return
+				end
 				b.waiting = true
 				api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(rep, builder.newContext(), false, true),
 					function(res : WorldBuildProposalCommandData, success : boolean)
@@ -878,14 +1209,58 @@ local function stepRoad(b : Build)
 		or ("%d roads tried, none clean"):format(b.roadNext - 1))
 end
 
+function build.ownStations(plan : PgraceRailRouterRoute.Plan) : integer
+	local n = 0
+	for __, station in ipairs(plan.stations) do
+		if station.existing == nil then
+			n = n + 1
+		end
+	end
+	return n
+end
+
 function build.start(check : PgraceRailRouterBuilder.Check) : Build
-	log(("start: %d stations, %d chunks"):format(#check.plan.stations, #check.net.chunks))
+	log(("start: %d stations (%d ours), %d chunks"):format(#check.plan.stations, build.ownStations(check.plan),
+		#check.net.chunks))
 	return { check = check, phase = "stations", station = 1, chunk = 1, road = 1, waiting = false, levelCrossings = 0,
-		charged = 0, roads = 0, roadsMissing = {}, roadRepair = {} }
+		junctions = 0, charged = 0, roads = 0, roadsMissing = {}, roadRepair = {}, repairNodes = {}, trackRepair = {} }
+end
+
+-- Track pieces still to repair (a split's or a junction's nodes): worked off even after a failure.
+local function repairsPending(b : Build) : boolean
+	return #b.repairNodes > 0 or #b.trackRepair > 0
+end
+
+local function stepRepairs(b : Build)
+	if #b.repairNodes > 0 then
+		queueNodeRepairs(b)
+	else
+		stepRepair(b, b.trackRepair)
+	end
+end
+
+function build.busy(b : Build) : boolean
+	if b.phase == "done" then
+		return false
+	end
+	return b.phase ~= "failed" or b.waiting or repairsPending(b)
 end
 
 function build.step(b : Build) : boolean
-	if b.phase == "done" or b.phase == "failed" then
+	if b.phase == "done" then
+		return true
+	end
+	if b.phase == "failed" then
+		if not b.waiting and repairsPending(b) then
+			local ok, err = pcall(function() : boolean
+				stepRepairs(b)
+				return true
+			end)
+			if not ok then
+				log("repair after the failure: " .. tostring(err))
+				b.repairNodes, b.trackRepair = {}, {}
+			end
+		end
 		return true
 	end
 	if b.waiting then
@@ -894,20 +1269,25 @@ function build.step(b : Build) : boolean
 	if b.phase == "stations" and b.station > #b.check.plan.stations then
 		b.phase = "track"
 	end
-	if b.phase == "track" and b.chunk > #b.check.net.chunks then
+	if b.phase == "track" and b.chunk > #b.check.net.chunks and #b.repairNodes == 0 and #b.trackRepair == 0 then
 		b.phase = "roads"
 	end
 	if b.phase == "roads" and b.road > #b.check.plan.stations and #b.roadRepair == 0 and b.roadJunction == nil then
 		b.phase = "done"
-		log(("done: %d level crossings, roads to %d of %d stations, charged %d"):format(b.levelCrossings, b.roads,
-			#b.check.plan.stations, b.charged))
+		log(("done: %d level crossings, %d junctions, roads to %d of %d stations, charged %d"):format(b.levelCrossings,
+			b.junctions, b.roads, build.ownStations(b.check.plan), b.charged))
 		return true
 	end
 	local ok, err = pcall(function() : boolean
 		if b.phase == "stations" then
 			stepStation(b)
 		elseif b.phase == "track" then
-			stepChunk(b)
+			-- Track pieces at new or joined nodes go again for their lanes before anything else is built.
+			if repairsPending(b) then
+				stepRepairs(b)
+			else
+				stepChunk(b)
+			end
 		elseif b.roadJunction ~= nil then
 			-- Every piece at the junction, the new road among them, sent again unedited for its lanes.
 			for __, sg in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(b.roadJunction)) do
@@ -937,9 +1317,12 @@ function build.retry(b : Build)
 	if b.phase ~= "failed" then
 		return
 	end
-	b.phase = b.failure.item.kind == "station" and "stations" or "track"
+	local kind = b.failure.item.kind
+	b.phase = kind == "station" and "stations" or kind == "road" and "roads" or "track"
 	b.failure = nil
 	b.crossings = nil
+	-- Splits already made are found again (their pieces are gone: builder.splitDone).
+	b.splitting = nil
 	log("retry")
 end
 

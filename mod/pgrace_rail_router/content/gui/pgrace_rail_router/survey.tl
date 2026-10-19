@@ -10,6 +10,11 @@ local type StructureType = PgraceRailRouterModes.StructureType
 local type Grid = PgraceRailRouterGrid.Grid
 local type Job = PgraceRailRouterSurvey.Job
 local type Bounds = PgraceRailRouterArea.Bounds
+local type Pt = PgraceRailRouterGeo.Pt
+local type Pt3 = PgraceRailRouterNetwork.Pt3
+local type Piece = PgraceRailRouterExisting.Piece
+local type Snapshot = PgraceRailRouterExisting.Snapshot
+local type Station = PgraceRailRouterExisting.Station
 
 local LOG_PREFIX = "[rail_router] "
 -- Cells within this distance of a building or other construction are blocked (metres).
@@ -368,8 +373,14 @@ local function markEdge(job : Job, entity : Engine.Entity)
 		return true
 	end)
 	if read and p0 ~= nil and p1 ~= nil and t0 ~= nil and t1 ~= nil and not (isZero(p0) and isZero(p1)) then
-		area.markCurve(job.grid, { x = p0.x, y = p0.y }, { x = t0.x, y = t0.y }, { x = p1.x, y = p1.y },
-			{ x = t1.x, y = t1.y }, cells)
+		local a, ta, b, tb : Pt, Pt, Pt, Pt = { x = p0.x, y = p0.y }, { x = t0.x, y = t0.y }, { x = p1.x, y = p1.y },
+			{ x = t1.x, y = t1.y }
+		area.markCurve(job.grid, a, ta, b, tb, cells)
+		if street ~= nil then
+			grid.addStreet(job.grid, a, ta, b, tb)
+		else
+			grid.addTrack(job.grid, a, ta, b, tb)
+		end
 		return
 	end
 	job.curveFallbacks = job.curveFallbacks + 1
@@ -378,7 +389,15 @@ local function markEdge(job : Job, entity : Engine.Entity)
 	if n0 == nil or n1 == nil then
 		return
 	end
-	area.markLine(job.grid, { x = n0.position.x, y = n0.position.y }, { x = n1.position.x, y = n1.position.y }, cells)
+	local a, b : Pt, Pt = { x = n0.position.x, y = n0.position.y }, { x = n1.position.x, y = n1.position.y }
+	area.markLine(job.grid, a, b, cells)
+	-- A Hermite curve whose tangents are its chord is that straight line.
+	local chord : Pt = { x = b.x - a.x, y = b.y - a.y }
+	if street ~= nil then
+		grid.addStreet(job.grid, a, chord, b, chord)
+	else
+		grid.addTrack(job.grid, a, chord, b, chord)
+	end
 end
 
 -- Marks one entity a tile's lookup found (of the given kind), once per survey.
@@ -585,6 +604,319 @@ end
 
 function survey.grid(job : Job) : Grid
 	return job.grid
+end
+
+-- Existing stations (milestone 4b) ------------------------------------------------------------------------------
+
+local function nodeAt(n : integer) : Pt3
+	local node = api.engine.getComponent(n, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode
+	if node == nil then
+		return nil
+	end
+	return { x = node.position.x, y = node.position.y, z = node.position.z, entity = n }
+end
+
+-- A station's track ends: the nodes of its frozen edges that aren't among its frozen nodes (probe P10: those are the
+-- ones inside it; the ends, free or joined since, aren't).
+function survey.trackEnds(station : integer) : {Pt3}
+	local con = api.engine.getComponent(station, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+	local ends : {Pt3} = {}
+	if con == nil then
+		return ends
+	end
+	local frozen : {integer : boolean} = {}
+	for __, n in ipairs(con.frozenNodes or {}) do
+		frozen[n as integer] = true
+	end
+	local seen : {integer : boolean} = {}
+	for __, e in ipairs(con.frozenEdges or {}) do
+		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if edge ~= nil and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) == nil then
+			for __, node in ipairs({ edge.node0 as integer, edge.node1 as integer }) do
+				if not seen[node] and not frozen[node] then
+					seen[node] = true
+					local p = nodeAt(node)
+					if p ~= nil then
+						table.insert(ends, p)
+					end
+				end
+			end
+		end
+	end
+	return ends
+end
+
+-- Track ends closer together than this along the station's axis are one end of it (metres): a station with all its
+-- ends at one side (a terminus) has no platforms' centre to read.
+local MIN_STATION_SPAN = 20.0
+
+-- A station from its track ends: they split into two groups along the line between the two furthest apart; the
+-- centre is the midpoint of the groups' centroids, dir the unit vector from one to the other, half half the distance
+-- between them. nil (with why) if they don't make two groups.
+local function stationOf(entity : integer, ends : {Pt3}) : Station, string
+	if #ends < 2 then
+		return nil, "fewer than two track ends"
+	end
+	local a, b : Pt3, Pt3 = ends[1], ends[2]
+	local far = -1.0
+	for i = 1, #ends do
+		for j = i + 1, #ends do
+			local d = (ends[i].x - ends[j].x) ^ 2 + (ends[i].y - ends[j].y) ^ 2
+			if d > far then
+				a, b, far = ends[i], ends[j], d
+			end
+		end
+	end
+	local len = math.sqrt(far)
+	if len < MIN_STATION_SPAN then
+		return nil, ("track ends only %.1f m apart"):format(len)
+	end
+	local ux, uy = (b.x - a.x) / len, (b.y - a.y) / len
+	local sums : {{number}} = { { 0, 0, 0 }, { 0, 0, 0 } }
+	local ids : {integer} = {}
+	for __, e in ipairs(ends) do
+		local s = (e.x - a.x) * ux + (e.y - a.y) * uy
+		local g = s < len / 2 and 1 or 2
+		sums[g][1] = sums[g][1] + e.x
+		sums[g][2] = sums[g][2] + e.y
+		sums[g][3] = sums[g][3] + 1
+		table.insert(ids, e.entity)
+	end
+	local c1 : Pt = { x = sums[1][1] / sums[1][3], y = sums[1][2] / sums[1][3] }
+	local c2 : Pt = { x = sums[2][1] / sums[2][3], y = sums[2][2] / sums[2][3] }
+	local dx, dy = c2.x - c1.x, c2.y - c1.y
+	local d = math.sqrt(dx * dx + dy * dy)
+	if d < MIN_STATION_SPAN then
+		return nil, ("its ends' groups only %.1f m apart"):format(d)
+	end
+	return { entity = entity, centre = { x = (c1.x + c2.x) / 2, y = (c1.y + c2.y) / 2 }, dir = { x = dx / d, y = dy / d },
+		half = d / 2, ends = ids }, nil
+end
+
+function survey.existingStations(town : Town, reach : number) : {Station}
+	local result : {Station} = {}
+	local ok, found = pcall(function() : {Engine.Entity}
+		return api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(town.pos.x, town.pos.y), reach,
+			api.type.ComponentType.CONSTRUCTION)
+	end)
+	if not ok then
+		logOnce("existing" .. tostring(town.id), "existing stations in " .. tostring(town.name) .. ": " .. tostring(found))
+		return result
+	end
+	-- A station within reach of two towns belongs to the nearer: Mercer Island was offered Bangor's, 1.5 km from it
+	-- and 400 m from Bangor.
+	local okT, towns = pcall(survey.towns)
+	local function nearerTown(p : Pt) : Town
+		if okT then
+			local d = (p.x - town.pos.x) ^ 2 + (p.y - town.pos.y) ^ 2
+			for __, other in ipairs(towns as {Town}) do
+				if other.id ~= town.id and (p.x - other.pos.x) ^ 2 + (p.y - other.pos.y) ^ 2 < d then
+					return other
+				end
+			end
+		end
+		return nil
+	end
+	for __, e in ipairs(found as {Engine.Entity}) do
+		local entity = e as integer
+		local okS, station, why = pcall(function() : Station, string
+			local con = api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+			if con == nil or con.stations == nil or #con.stations == 0 then
+				return nil, nil
+			end
+			local ends = survey.trackEnds(entity)
+			if #ends == 0 then
+				-- No frozen track: a bus, tram, ship or air station.
+				return nil, nil
+			end
+			local station, why = stationOf(entity, ends)
+			-- Its box, as markConstruction blocks it: the planner treats the cells it covers out of a bare end as the
+			-- station's own.
+			local bv = boundingBox(entity)
+			if station ~= nil and bv ~= nil then
+				station.box = { minX = bv.bbox.min.x, minY = bv.bbox.min.y, maxX = bv.bbox.max.x, maxY = bv.bbox.max.y }
+			end
+			return station, why
+		end)
+		if not okS then
+			logOnce("existing" .. tostring(entity), ("existing station %d in %s: %s"):format(entity, tostring(town.name),
+				tostring(station)))
+		elseif station ~= nil and nearerTown((station as Station).centre) ~= nil then
+			logOnce("existing" .. tostring(entity) .. "/" .. tostring(town.id), ("existing station %d left out of %s: nearer %s")
+				:format(entity, tostring(town.name), tostring(nearerTown((station as Station).centre).name)))
+		elseif station ~= nil then
+			local s = station as Station
+			table.insert(result, s)
+			local box = s.box ~= nil and ("box (%.1f %.1f)-(%.1f %.1f)"):format(s.box.minX, s.box.minY, s.box.maxX,
+				s.box.maxY) or "no box"
+			debugPrint(LOG_PREFIX .. ("existing station %d in %s: %d ends, centre (%.1f %.1f), dir (%.3f %.3f), half %.1f, %s")
+				:format(entity, tostring(town.name), #s.ends, s.centre.x, s.centre.y, s.dir.x, s.dir.y, s.half, box))
+		elseif why ~= nil then
+			logOnce("existing" .. tostring(entity), ("existing station %d in %s left out: %s"):format(entity,
+				tostring(town.name), tostring(why)))
+		end
+	end
+	return result
+end
+
+local function inUnit(x : any) : boolean
+	return type(x) == "number" and (x as number) >= 0 and (x as number) <= 1
+end
+
+local function p3(v : Vec3f) : Pt3
+	return { x = v.x, y = v.y, z = v.z }
+end
+
+-- A piece's one-way signals as {param, facing}: for each of its transport edges k and each way, the signal there
+-- (signalSystem.getSignal, as probe P14 read them), kept if its SIGNAL_LIST type is 1 (one-way), each signal once. P14:
+-- a signal facing node1 → node0 trains is found with reversed = false, so facing is +1 for reversed = true. The param
+-- is the signal's EDGE_OBJECT param along the piece if readable, else the middle of its transport edge. Also returns
+-- how many reads threw (each in a pcall of its own, logged once): a piece with any is "unknown".
+local function signalsOf(piece : Piece) : {{number}}, integer
+	local entity = piece.entity
+	local result : {{number}} = {}
+	local failures = 0
+	local count = 1
+	local okN, n = pcall(function() : integer
+		local tn = api.engine.getComponent(entity, api.type.ComponentType.TRANSPORT_NETWORK) as Engine.Component.TransportNetwork
+		if tn ~= nil and tn.edges ~= nil and #tn.edges > 0 then
+			return #tn.edges
+		end
+		return 1
+	end)
+	if okN then
+		count = n as integer
+	else
+		failures = failures + 1
+		logOnce("snapshotNetwork", ("snapshot: transport network of piece %d: %s"):format(entity, tostring(n)))
+	end
+	local seen : {string : boolean} = {}
+	for k = 0, count - 1 do
+		for __, reversed in ipairs({ false, true }) do
+			local ok, err = pcall(function() : boolean
+				local id = api.engine.system.signalSystem.getSignal(api.type.EdgeId.new(entity, k), reversed)
+				if id == nil or id.entity == nil or (id.entity as integer) < 0 then
+					return true
+				end
+				local key = tostring(id.entity) .. ":" .. tostring(id.index)
+				if seen[key] then
+					return true
+				end
+				seen[key] = true
+				local list = api.engine.getComponent(id.entity, api.type.ComponentType.SIGNAL_LIST) as {string : any}
+				local sig : {string : any} = nil
+				if list ~= nil and list.signals ~= nil then
+					sig = (list.signals as {{string : any}})[id.index + 1]
+				end
+				if sig == nil or tonumber(sig.type) ~= 1 then
+					return true
+				end
+				local param = (k + 0.5) / count
+				local eoParam : any = nil
+				pcall(function() : boolean
+					local eo = api.engine.getComponent(id.entity, api.type.ComponentType.EDGE_OBJECT) as Engine.Component.EdgeObject
+					if eo ~= nil then
+						eoParam = eo.param
+						if inUnit(eoParam) then
+							param = eoParam as number
+						end
+					end
+					return true
+				end)
+				table.insert(result, { param, reversed and 1 or -1 })
+				return true
+			end)
+			if not ok then
+				failures = failures + 1
+				logOnce("snapshotSignals", ("snapshot: signal of piece %d edge %d: %s"):format(entity, k, tostring(err)))
+			end
+		end
+	end
+	return result, failures
+end
+
+function survey.trackSnapshot(centre : Pt, radius : number) : Snapshot
+	local clock = api.type.Clock.new()
+	local snap : Snapshot = { pieces = {}, degree = {} }
+	local ok, found = pcall(function() : {Engine.Entity}
+		return api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(centre.x, centre.y), radius,
+			api.type.ComponentType.BASE_EDGE)
+	end)
+	if not ok then
+		logOnce("snapshot", "snapshot: " .. tostring(found))
+		return snap
+	end
+	local bridge = api.type["enum"].BaseEdgeType.BRIDGE
+	local tunnel = api.type["enum"].BaseEdgeType.TUNNEL
+	local failed, unknown, signalFailures, degreeFailures = 0, 0, 0, 0
+	local function readPiece(entity : integer) : boolean
+		local edge = api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if edge == nil then
+			return true
+		end
+		local kind = "ground"
+		if edge.type == bridge then
+			kind = "bridge"
+		elseif edge.type == tunnel then
+			kind = "tunnel"
+		end
+		-- Plain numbers now: engine data read later goes stale.
+		local piece : Piece = { entity = entity, node0 = edge.node0 as integer, node1 = edge.node1 as integer,
+			p0 = p3(edge.position0), p1 = p3(edge.position1), t0 = p3(edge.tangent0), t1 = p3(edge.tangent1),
+			kind = kind, signals = {} }
+		local signals, failures = signalsOf(piece)
+		piece.signals = signals
+		if failures > 0 then
+			-- Fail closed: its running direction is unknown, so the analyser stops at it.
+			piece.kind = "unknown"
+			unknown = unknown + 1
+			signalFailures = signalFailures + failures
+		end
+		table.insert(snap.pieces, piece)
+		return true
+	end
+	local function isStreet(entity : integer) : boolean
+		return api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE_STREET) ~= nil
+	end
+	for __, e in ipairs(found as {Engine.Entity}) do
+		local entity = e as integer
+		local okStreet, street = pcall(isStreet, entity)
+		if okStreet and not (street as boolean) then
+			local okP, err = pcall(readPiece, entity)
+			if not okP then
+				failed = failed + 1
+				logOnce("snapshotPiece", ("snapshot: piece %d: %s"):format(entity, tostring(err)))
+			end
+		elseif not okStreet then
+			failed = failed + 1
+			logOnce("snapshotPiece", ("snapshot: piece %d: %s"):format(entity, tostring(street)))
+		end
+	end
+	local function trackSegments(node : integer) : integer
+		return #api.engine.system.streetSystem.getNodeTrackSegments(node)
+	end
+	for __, piece in ipairs(snap.pieces) do
+		for __, node in ipairs({ piece.node0, piece.node1 }) do
+			if snap.degree[node] == nil then
+				local okD, n = pcall(trackSegments, node)
+				if okD then
+					snap.degree[node] = n as integer
+				else
+					-- Unknown: counted as no plain node, which stops the analyser's reading there.
+					snap.degree[node] = 0
+					degreeFailures = degreeFailures + 1
+					logOnce("snapshotDegree", ("snapshot: node %d: %s"):format(node, tostring(n)))
+				end
+			end
+		end
+	end
+	local signals = 0
+	for __, piece in ipairs(snap.pieces) do
+		signals = signals + #piece.signals
+	end
+	debugPrint(LOG_PREFIX .. ("snapshot: %d pieces, %d us (%d one-way signals; %d pieces unreadable, %d unknown after %d failed signal reads, %d node degrees unreadable)")
+		:format(#snap.pieces, math.floor(clock:getTime()), signals, failed, unknown, signalFailures, degreeFailures))
+	return snap
 end
 
 return survey

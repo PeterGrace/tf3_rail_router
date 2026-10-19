@@ -902,3 +902,615 @@ t.test("route: weighing every radius, progress never goes back", function()
 	end
 	t.ok(route.plan(job).ok, "ok")
 end)
+
+-- Existing stations (milestone 4b).
+local existing = t.requireTl("gui/pgrace_rail_router/planner/existing.tl")
+local junction = t.requireTl("gui/pgrace_rail_router/planner/junction.tl")
+
+local JR = 300
+
+-- A station at (cx, 0) facing +x, half 80, its two tracks at y = ±2.5 running straight out from each platform end:
+-- `reach[k]` metres at end k (±1; 0: none), in 100 m pieces. Options: z[k] the track's height at end k's platform
+-- end and grade[k] its grade outward (both 0 if not given), wrongWay[k] a one-way signal at end k on the track
+-- left of outward facing outward trains (left-hand running), and carry[k] the line running on past end k's stretch:
+-- swinging 20 m aside (towards world y × carry[k]) over 200 m, then straight on for 250 m (within the 1.5 km the
+-- snapshot reads). The station's own track runs between its end nodes, one piece a track. Nodes are shared by
+-- position; degrees counted.
+local function existingStation(cx, reach, opts)
+	opts = opts or {}
+	local pieces, ids, nextNode = {}, {}, 1
+	local function node(x, y)
+		local key = x .. "," .. y
+		if not ids[key] then
+			ids[key] = nextNode
+			nextNode = nextNode + 1
+		end
+		return ids[key]
+	end
+	for __, y in ipairs({ 2.5, -2.5 }) do
+		pieces[#pieces + 1] = { entity = 100 + #pieces, node0 = node(cx - 80, y), node1 = node(cx + 80, y),
+			p0 = { x = cx - 80, y = y, z = 0 }, p1 = { x = cx + 80, y = y, z = 0 }, t0 = { x = 160, y = 0, z = 0 },
+			t1 = { x = 160, y = 0, z = 0 }, kind = "ground", signals = {} }
+	end
+	for __, k in ipairs({ 1, -1 }) do
+		local z0, grade = (opts.z or {})[k] or 0, (opts.grade or {})[k] or 0
+		for __, y in ipairs({ 2.5, -2.5 }) do
+			local d = 0
+			while d < (reach[k] or 0) - 1e-9 do
+				local l = math.min(100, reach[k] - d)
+				local x0, x1 = cx + k * (80 + d), cx + k * (80 + d + l)
+				local signals = {}
+				if (opts.wrongWay or {})[k] and y == 2.5 * k and d == 300 then
+					signals = { { 0.5, 1 } }
+				end
+				pieces[#pieces + 1] = { entity = 100 + #pieces, node0 = node(x0, y), node1 = node(x1, y),
+					p0 = { x = x0, y = y, z = z0 + grade * d }, p1 = { x = x1, y = y, z = z0 + grade * (d + l) },
+					t0 = { x = x1 - x0, y = 0, z = grade * l }, t1 = { x = x1 - x0, y = 0, z = grade * l }, kind = "ground",
+					signals = signals }
+				d = d + l
+			end
+			local carry = (opts.carry or {})[k]
+			if carry ~= nil and (reach[k] or 0) > 0 then
+				local x0, x1 = cx + k * (80 + reach[k]), cx + k * (280 + reach[k])
+				local y1 = y + 20 * carry
+				local function add(ax, ay, bx, by)
+					pieces[#pieces + 1] = { entity = 100 + #pieces, node0 = node(ax, ay), node1 = node(bx, by),
+						p0 = { x = ax, y = ay, z = z0 }, p1 = { x = bx, y = by, z = z0 },
+						t0 = { x = bx - ax, y = by - ay, z = 0 }, t1 = { x = bx - ax, y = by - ay, z = 0 }, kind = "ground",
+						signals = {} }
+				end
+				add(x0, y, x1, y1)
+				add(x1, y1, x1 + k * 150, y1)
+				add(x1 + k * 150, y1, x1 + k * 250, y1)
+			end
+		end
+	end
+	local degree = {}
+	for __, p in ipairs(pieces) do
+		degree[p.node0] = (degree[p.node0] or 0) + 1
+		degree[p.node1] = (degree[p.node1] or 0) + 1
+	end
+	local station = { entity = 1, centre = { x = cx, y = 0 }, dir = { x = 1, y = 0 }, half = 80,
+		ends = { node(cx + 80, 2.5), node(cx + 80, -2.5), node(cx - 80, 2.5), node(cx - 80, -2.5) } }
+	return station, { pieces = pieces, degree = degree }
+end
+
+-- Marks the cells under the station's platforms and the snapshot's track as track, as the survey does in-game.
+local function markTrack(g, station, snap)
+	local function mark(x, y)
+		local ix, iy = grid.cellOf(g, { x = x, y = y })
+		g.track[grid.index(g, ix, iy)] = true
+	end
+	for x = station.centre.x - station.half, station.centre.x + station.half, 10 do
+		mark(x, 2.5)
+		mark(x, -2.5)
+	end
+	for __, p in ipairs(snap.pieces) do
+		for f = 0, 1, 0.1 do
+			mark(p.p0.x + (p.p1.x - p.p0.x) * f, p.p0.y + (p.p1.y - p.p0.y) * f)
+		end
+	end
+	return g
+end
+
+-- Plans with the existing station at stop i; `changes` overrides the input's fields (a grid, snapshots, radius).
+local function runExisting(stops, i, station, snap, changes)
+	local input = { grid = flatGrid(), stops = stops, weights = W, platformLength = 160,
+		existingStations = { [i] = station }, snapshots = { [i] = snap }, radius = JR }
+	for k, v in pairs(changes or {}) do
+		input[k] = v
+	end
+	local job = route.start(input)
+	local steps = 0
+	while not route.step(job, 500) do
+		steps = steps + 1
+		assert(steps < 100000, "runaway")
+	end
+	return route.plan(job)
+end
+
+-- With R = 300 and a 1000 m stretch from each platform end (x = 3000 ± 80), in 100 m pieces, the junction would fit
+-- from its start (15 m clear, the 110 m merge, 20 m, two 54.54 m crossing arcs and 30 m), but that puts the crossing
+-- 0.46 m short of the node at 200 m; it moves out to cross at that node: its approach starts 284.544 m out.
+local JX = 200 + 300 * math.sin(math.acos(1 - 5 / 300)) + 30
+local IN_END = { x = 2920 - JX, y = -10 }
+local OUT_END = { x = 3080 + JX, y = -10 }
+
+local function legStart(leg)
+	return leg.pieces[1].a
+end
+
+local function legEnd(leg)
+	return leg.pieces[#leg.pieces].b
+end
+
+-- A, then B with an existing station, then C: A lies left of B's −x end's outward (−x), C right of its +x end's.
+local AXC = { town(1, "A", 0, -300), town(2, "B", 3000, 0), town(3, "C", 6000, -300) }
+
+t.test("route: a middle stop with a usable existing station is joined at junctions on both its ends", function()
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	local plan = runExisting(AXC, 2, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(#plan.notes, 0, "no notes")
+	local b = plan.stations[2]
+	t.ok(b.existing == station, "B uses the existing station")
+	t.eq(b.endOf[false], -1, "the leg in uses the −x end")
+	t.eq(b.endOf[true], 1, "the leg out uses the +x end")
+	t.eq(b.sides[-1], 1, "A lies left of −x")
+	t.eq(b.sides[1], -1, "C lies right of +x")
+	t.ok(b.junctions[-1] ~= nil and b.junctions[1] ~= nil, "a junction at each end")
+	t.near(JX, 284.544, 1e-3, "the junction's approach start")
+	t.near(legEnd(plan.legs[1]).x, IN_END.x, 1e-6, "leg in ends at the −x junction's approach start (x)")
+	t.near(legEnd(plan.legs[1]).y, IN_END.y, 1e-6, "10 m off the axis, on A's side")
+	t.near(legStart(plan.legs[2]).x, OUT_END.x, 1e-6, "leg out starts at the +x junction's approach start (x)")
+	t.near(legStart(plan.legs[2]).y, OUT_END.y, 1e-6, "10 m off the axis, on C's side")
+	t.eq(plan.legs[1].pieces[#plan.legs[1].pieces].kind, "straight", "leg in arrives straight")
+	t.eq(plan.legs[2].pieces[1].kind, "straight", "leg out leaves straight")
+	t.near(plan.legs[1].z[#plan.legs[1].z], 0, 1e-9, "at the existing track's height")
+	-- Our own stations' platforms only.
+	t.near(plan.summary.length, plan.legs[1].length + plan.legs[2].length + 2 * 160, 1e-6, "length")
+end)
+
+t.test("route: an existing station facing the other way is joined at the same places", function()
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	station.dir = { x = -1, y = 0 }
+	local plan = runExisting(AXC, 2, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[2]
+	t.ok(b.existing == station, "existing")
+	t.eq(b.endOf[false], 1, "the leg in uses end +1, now at −x")
+	t.eq(b.endOf[true], -1, "the leg out uses end −1, at +x")
+	t.near(b.site.dir.x, 1, 1e-9, "the site faces the way the line runs")
+	t.near(legEnd(plan.legs[1]).x, IN_END.x, 1e-6, "in x")
+	t.near(legEnd(plan.legs[1]).y, IN_END.y, 1e-6, "in y")
+	t.near(legStart(plan.legs[2]).x, OUT_END.x, 1e-6, "out x")
+	t.near(legStart(plan.legs[2]).y, OUT_END.y, 1e-6, "out y")
+end)
+
+t.test("route: an existing station as the first stop is left at the end facing the next", function()
+	local station, snap = existingStation(3000, { [1] = 1000 })
+	local plan = runExisting({ AXC[2], AXC[3] }, 1, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[1].existing == station, "existing")
+	t.eq(plan.stations[1].endOf[true], 1, "the +x end")
+	t.near(legStart(plan.legs[1]).x, OUT_END.x, 1e-6, "x")
+	t.near(legStart(plan.legs[1]).y, OUT_END.y, 1e-6, "y")
+end)
+
+t.test("route: a leg meets a raised, graded existing stretch at its height", function()
+	-- The +x end's track 5 m up at the platform end, rising 1% outward.
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 }, { z = { [1] = 5 }, grade = { [1] = 0.01 } })
+	local plan = runExisting(AXC, 2, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.near(plan.stations[2].ends[1].z, 5, 1e-9, "the stretch starts at the platform end")
+	t.near(plan.legs[2].z[1], 5 + 0.01 * JX, 1e-6, "the leg out leaves at the track's height there (7.85 m)")
+	t.near(plan.legs[1].z[#plan.legs[1].z], 0, 1e-9, "the flat end")
+end)
+
+t.test("route: an existing station at the end of the line uses the end facing its neighbour", function()
+	local station, snap = existingStation(3000, { [-1] = 1000 })
+	local plan = runExisting({ AXC[1], AXC[2] }, 2, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[2].existing == station, "existing")
+	t.eq(plan.stations[2].endOf[false], -1, "the −x end")
+	t.near(legEnd(plan.legs[1]).x, IN_END.x, 1e-6, "x")
+	t.near(legEnd(plan.legs[1]).y, IN_END.y, 1e-6, "y")
+end)
+
+-- A fallback: B gets a station of ours, and the plan the one note.
+local function fellBack(plan, note)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(plan.stations[2].existing, nil, "a new station")
+	t.ok(plan.stations[2].site.distance < 1500, "sited in B")
+	t.eq(#plan.notes, 1, "one note")
+	t.eq(plan.notes[1], note, "note")
+end
+
+t.test("route: an existing station with no room for a junction falls back to a new station, with a note", function()
+	-- Only 200 m of double track beyond the +x end: short of a 300 m radius junction.
+	local station, snap = existingStation(3000, { [1] = 200, [-1] = 1000 })
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B has no room for a junction at its C end (needs 349 m "
+		.. "of straight double track; the longest is 200 m); a new station was planned.")
+end)
+
+t.test("route: a middle stop whose legs would use the same end of an existing station falls back", function()
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	-- C behind B as seen from A along the station's axis: both neighbours lie off its −x end.
+	local plan = runExisting({ town(1, "A", 0, -300), town(2, "B", 3000, 0), town(3, "C", 2500, 1300) }, 2, station,
+		snap)
+	fellBack(plan, "The station in B can't be used: both legs would use the same end; a new station was planned.")
+end)
+
+t.test("route: an existing station whose tracks run left-handed falls back", function()
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 }, { wrongWay = { [1] = true } })
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: the tracks at the C end run "
+		.. "left-handed; a new station was planned.")
+end)
+
+t.test("route: an existing station whose track couldn't be read falls back", function()
+	local station = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	fellBack(runExisting(AXC, 2, station, nil, { snapshots = {} }), "The track at the station in B couldn't be read; "
+		.. "a new station was planned.")
+end)
+
+t.test("route: existing stations without a turnout radius fail the plan cleanly", function()
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	local job = route.start({ grid = flatGrid(), stops = AXC, weights = W, platformLength = 160,
+		existingStations = { [2] = station }, snapshots = { [2] = snap } })
+	t.ok(route.step(job, 500), "done at once")
+	t.eq(route.plan(job).ok, false, "failed")
+	t.eq(route.plan(job).failure, "no_radius", "why")
+end)
+
+-- Samples of a plan's legs on track cells farther than `reach` from both junction ends: track the line runs along
+-- or crosses away from its fixed straights.
+local function onTrackAway(g, plan, reach)
+	local n = 0
+	for __, leg in ipairs(plan.legs) do
+		for __, sample in ipairs(leg.samples) do
+			local ix, iy = grid.cellOf(g, sample.p)
+			local p = sample.p
+			local near = math.min(math.sqrt((p.x - IN_END.x) ^ 2 + (p.y - IN_END.y) ^ 2),
+				math.sqrt((p.x - OUT_END.x) ^ 2 + (p.y - OUT_END.y) ^ 2))
+			if g.track[grid.index(g, ix, iy)] and near > reach then
+				n = n + 1
+			end
+		end
+	end
+	return n
+end
+
+for __, case in ipairs({ { "off the axis", AXC },
+		{ "along the axis", { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) } } }) do
+	t.test("route: legs at an existing station's junctions leave its track at ground level, neighbours " .. case[1],
+			function()
+		local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+		local g = markTrack(flatGrid(), station, snap)
+		local plan = runExisting(case[2], 2, station, snap, { grid = g })
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		t.ok(plan.stations[2].existing == station, "existing")
+		t.near(plan.legs[1].z[#plan.legs[1].z], 0, 1e-9, "leg in ends on the ground")
+		t.near(plan.legs[2].z[1], 0, 1e-9, "leg out starts on the ground")
+		for k, leg in ipairs(plan.legs) do
+			for __, z in ipairs(leg.z) do
+				t.near(z, 0, 1e-6, "leg " .. k .. " stays on the flat ground")
+			end
+		end
+		t.eq(plan.summary.bridges, 0, "no bridges")
+		-- Within the approach (100 m) and the extension (at most 91 m at R = 220) of the junction, and a cell.
+		t.eq(onTrackAway(g, plan, 100 + 92 + 100), 0, "the legs leave the existing line beyond their straights")
+	end)
+end
+
+t.test("route: an existing station too close to the stop before it falls back, with a note", function()
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	-- B's centre 600 m east of its existing station, which is 300 m from A's: B's own station fits.
+	local plan = runExisting({ town(1, "A", 2700, 0), town(2, "B", 3600, 0), town(3, "C", 6600, -300) }, 2,
+		station, snap)
+	fellBack(plan, "The station in B is too close to the station in A; a new station was planned.")
+end)
+
+t.test("route: with turns spaced for a wide radius, legs leave an existing station's track at full radius", function()
+	-- Turns spaced (2 · 1500 · tan 11.25° is more than a cell), stops in line: the leg's first and last moves have to
+	-- slide along the stretch, off the existing line's cells, to turn away from it.
+	local wide = withWeights({ minRadius = 1500, minSearchRadius = 1500 })
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	local g = markTrack(flatGrid(), station, snap)
+	local plan = runExisting({ town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) }, 2, station, snap,
+		{ grid = g, weights = wide })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[2].existing == station, "existing")
+	t.eq(plan.summary.tightCurves, 0, "no tight curves")
+	t.ok(plan.summary.minRadius >= 1500 - 1e-6, "radius " .. plan.summary.minRadius)
+	for k, leg in ipairs(plan.legs) do
+		t.eq(leg.searchRadius, 1500, "leg " .. k .. " searched at the full radius")
+	end
+	-- (No bridge count: with the stops in line, each leg runs in along the axis beyond the stretch, where in-game the
+	-- existing line would run on, and eases across to our straight 10 m off by the stretch's far end; the cell holding
+	-- the existing track's last metres counts as track, and the profile bridges it.)
+end)
+
+t.test("route: a leg doesn't run on top of the existing line beyond the station's stretch", function()
+	-- B's existing line runs on west along y = 0 past its stretch, 2 km from the station in all, towards A.
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
+	local g = markTrack(flatGrid(), station, snap)
+	for x = 920, 1920, 10 do
+		local ix, iy = grid.cellOf(g, { x = x, y = 0 })
+		g.track[grid.index(g, ix, iy)] = true
+	end
+	-- Turns spaced for a wide radius, where leaving the line's axis costs the most (with Fastest's fallback to a
+	-- freely turning search: spaced turns alone can't jog the one row the scouted A leaves the leg).
+	local plan = runExisting({ town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) }, 2, station, snap,
+		{ grid = g, weights = withWeights({ minRadius = 1500, minSearchRadius = 220 }) })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[2].existing == station, "existing")
+	for __, span in ipairs(plan.legs[1].spans) do
+		if span.kind == "bridge" then
+			t.ok(span.s1 - span.s0 <= 300, ("a bridge of %.0f m: the leg runs along the line"):format(span.s1 - span.s0))
+		end
+	end
+end)
+
+-- The existing line runs on past both stretches' ends (in the snapshot and the grid's cells), swinging away from
+-- our side; turns spaced for a wide radius.
+for __, case in ipairs({
+		{ "in line", { town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) }, { [-1] = 1, [1] = -1 } },
+		{ "off the axis", AXC, { [-1] = 1, [1] = 1 } } }) do
+	t.test("route: junction legs don't bridge the existing line running on past its stretches, stops " .. case[1],
+			function()
+		local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 }, { carry = case[3] })
+		local g = markTrack(flatGrid(), station, snap)
+		local plan = runExisting(case[2], 2, station, snap,
+			{ grid = g, weights = withWeights({ minRadius = 1000, minSearchRadius = 220 }) })
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		t.ok(plan.stations[2].existing == station, "existing")
+		t.near(plan.stations[2].ends[1].length, 1000, 1e-6, "the stretch ends where the line swings aside")
+		t.eq(plan.summary.bridges, 0, "no bridges")
+		t.eq(plan.summary.tightCurves, 0, "no tight curves")
+	end)
+end
+
+-- Bare ends: stations with free track ends.
+
+-- A station at (cx, 0) facing +x, half `half` (not the window's 80), with a track at each offset y in `ys`, one
+-- piece a track between its end nodes, at height z: nothing attached, so every end node is free (degree 1).
+-- `lead[k]`: offsets whose track leads on 100 m past end k.
+local function bareStation(cx, half, ys, z, lead)
+	local pieces, ids, nextNode = {}, {}, 1
+	local function node(x, y)
+		local key = x .. "," .. y
+		if not ids[key] then
+			ids[key] = nextNode
+			nextNode = nextNode + 1
+		end
+		return ids[key]
+	end
+	local function add(x0, x1, y)
+		pieces[#pieces + 1] = { entity = 100 + #pieces, node0 = node(x0, y), node1 = node(x1, y),
+			p0 = { x = x0, y = y, z = z }, p1 = { x = x1, y = y, z = z }, t0 = { x = x1 - x0, y = 0, z = 0 },
+			t1 = { x = x1 - x0, y = 0, z = 0 }, kind = "ground", signals = {} }
+	end
+	local ends = {}
+	for __, y in ipairs(ys) do
+		add(cx - half, cx + half, y)
+		ends[#ends + 1] = node(cx + half, y)
+		ends[#ends + 1] = node(cx - half, y)
+	end
+	for k, list in pairs(lead or {}) do
+		for __, y in ipairs(list) do
+			add(cx + k * half, cx + k * (half + 100), y)
+		end
+	end
+	local degree = {}
+	for __, p in ipairs(pieces) do
+		degree[p.node0] = (degree[p.node0] or 0) + 1
+		degree[p.node1] = (degree[p.node1] or 0) + 1
+	end
+	local station = { entity = 1, centre = { x = cx, y = 0 }, dir = { x = 1, y = 0 }, half = half, ends = ends }
+	return station, { pieces = pieces, degree = degree }
+end
+
+-- The bare end's nodes' offsets (world y), in order.
+local function nodeYs(bare)
+	local ys = {}
+	for i, p in ipairs(bare.nodes) do
+		ys[i] = p.y
+	end
+	return table.concat(ys, " ")
+end
+
+for __, case in ipairs({ { "2 tracks 5 m apart", { 2.5, -2.5 }, "direct", "2.5 -2.5", "-2.5 2.5" },
+		{ "2 tracks 10 m apart", { 5, -5 }, "island", "5 -5", "-5 5" },
+		{ "4 tracks 5 m apart", { 7.5, 2.5, -2.5, -7.5 }, "fan", "7.5 2.5 -2.5 -7.5", "-7.5 -2.5 2.5 7.5" } }) do
+	t.test("route: a middle stop's existing station with bare ends, " .. case[1] .. ", is joined at them", function()
+		local station, snap = bareStation(3000, 120, case[2], 4)
+		local plan = runExisting(AXC, 2, station, snap)
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		t.eq(#plan.notes, 0, "no notes")
+		local b = plan.stations[2]
+		t.ok(b.existing == station, "B uses the existing station")
+		t.eq(next(b.junctions), nil, "no junctions")
+		t.eq(b.bare[1].kind, case[3], "+x end's kind")
+		t.eq(b.bare[-1].kind, case[3], "−x end's kind")
+		-- Left to right looking outward: +y first at +x, −y first at −x.
+		t.eq(nodeYs(b.bare[1]), case[4], "+x end's nodes, left to right")
+		t.eq(nodeYs(b.bare[-1]), case[5], "−x end's nodes, left to right")
+		t.eq(b.bare[1].nodes[1].entity ~= nil, true, "nodes carry their entities")
+		t.near(b.bare[1].mid.x, 3120, 1e-9, "+x end's midpoint")
+		t.near(b.bare[1].mid.z, 4, 1e-9, "+x end's height")
+		t.near(b.bare[1].out.x, 1, 1e-9, "+x end faces +x")
+		-- The legs end at the platform ends, the station's own half (120 m) from its centre, on its axis.
+		t.near(legEnd(plan.legs[1]).x, 2880, 1e-6, "leg in ends at the −x platform end (x)")
+		t.near(legEnd(plan.legs[1]).y, 0, 1e-6, "on the axis")
+		t.near(legStart(plan.legs[2]).x, 3120, 1e-6, "leg out starts at the +x platform end (x)")
+		t.near(legStart(plan.legs[2]).y, 0, 1e-6, "on the axis")
+		t.eq(plan.legs[1].pieces[#plan.legs[1].pieces].kind, "straight", "leg in arrives straight")
+		t.eq(plan.legs[2].pieces[1].kind, "straight", "leg out leaves straight")
+		t.near(plan.legs[1].z[#plan.legs[1].z], 4, 1e-9, "leg in ends at the end nodes' height")
+		t.near(plan.legs[2].z[1], 4, 1e-9, "leg out starts at the end nodes' height")
+		t.near(plan.summary.length, plan.legs[1].length + plan.legs[2].length + 2 * 160, 1e-6, "length: ours only")
+	end)
+end
+
+t.test("route: an existing station facing the other way is joined at its bare ends the same", function()
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 0)
+	station.dir = { x = -1, y = 0 }
+	local plan = runExisting(AXC, 2, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[2]
+	t.eq(b.endOf[false], 1, "the leg in uses end +1, now at −x")
+	t.near(b.bare[1].out.x, -1, 1e-9, "end +1 faces −x")
+	t.eq(nodeYs(b.bare[1]), "-2.5 2.5", "its nodes, left to right looking out −x")
+	t.near(legEnd(plan.legs[1]).x, 2880, 1e-6, "in x")
+	t.near(legStart(plan.legs[2]).x, 3120, 1e-6, "out x")
+end)
+
+t.test("route: an existing station with 3 tracks at a bare end falls back, with a note", function()
+	local station, snap = bareStation(3000, 120, { 5, 0, -5 }, 0)
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: it has 3 tracks at its A end (Rail "
+		.. "Router joins 2 tracks 5 or 10 m apart, or 4 tracks 5 m apart); a new station was planned.")
+end)
+
+t.test("route: an existing station with 2 tracks 7 m apart at a bare end falls back, with a note saying so", function()
+	local station, snap = bareStation(3000, 120, { 3.5, -3.5 }, 0)
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: it has 2 tracks 7 m apart at its A "
+		.. "end (Rail Router joins 2 tracks 5 or 10 m apart, or 4 tracks 5 m apart); a new station was planned.")
+end)
+
+t.test("route: an existing station with 4 tracks 6 m apart at a bare end falls back, with a note saying so", function()
+	local station, snap = bareStation(3000, 120, { 9, 3, -3, -9 }, 0)
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: it has 4 tracks at its A end, not "
+		.. "5 m apart (Rail Router joins 2 tracks 5 or 10 m apart, or 4 tracks 5 m apart); a new station was planned.")
+end)
+
+t.test("route: an existing station whose tracks at an end partly lead on falls back, with a note", function()
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 0, { [1] = { 2.5 } })
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: some of its tracks at the C end "
+		.. "lead on and some don't; a new station was planned.")
+end)
+
+t.test("route: an existing station with one bare end and a junction at the other", function()
+	-- Double track out of the +x end only; the −x end's nodes have just the station's own pieces.
+	local station, snap = existingStation(3000, { [1] = 1000 })
+	local plan = runExisting(AXC, 2, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[2]
+	t.ok(b.existing == station, "existing")
+	t.eq(b.bare[-1].kind, "direct", "bare at −x")
+	t.eq(b.bare[1], nil, "not bare at +x")
+	t.ok(b.junctions[1] ~= nil, "a junction at +x")
+	t.eq(b.junctions[-1], nil, "no junction at −x")
+	t.near(legEnd(plan.legs[1]).x, 2920, 1e-6, "leg in ends at the −x platform end (x)")
+	t.near(legEnd(plan.legs[1]).y, 0, 1e-6, "on the axis")
+	t.near(legStart(plan.legs[2]).x, OUT_END.x, 1e-6, "leg out starts at the junction's approach start (x)")
+	t.near(legStart(plan.legs[2]).y, OUT_END.y, 1e-6, "10 m off the axis")
+end)
+
+t.test("route: an existing station with a bare end at the end of the line", function()
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 2)
+	local plan = runExisting({ AXC[1], AXC[2] }, 2, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[2].existing == station, "existing")
+	t.eq(plan.stations[2].bare[-1].kind, "direct", "bare at −x")
+	t.near(legEnd(plan.legs[1]).x, 2880, 1e-6, "x")
+	t.near(plan.legs[1].z[#plan.legs[1].z], 2, 1e-9, "z")
+end)
+
+-- The survey blocks every construction's box, and BUILDING_BUFFER round it, the existing station's own included: a
+-- modular station's box runs about 10 m past its platform ends (and `width` either side of its axis here). Records
+-- the box on the station, as the survey does, and marks its platforms' track as track cells.
+local area = t.requireTl("gui/pgrace_rail_router/planner/area.tl")
+local function surveyed(station, snap, width)
+	local g = markTrack(flatGrid(), station, snap)
+	local c, h = station.centre, station.half + 10
+	station.box = { minX = c.x - h, minY = c.y - width, maxX = c.x + h, maxY = c.y + width }
+	local b = area.BUILDING_BUFFER
+	area.markBox(g, station.box.minX - b, station.box.minY - b, station.box.maxX + b, station.box.maxY + b, g.blocked)
+	return g
+end
+
+-- The leg's bridges within `reach` metres of its ends.
+local function endBridges(leg, reach)
+	local found = {}
+	for __, span in ipairs(leg.spans) do
+		if span.kind == "bridge" and (span.s0 < reach or span.s1 > leg.length - reach) then
+			found[#found + 1] = ("%.0f-%.0f"):format(span.s0, span.s1)
+		end
+	end
+	return table.concat(found, " ")
+end
+
+for __, case in ipairs({ { "direct", { 2.5, -2.5 } }, { "island", { 5, -5 } }, { "fan", { 7.5, 2.5, -2.5, -7.5 } } }) do
+	t.test("route: an existing station blocked by its own box, as surveyed, is joined at its bare ends, " .. case[1],
+			function()
+		local station, snap = bareStation(3000, 120, case[2], 0)
+		local g = surveyed(station, snap, 40)
+		local plan = runExisting(AXC, 2, station, snap, { grid = g })
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		t.eq(plan.notes[1], nil, "no note")
+		t.ok(plan.stations[2].existing == station, "B uses the existing station")
+		t.eq(plan.summary.blockedSamples, 0, "no samples on blocked cells")
+		t.eq(endBridges(plan.legs[1], 300), "", "no bridge at the leg in's ends")
+		t.eq(endBridges(plan.legs[2], 300), "", "no bridge at the leg out's ends")
+		t.eq(plan.summary.bridges, 0, "no bridges on flat ground")
+	end)
+end
+
+t.test("route: a building beside an existing station's bare end still blocks its approach", function()
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 0)
+	local g = surveyed(station, snap, 40)
+	-- Something else 60–80 m past the +x platform end, on the axis.
+	area.markBox(g, 3180, -10, 3200, 10, g.blocked)
+	local ix, iy = grid.cellOf(g, { x = 3250, y = 0 })
+	g.blocked[grid.index(g, ix, iy)] = true
+	local plan = runExisting(AXC, 2, station, snap, { grid = g })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(plan.stations[2].existing, nil, "a new station")
+	t.eq(#plan.notes, 1, "one note")
+	-- The approach reaches past the station's own cells (to the cell boundary 130 m out, within a step).
+	t.ok(plan.notes[1]:find("^The station in B has no room for the line's approach past its C end %(1[34]%d m of "
+		.. "straight track%); a new station was planned%.$") ~= nil, "note: " .. plan.notes[1])
+end)
+
+-- A bare end's straight is sized by its kind (Input.bareApproach, as the window passes it): in the simple style
+-- (Input.approach 100 m) an island end needs its S-curves and a fan end its fan before the crossovers.
+local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+for __, case in ipairs({ { "direct", { 2.5, -2.5 } }, { "island", { 5, -5 } }, { "fan", { 7.5, 2.5, -2.5, -7.5 } } }) do
+	t.test("route: a bare " .. case[1] .. " end's straight has room for its crossovers, in the simple style", function()
+		local station, snap = bareStation(3000, 120, case[2], 0)
+		local need = network.bareApproach(55)
+		-- Neighbours well off the axis, so the legs turn as soon as they may.
+		local stops = { town(1, "A", 1500, -1300), town(2, "B", 3000, 0), town(3, "C", 4500, 1300) }
+		local plan = runExisting(stops, 2, station, snap, { bareApproach = need })
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		t.ok(plan.stations[2].existing == station, "existing")
+		local inLast, outFirst = plan.legs[1].pieces[#plan.legs[1].pieces], plan.legs[2].pieces[1]
+		t.eq(inLast.kind, "straight", "leg in arrives straight")
+		t.ok(inLast.length >= need[case[1]] - 1e-6, ("leg in's last straight %.1f m"):format(inLast.length))
+		t.eq(outFirst.kind, "straight", "leg out leaves straight")
+		t.ok(outFirst.length >= need[case[1]] - 1e-6, ("leg out's first straight %.1f m"):format(outFirst.length))
+		local o = network.defaults()
+		o.bareFan = 55
+		local net = network.build(plan, o)
+		for li = 1, 2 do
+			local n = 0
+			for __, e in ipairs(net.edges) do
+				if e.track == 0 and e.leg == li then
+					n = n + 1
+				end
+			end
+			t.eq(n, 4, "leg " .. li .. ": a pair of crossovers at each end")
+		end
+	end)
+end
+
+t.test("route: time lost at an existing station counts its own half platform, not the window's", function()
+	local speed = t.requireTl("gui/pgrace_rail_router/planner/speed.tl")
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 0)
+	local w = withWeights({ minRadius = 1500, minSearchRadius = 220, lateralAccel = 2, topSpeed = math.sqrt(2 * 1500) })
+	local stops = { town(1, "A", 1500, -1300), town(2, "B", 3000, 0), town(3, "C", 4500, 1300) }
+	local plan = runExisting(stops, 2, station, snap, { weights = w })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(plan.stations[2].existing == station, "existing")
+	for k, leg in ipairs(plan.legs) do
+		-- Leg 1 runs from A's centre (80 m) to B's (120 m), leg 2 from B's to C's.
+		local lead, tail = k == 1 and 80 or 120, k == 1 and 120 or 80
+		local limits, length = speed.pieceLimits(leg.pieces, lead, w)
+		local expected = speed.timeLost(length + lead + tail, limits, w.topSpeed)
+		t.ok(expected > 0, "leg " .. k .. " loses time to its curves")
+		t.near(leg.timeLost, expected, 1e-9, "leg " .. k .. " time lost")
+	end
+end)
+
+t.test("route: an existing station whose tracks end 20 m apart along the axis falls back, with a note", function()
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 0)
+	-- The −y track's piece runs 20 m further at +x (as one a module longer).
+	for __, p in ipairs(snap.pieces) do
+		if p.p0.y == -2.5 then
+			p.p1 = { x = p.p1.x + 20, y = p.p1.y, z = p.p1.z }
+			p.t0, p.t1 = { x = p.p1.x - p.p0.x, y = 0, z = 0 }, { x = p.p1.x - p.p0.x, y = 0, z = 0 }
+		end
+	end
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: its tracks at the C end don't end "
+		.. "level with each other; a new station was planned.")
+end)

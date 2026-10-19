@@ -74,4 +74,19 @@ global record PgraceRailRouterSurvey
 	step : function(job : Job, budgetUs : integer) : boolean
 	progress : function(job : Job) : number
 	grid : function(job : Job) : PgraceRailRouterGrid.Grid
+
+	-- Milestone 4b. Engine reads, each in a pcall: a station or piece that can't be read is left out and logged once.
+	-- A station's track ends: the nodes of its frozen track edges that aren't among its frozen nodes (the builder joins
+	-- these too). Positions are copied into plain numbers, with entity the node.
+	trackEnds : function(station : integer) : {PgraceRailRouterNetwork.Pt3}
+	-- The rail stations within reach (metres) of the town's centre: constructions with stations and frozen track. Each
+	-- one's ends split into two groups along the line between the two furthest apart: centre is the midpoint of the
+	-- groups' centroids, dir the unit vector between them, half half their distance. A terminus (ends all at one side)
+	-- is left out, and so is a station nearer another town's centre.
+	existingStations : function(town : PgraceRailRouterCorridor.Town, reach : number) : {PgraceRailRouterExisting.Station}
+	-- Every track piece (BASE_EDGE without BASE_EDGE_STREET) within radius of centre, with its one-way signals and each
+	-- of its nodes' track piece count. The analyser reads existing.REACH out from each platform end, so pass the
+	-- station's centre and radius ≥ station.half + existing.REACH + 50. A piece whose signals can't all be read is
+	-- "unknown" (the analyser stops there). Logs its size, the time it took and the failed reads.
+	trackSnapshot : function(centre : PgraceRailRouterGeo.Pt, radius : number) : PgraceRailRouterExisting.Snapshot
 end

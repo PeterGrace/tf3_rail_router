@@ -14,6 +14,7 @@ local builder = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/builder.
 local build = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/build.tl" as PgraceRailRouterBuild
 local network = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/network.tl" as PgraceRailRouterNetwork
 local sl = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/stationlayout.tl" as PgraceRailRouterStationLayout
+local existing = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/existing.tl" as PgraceRailRouterExisting
 local probe = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/probe.tl" as PgraceRailRouterProbe -- PROBE (remove before release)
 
 local type Town = PgraceRailRouterCorridor.Town
@@ -62,6 +63,9 @@ local record Settings
 	-- The player's ticks on candidate stops, by town id, over the default (corridor.select's towns ticked): true
 	-- ticked, false unticked, nil the default. Cleared when From or To changes.
 	ticked : {integer : boolean}
+	-- Milestone 4b: whether a stop joins the existing rail station in its town, by town id: false unticked, nil the
+	-- default (ticked).
+	useExisting : {integer : boolean}
 end
 
 -- "Show all towns" in the stop list, kept until the game restarts.
@@ -69,6 +73,10 @@ local rememberedShowAll = false
 -- Whether the station list and (PROBE) the dev tools are unfolded, kept between openings like the settings.
 local rememberedStations = false
 local rememberedProbes = false -- PROBE (remove before release)
+-- How far from a town's centre an existing rail station is looked for (the station-site reach, metres), and the
+-- snapshot of its track reaches this far beyond the analyser's reading.
+local EXISTING_REACH = 1500.0
+local SNAPSHOT_MARGIN = 50.0
 -- Unticked candidates listed besides the ticked ones while the list is short.
 local EXTRA_STOPS = 5
 -- Halt 2+2 lines: a one-way block signal on each track every so many metres between stations (the player's habit:
@@ -76,7 +84,8 @@ local EXTRA_STOPS = 5
 local BLOCK_SPACING = 500.0
 
 -- Kept between openings until the game restarts or a save is loaded (the window's state starts fresh each time).
-local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 320, ticked = {} }
+local remembered : Settings = { from = -1, to = -1, mode = "cheapest", electrified = nil, platform = 320, ticked = {},
+	useExisting = {} }
 
 -- The plan shown, its check with the game and its build, kept the same way: closing the window mid-build and opening
 -- it again carries on with the same plan. Planning again wouldn't: the new plan avoids the track already built.
@@ -104,12 +113,21 @@ local record Work
 	platform : integer
 	-- The straight at each platform end the stations need (route Input.approach; nil: the planner's 100 m).
 	approach : number
+	-- The straight an existing station's bare end needs, by kind (route Input.bareApproach; network.bareApproach for
+	-- the turnout settingsFor gives a bare fan).
+	bareApproach : {string : number}
 	-- The survey margin in use, and how many times the work was started over with a wider one.
 	margin : number
 	retries : integer
 	-- The map's extent, read on the first survey (the area is cut to it); nil if unknown.
 	bounds : PgraceRailRouterArea.Bounds
 	boundsRead : boolean
+	-- Milestone 4b: the stop towns (by id) to join an existing station in, if they have one; and, read once on the
+	-- first step (main thread), each such stop's station and its track (by stop index; nil where none).
+	useExisting : {integer : boolean}
+	existingRead : boolean
+	existingStations : {integer : PgraceRailRouterExisting.Station}
+	snapshots : {integer : PgraceRailRouterExisting.Snapshot}
 	surveyJob : PgraceRailRouterSurvey.Job
 	routeJob : PgraceRailRouterRoute.Job
 	-- Timing diagnostics for the planning part (after the survey) of the current attempt, logged when the plan is
@@ -227,6 +245,10 @@ local function turnoutRadius(track : TrackType) : number
 	return 600
 end
 
+-- The turnouts' radius at a junction into an existing station's track, whatever the track: Simple's 150 m keeps a
+-- junction short (about 230 m of straight double track), where trains are slowing for the station anyway.
+local JUNCTION_RADIUS = 150.0
+
 -- The straight a station of a style needs at each platform end: Halt 2+2's fan and the crossovers' room after it.
 local function approachFor(style : string, track : TrackType) : number
 	if style == "simple" or track == nil then
@@ -251,6 +273,9 @@ local function settingsFor(track : TrackType, electrified : boolean, year : inte
 	local era = sl.eraLetter(year)
 	local dir = "::/stations/rail/modular_station/"
 	local options = network.defaults()
+	-- An existing station's bare end with 4 tracks gets Halt 2+2's fan whatever the style: this turnout where the
+	-- style has none.
+	options.bareFan = network.turnoutLength(turnoutRadius(track))
 	local signal : string = nil
 	local halt = style ~= "simple"
 	if halt then
@@ -288,9 +313,18 @@ local function outcomePlace(check : PgraceRailRouterBuilder.Check, outcome : Pgr
 		return fill(_("Station {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
 	end
 	local chunk = check.net.chunks[outcome.item.index]
+	if outcome.item.kind ~= "chunk" or chunk == nil or check.net.edges[chunk.first] == nil then
+		return _("Track")
+	end
 	-- The legs run between platform ends: the platforms of the stations passed (one per leg before this one, and
-	-- the leg's own first station) count too.
-	local s = check.net.edges[chunk.first].s0 + chunk.leg * (check.plan.platformLength or 0)
+	-- the leg's own first station) count too, ours only (as the plan's length: an existing station's are its own).
+	local s = check.net.edges[chunk.first].s0
+	for i = 1, chunk.leg do
+		local station = check.plan.stations[i]
+		if station ~= nil and station.existing == nil then
+			s = s + (check.plan.platformLength or 0)
+		end
+	end
 	for i = 1, chunk.leg - 1 do
 		s = s + (check.plan.legs[i].length or 0)
 	end
@@ -440,8 +474,10 @@ local function toInteger(value : integer | number | string) : integer
 	return math.floor(n)
 end
 
-local function labelled(label : string, widget : TreeNodeId) : TreeNodeId
+-- key: a fixed localKey, so rows coming and going above it don't remount it (nil: none).
+local function labelled(label : string, widget : TreeNodeId, key ?: string) : TreeNodeId
 	return builtin.BoxLayout{
+		meta = { localKey = key },
 		orientation = builtin.type.Orientation.Horizontal,
 		children = {
 			builtin.TextView{ meta = { class = "font-scale-body" }, text = label },
@@ -486,6 +522,51 @@ local function failureText(plan : Plan) : string
 	return _("Choose two different towns.")
 end
 
+-- Junctions the plan makes into existing stations' track: one per end of an existing station the line uses.
+local function plannedJunctions(plan : Plan) : integer
+	local count = 0
+	for __, station in ipairs(plan.stations or {}) do
+		if station.existing ~= nil then
+			for __, __ in pairs(station.junctions or {}) do
+				count = count + 1
+			end
+		end
+	end
+	return count
+end
+
+-- A row naming the towns whose existing stations the line joins (at a junction or a bare end; nothing is built for
+-- them), or nil where it joins none.
+local function joinsRow(plan : Plan) : TreeNodeId
+	local towns : {string} = {}
+	for __, station in ipairs(plan ~= nil and plan.stations or {}) do
+		if station.existing ~= nil then
+			table.insert(towns, station.town ~= nil and station.town.name or "?")
+		end
+	end
+	if #towns == 0 then
+		return nil
+	elseif #towns == 1 then
+		return textRow(fill(_("Joins the existing station in {town}"), { town = towns[1] }), "font-scale-annotation")
+	end
+	return textRow(fill(_("Joins the existing stations in {towns}"), { towns = table.concat(towns, ", ") }),
+		"font-scale-annotation")
+end
+
+-- The station nearest the town's centre among those found (nil if none).
+local function nearestStation(town : Town, found : {PgraceRailRouterExisting.Station}) : PgraceRailRouterExisting.Station
+	local best : PgraceRailRouterExisting.Station = nil
+	local bestD : number = nil
+	for __, st in ipairs(found) do
+		local dx, dy = st.centre.x - town.pos.x, st.centre.y - town.pos.y
+		local d = dx * dx + dy * dy
+		if bestD == nil or d < bestD then
+			best, bestD = st, d
+		end
+	end
+	return best
+end
+
 -- priceFactor scales the plan's estimate, made with the track type's listed price, to what the game charges for
 -- the track to be built (pricesFor).
 local function resultRows(plan : Plan, priceFactor : number) : {TreeNodeId}
@@ -514,6 +595,23 @@ local function resultRows(plan : Plan, priceFactor : number) : {TreeNodeId}
 	end
 	if sum.blockedSamples > 0 then
 		table.insert(rows, textRow(_("Warning: the curves cut across buildings in places."), "font-scale-body"))
+	end
+	local junctions = plannedJunctions(plan)
+	if junctions > 0 then
+		table.insert(rows, textRow(fill(_("Junctions: {count}"), { count = tostring(junctions) }), "font-scale-annotation"))
+	end
+	local joins = joinsRow(plan)
+	if joins ~= nil then
+		table.insert(rows, joins)
+	end
+	return rows
+end
+
+-- Why existing stations weren't used (a new station was planned instead), one row each.
+local function noteRows(plan : Plan) : {TreeNodeId}
+	local rows : {TreeNodeId} = {}
+	for __, note in ipairs(plan.notes or {}) do
+		table.insert(rows, textRow(note, "font-scale-annotation"))
 	end
 	return rows
 end
@@ -561,6 +659,14 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- PROBE (remove before release): the probe running (nil when none), and the last one's outcome for the window.
 	local probeRef : ReactRefT<ProbeWork> = react.useRef(nil)
 	local probeStatusState : ReactStateT<string> = react.useState(nil)
+	-- Milestone 4b: rail stations found in each stop town (by town id: how many), for the stop list's "use the
+	-- existing station" rows. Read in a join (engine reads stay off the react step), once per town while the window
+	-- is open, and again after a build (it may have made one); stationsSeenState redraws when a lookup is done.
+	local existingCacheRef : ReactRefT<{integer : integer}> = react.useRef(nil)
+	if existingCacheRef:get() == nil then
+		existingCacheRef:set({})
+	end
+	local stationsSeenState = react.useState(0) as ReactStateT<integer>
 	-- A join is queued and hasn't run yet; at most one at a time.
 	local joinQueuedRef : ReactRefT<boolean> = react.useRef(false)
 	-- Build (milestone 3): the build of the checked plan (nil before Build is clicked), and what the window last
@@ -574,7 +680,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		settingsState:transform(function(current : Settings) : Settings
 			local copy : Settings = { from = current.from, to = current.to, mode = current.mode, track = current.track,
 				electrified = current.electrified, platform = current.platform, style = current.style,
-				ticked = current.ticked }
+				ticked = current.ticked, useExisting = current.useExisting or {} }
 			change(copy)
 			remembered = copy
 			return copy
@@ -585,7 +691,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- A build under way: commands are in flight, so the plan and settings stay as they are until it's over.
 	local function building() : boolean
 		local b = buildRef:get()
-		return b ~= nil and b.phase ~= "done" and b.phase ~= "failed"
+		return b ~= nil and build.busy(b)
 	end
 
 	-- Build, once the check is clean: the button, then the build's progress, its result, or what failed with Show and
@@ -612,8 +718,16 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		if b.phase == "done" then
 			table.insert(rows, textRow(fill(_("Built: {money}, {count} level crossings."), { money = formatMoney(b.charged),
 				count = tostring(b.levelCrossings) }), "font-scale-body"))
+			if (b.junctions or 0) > 0 then
+				table.insert(rows, textRow(fill(_("Junctions: {count}"), { count = tostring(b.junctions) }),
+					"font-scale-annotation"))
+			end
+			local joins = joinsRow(checked.plan)
+			if joins ~= nil then
+				table.insert(rows, joins)
+			end
 			table.insert(rows, textRow(fill(_("Roads to {count} of {total} stations."), { count = tostring(b.roads),
-				total = tostring(#checked.plan.stations) }), "font-scale-annotation"))
+				total = tostring(build.ownStations(checked.plan)) }), "font-scale-annotation"))
 			if #b.roadsMissing > 0 then
 				table.insert(rows, textRow(fill(_("No road could be built to: {towns}"), {
 					towns = table.concat(b.roadsMissing, ", ") }), "font-scale-annotation"))
@@ -624,6 +738,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			if f.item.kind == "station" then
 				local station = checked.plan.stations[f.item.index]
 				what = fill(_("Station {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
+			elseif f.item.kind == "road" then
+				local station = checked.plan.stations[f.item.index]
+				what = fill(_("Road to {town}"), { town = station ~= nil and station.town ~= nil and station.town.name or "?" })
 			else
 				what = outcomePlace(checked, { item = f.item, ok = false, cost = 0, messages = f.messages, x = f.x, y = f.y,
 					us = 0, collisions = {}, crossings = 0 })
@@ -736,6 +853,59 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		return tick
 	end
+	-- The stop towns as the list shows them: From, the ticked candidates, To.
+	local stopTowns : {Town} = {}
+	if fromTown ~= nil and toTown ~= nil and fromTown.id ~= toTown.id then
+		table.insert(stopTowns, fromTown)
+		for __, candidate in ipairs(candidates) do
+			if isTicked(candidate.town.id) then
+				table.insert(stopTowns, candidate.town)
+			end
+		end
+		table.insert(stopTowns, toTown)
+	end
+
+	-- "Use the existing station in {town}" under a stop's line, where the town has a rail station (nil otherwise).
+	local function existingRow(town : Town) : TreeNodeId
+		if town == nil or (existingCacheRef:get()[town.id] or 0) == 0 then
+			return nil
+		end
+		local id = town.id
+		return builtin.BoxLayout{
+			meta = { localKey = "existing:" .. tostring(id) },
+			orientation = builtin.type.Orientation.Horizontal,
+			children = {
+				builtin.TextView{ meta = { class = "font-scale-body" }, text = "\194\160\194\160\194\160\194\160" },
+				builtin.CheckBox{
+					label = fill(_("Use the existing station in {town}"), { town = town.name }),
+					value = (settings.useExisting or {})[id] ~= false and 1 or 0,
+					onValueChange = function(v : integer)
+						update(function(s : Settings)
+							local use : {integer : boolean} = {}
+							for k, flag in pairs(s.useExisting or {}) do
+								use[k] = flag
+							end
+							-- Ticked is the default: no entry.
+							if v == 1 then
+								use[id] = nil
+							else
+								use[id] = false
+							end
+							s.useExisting = use
+						end)
+					end,
+				},
+			},
+		}
+	end
+	local function addExistingRow(body : {TreeNodeId}, town : Town)
+		if town ~= nil and fromTown ~= nil and toTown ~= nil and fromTown.id ~= toTown.id then
+			local row = existingRow(town)
+			if row ~= nil then
+				table.insert(body, row)
+			end
+		end
+	end
 
 	local function findRoute()
 		-- Not while the map capture or a probe runs (PROBE), or a build: one piece of long work at a time.
@@ -751,9 +921,16 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				table.insert(picked, candidate.town)
 			end
 		end
-		workRef:set({ stops = corridor.order(fromTown, toTown, picked), track = track,
+		local stops = corridor.order(fromTown, toTown, picked)
+		local useExisting : {integer : boolean} = {}
+		for __, stop in ipairs(stops) do
+			useExisting[stop.id] = (settings.useExisting or {})[stop.id] ~= false
+		end
+		workRef:set({ stops = stops, track = track, useExisting = useExisting,
 			weights = modes.weights(settings.mode, track),
-			platform = settings.platform, approach = approachFor(settings.style, track), margin = SURVEY_MARGIN,
+			platform = settings.platform, approach = approachFor(settings.style, track),
+			bareApproach = track ~= nil and network.bareApproach(network.turnoutLength(turnoutRadius(track))) or nil,
+			margin = SURVEY_MARGIN,
 			retries = 0, slowestStepUs = {},
 			planUs = 0, planFrames = 0 })
 		resetCheck()
@@ -790,6 +967,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		debugPrint(tag .. "weights " .. table.concat(fields, ";"))
 		debugPrint(tag .. "platform " .. tostring(work.platform))
+		if work.approach ~= nil then
+			debugPrint(tag .. "approach " .. tostring(work.approach))
+		end
 		for __, stop in ipairs(work.stops) do
 			debugPrint(tag .. "stop " .. string.format("%d %.3f %.3f ", stop.id, stop.pos.x, stop.pos.y) .. stop.name)
 		end
@@ -821,8 +1001,45 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 
 	-- Engine reads (terrain, octree) and the planner run in joins on the main thread, BUDGET_US per frame, as Jam
 	-- Session's scan: the window stays responsive and the game doesn't freeze.
+	-- Each ticked stop's existing station (the one nearest its town's centre) and a snapshot of its track, read once
+	-- before the first survey: a one-off of tens of milliseconds. On failure the plan goes ahead without them.
+	local function readExisting(work : Work)
+		work.existingRead = true
+		local ok, err = pcall(function() : boolean
+			local stationsByStop : {integer : PgraceRailRouterExisting.Station} = {}
+			local snapshots : {integer : PgraceRailRouterExisting.Snapshot} = {}
+			local any = false
+			for i, stop in ipairs(work.stops) do
+				if work.useExisting[stop.id] then
+					local st = nearestStation(stop, survey.existingStations(stop, EXISTING_REACH))
+					if st ~= nil then
+						local snap = survey.trackSnapshot(st.centre, st.half + existing.REACH + SNAPSHOT_MARGIN)
+						if snap ~= nil then
+							stationsByStop[i], snapshots[i] = st, snap
+							any = true
+							debugPrint(LOG_PREFIX .. ("stop %d (%s): existing station %d offered"):format(i, stop.name,
+								st.entity))
+						end
+					end
+				end
+			end
+			if any then
+				work.existingStations, work.snapshots = stationsByStop, snapshots
+			end
+			return true
+		end)
+		if not ok then
+			debugPrint(LOG_PREFIX .. "existing stations: " .. tostring(err) .. "; planning without them")
+			work.existingStations, work.snapshots = nil, nil
+		end
+	end
+
 	local function advance(work : Work)
 		local clock = api.type.Clock.new()
+		if not work.existingRead then
+			readExisting(work)
+			return
+		end
 		if work.surveyJob == nil then
 			if not work.boundsRead then
 				work.bounds, work.boundsRead = survey.extent(), true
@@ -836,7 +1053,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			if survey.step(work.surveyJob, BUDGET_US) then
 				pcall(captureProbe, work, survey.grid(work.surveyJob)) -- PROBE (remove before release)
 				work.routeJob = route.start({ grid = survey.grid(work.surveyJob), stops = work.stops,
-					weights = work.weights, platformLength = work.platform, approach = work.approach })
+					weights = work.weights, platformLength = work.platform, approach = work.approach,
+					bareApproach = work.bareApproach,
+					existingStations = work.existingStations, snapshots = work.snapshots,
+					radius = JUNCTION_RADIUS })
 				setProgress(work, "plan", 0)
 			else
 				setProgress(work, "survey", survey.progress(work.surveyJob))
@@ -894,6 +1114,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				.. ", retries " .. tostring(work.retries) .. ", guarded "
 				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0) .. ", leg searches (radius/expansions/time lost) "
 				.. table.concat(searches, " "))
+			for __, note in ipairs(plan.notes or {}) do
+				debugPrint(LOG_PREFIX .. "plan note: " .. note)
+			end
 			-- Perhaps the way round lies outside the surveyed area: start over on a wider one, unless that is the same
 			-- area (already the whole map that way). no_exit (walled in) never gets better with a wider area.
 			local wider = not plan.ok and plan.failure == "no_path" and work.retries < MAX_RETRIES
@@ -993,6 +1216,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.bridgeClearance(settings)
 			elseif work.name == "P14" then
 				work.tasks = probe.halt(settings)
+			elseif work.name == "P16" then
+				work.tasks = probe.trackCrossing(settings)
+			elseif work.name == "P15" then
+				work.tasks = probe.junction(settings)
 			elseif work.name == "P13" then
 				work.tasks = probe.stationStreets()
 			else
@@ -1034,6 +1261,10 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 					return
 				end
 				build.step(b)
+				-- The build may have made a station in a stop town: look again.
+				if b.phase == "done" then
+					existingCacheRef:set({})
+				end
 				local done = build.progress(b)
 				local view = b.phase .. ":" .. tostring(done)
 				if buildViewState:old() ~= view then
@@ -1106,6 +1337,34 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			return
 		end
 		if workRef:get() == nil then
+			-- The stop towns' rail stations, for the stop list: one town per join.
+			local pending : Town = nil
+			for __, town in ipairs(stopTowns) do
+				if existingCacheRef:get()[town.id] == nil then
+					pending = town
+					break
+				end
+			end
+			if pending ~= nil then
+				joinQueuedRef:set(true)
+				safeJoin(function()
+					joinQueuedRef:set(false)
+					local cache = existingCacheRef:get()
+					if cache == nil or cache[pending.id] ~= nil then
+						return
+					end
+					local ok, found = pcall(function() : {PgraceRailRouterExisting.Station}
+						return survey.existingStations(pending, EXISTING_REACH)
+					end)
+					if ok then
+						cache[pending.id] = #(found as {PgraceRailRouterExisting.Station})
+					else
+						cache[pending.id] = 0
+						debugPrint(LOG_PREFIX .. "existing stations in " .. pending.name .. ": " .. tostring(found))
+					end
+					stationsSeenState:set(stationsSeenState:old() + 1)
+				end, "PgraceRailRouterExisting")
+			end
 			return
 		end
 		joinQueuedRef:set(true)
@@ -1135,10 +1394,12 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- Combo values must match an item: a remembered town that isn't on this map shows "Choose a town".
 	table.insert(body, labelled(_("From"), townCombo(data.towns, fromTown ~= nil and fromTown.id or -1, function(id : integer)
 		update(function(s : Settings) s.from = id s.ticked = {} end)
-	end)))
+	end), "from"))
+	addExistingRow(body, fromTown)
 	table.insert(body, labelled(_("To"), townCombo(data.towns, toTown ~= nil and toTown.id or -1, function(id : integer)
 		update(function(s : Settings) s.to = id s.ticked = {} end)
-	end)))
+	end), "to"))
+	addExistingRow(body, toTown)
 	table.insert(body, labelled(_("Mode"), builtin.ComboBox{
 		value = settings.mode,
 		items = {
@@ -1258,6 +1519,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 					end)
 				end,
 			})
+			if isTicked(id) then
+				addExistingRow(body, candidate.town)
+			end
 		end
 	end
 	if #candidates > 0 and (showAllState:old() or #candidates > EXTRA_STOPS) then
@@ -1299,6 +1563,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	if plan ~= nil then
 		if not plan.ok then
 			table.insert(body, textRow(failureText(plan), "font-scale-body"))
+			for __, row in ipairs(noteRows(plan)) do
+				table.insert(body, row)
+			end
 		else
 			local priceFactor = 1.0
 			local perMetre = priceState:old()[templateFor(track, electrified, data.year)]
@@ -1306,6 +1573,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				priceFactor = perMetre / (2 * track.cost)
 			end
 			for __, row in ipairs(resultRows(plan, priceFactor)) do
+				table.insert(body, row)
+			end
+			for __, row in ipairs(noteRows(plan)) do
 				table.insert(body, row)
 			end
 			table.insert(body, builtin.ToggleButton{
@@ -1347,6 +1617,14 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				if checked.crossings > 0 then
 					table.insert(body, textRow(fill(_("Level crossings: {count}"),
 						{ count = tostring(checked.crossings) }), "font-scale-annotation"))
+				end
+				if (checked.junctions or 0) > 0 then
+					table.insert(body, textRow(fill(_("Junctions: {count}"),
+						{ count = tostring(checked.junctions) }), "font-scale-annotation"))
+				end
+				local joins = joinsRow(checked.plan)
+				if joins ~= nil then
+					table.insert(body, joins)
 				end
 				if checked.failures > 0 then
 					table.insert(body, textRow(fill(_("{count} of {total} parts can't be built as planned:"),
@@ -1396,7 +1674,11 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			end))
 			if stationsState:old() then
 				for __, station in ipairs(plan.stations) do
-					table.insert(body, textRow(fill(_("{town}: station {distance} from the centre"),
+					local template = _("{town}: station {distance} from the centre")
+					if station.existing ~= nil then
+						template = _("{town}: the existing station, {distance} from the centre")
+					end
+					table.insert(body, textRow(fill(template,
 						{ town = station.town.name, distance = formatLength(station.site.distance) }),
 						"font-scale-annotation"))
 				end
@@ -1430,6 +1712,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P6", "Probe P6: dry-run a station" },
 			{ "P13", "Probe P13: streets around the station" },
 			{ "P14", "Probe P14: build a Halt 2+2 station, fans and signals (test map only)" },
+			{ "P15", "Probe P15: junction into existing track, stage by stage (test map only)" },
+			{ "P16", "Probe P16: a diamond crossing at 6.5°, as the game makes one (test map only)" },
 		}) do
 			table.insert(body, builtin.Button{
 				content = builtin.TextView{ text = p[2] },

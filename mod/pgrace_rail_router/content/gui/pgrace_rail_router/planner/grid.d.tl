@@ -23,6 +23,14 @@ global record PgraceRailRouterGrid
 		-- JOINT_CLEARANCE of one is refused (probe P9c: 9.5 m was fine, the build failed at 1.8 and 7 m), so the line
 		-- bridges the road there (route.tl).
 		joints : {integer : {PgraceRailRouterGeo.Pt}}
+		-- Points along the streets every STREET_STEP metres, as flat x, y pairs by the cell they're in (addStreet):
+		-- a road cell says only that a street passes somewhere in its 100 m, so a station's centre line can be in
+		-- clear cells with its main building over a street in the next one (Bangor: "Collision", 13 m off the axis).
+		-- Empty where nobody added them (a route capture has none).
+		streets : {integer : {number}}
+		-- The same for track but tunnels (addTrack): a bridge crossing a line at a shallow angle passes over it in
+		-- cells not marked track, and dipped there to 6.9 m above it ("Collision", in-game).
+		tracks : {integer : {number}}
 		-- Shore cells (water and land both in or next to them) sampled finer: SHORE_SUB × SHORE_SUB points per cell,
 		-- row by row from the low corner, true where on water (survey.tl; maplib from the map). waterAt uses them.
 		shore : {integer : {boolean}}
@@ -111,6 +119,9 @@ global record PgraceRailRouterGrid
 		approach : number
 		-- Cells kept off as if blocked (the stations' platforms and approaches), less the start and goal cells.
 		avoid : {integer : boolean}
+		-- Track cells a move between two of costs as plain ground (an existing station's own track, beside which a leg
+		-- runs on purpose; see startSearch).
+		alongFree : {integer : boolean}
 		-- Paths costing more are not wanted (math.huge: no limit).
 		maxCost : number
 		done : boolean
@@ -171,6 +182,20 @@ global record PgraceRailRouterGrid
 	addJoint : function(g : Grid, p : PgraceRailRouterGeo.Pt)
 	-- Whether a road joint lies within r of p (r at most a cell).
 	jointNear : function(g : Grid, p : PgraceRailRouterGeo.Pt, r : number) : boolean
+	-- Metres between the points addStreet and addTrack keep.
+	STREET_STEP : number
+	-- Keeps points every STREET_STEP metres along a street's Hermite curve, ends included (Grid.streets).
+	addStreet : function(g : Grid, p0 : PgraceRailRouterGeo.Pt, t0 : PgraceRailRouterGeo.Pt, p1 : PgraceRailRouterGeo.Pt,
+		t1 : PgraceRailRouterGeo.Pt)
+	-- The same along a track piece (Grid.tracks).
+	addTrack : function(g : Grid, p0 : PgraceRailRouterGeo.Pt, t0 : PgraceRailRouterGeo.Pt, p1 : PgraceRailRouterGeo.Pt,
+		t1 : PgraceRailRouterGeo.Pt)
+	-- Whether a track point lies within r of p (r at most a cell).
+	trackNear : function(g : Grid, p : PgraceRailRouterGeo.Pt, r : number) : boolean
+	-- Whether a street point lies in the rectangle along dir (a unit vector) from centre − dir · half to
+	-- centre + dir · half, reaching `left` metres to its left and `right` to its right.
+	streetIn : function(g : Grid, centre : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt, half : number,
+		left : number, right : number) : boolean
 	-- Points per cell side in a shore cell's finer sampling.
 	SHORE_SUB : integer
 	-- The cells whose water flag differs from one of their 8 neighbours' (in index order).
@@ -223,18 +248,23 @@ global record PgraceRailRouterGrid
 	-- for the start's and goal's own cells. With startRun (metres), the path may instead start at any point up to
 	-- that far out along startDir from
 	-- `from`, one per cell, and with goalRun finish at any point up to that far back from `to` against goalDir: each
-	-- ray stops at the first blocked, water, road or track cell, and costs its straight (length and slope, as moves).
+	-- ray stops at the first blocked, water, road or track cell (with startOverTrack or goalOverTrack, track cells
+	-- don't stop that end's ray: an end beside an existing station's track, route.tl), and costs its straight (length
+	-- and slope, as moves).
 	-- The path's first and last points are then those points. The first segment, from the start point to the next
 	-- cell's centre, and the last, into the goal point, must be clear of blocked cells too (off-centre ends can cut a
 	-- blocked cell's corner). With maxCost, the search finishes, not found, once every path left would cost more. A
 	-- goal with every cell blocked finishes the search at once, not found. The first stepSearch calls flood-fill the cells from the start
 	-- (about one cell per unit of budget, no expansions counted) and finish, not found, if the goal can't be reached
 	-- at all. Entering a road or track cell costs w.roadCrossing or w.trackCrossing (a junction cell w.trackCrossing too); a step from road to road costs
-	-- 1.5 × its length, so the path doesn't run along roads.
+	-- 1.5 × its length, so the path doesn't run along roads, and a step from track cell to track cell (a knight move's
+	-- cells between too) costs as over water (w.bridgeFactor): the profile bridges track cells, so that's what
+	-- running along a line builds; but for a step between two cells of `alongFree`.
 	startSearch : function(g : Grid, from : PgraceRailRouterGeo.Pt, to : PgraceRailRouterGeo.Pt,
 		startDir : PgraceRailRouterGeo.Pt, goalDir : PgraceRailRouterGeo.Pt, w : PgraceRailRouterModes.Weights,
 		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number, startRoom ?: number,
-		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}) : Search
+		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}, startOverTrack ?: boolean,
+		goalOverTrack ?: boolean, alongFree ?: {integer : boolean}) : Search
 	-- Expands up to maxExpansions states (or fills that many cells first); true once the search is finished (found
 	-- or not). Gives up, not found, after 12 expansions per cell (a goal cut off only by the turn limit).
 	stepSearch : function(s : Search, maxExpansions : integer) : boolean

@@ -13,6 +13,19 @@ global record PgraceRailRouterRoute
 		-- The straight before and after each platform (metres; nil: 100). Halt 2+2 stations need their fans' length
 		-- and the crossovers' room after it (network.fanLength + 100).
 		approach : number
+		-- The straight an existing station's bare end needs beyond its nodes, by its kind ("direct", "island",
+		-- "fan"; network.bareApproach): a bare end's approach is the longer of this and `approach` (and reaches past
+		-- the station's own box). nil: `approach` alone.
+		bareApproach : {string : number}
+		-- Existing stations to use (milestone 4b), by stop index (nil: none at that stop), and a snapshot of each
+		-- one's track (existing.Snapshot, covering existing.REACH beyond its platform ends). The route reads each
+		-- one's ends itself (existing.analyse), since which side of an end the line comes from depends on the
+		-- neighbouring stops.
+		existingStations : {integer : PgraceRailRouterExisting.Station}
+		snapshots : {integer : PgraceRailRouterExisting.Snapshot}
+		-- The turnout radius junctions are fitted for (metres); needed with existingStations (else the plan fails
+		-- "no_radius").
+		radius : number
 	end
 
 	record Station
@@ -23,18 +36,43 @@ global record PgraceRailRouterRoute
 		-- neighbouring stations, or less room to turn than the first site on a side a leg leaves from), the first
 		-- site, facing from town to town, is kept.
 		site : PgraceRailRouterStations.Site
-		-- Ground height at the station's centre.
+		-- Ground height at the station's centre (an existing station: its used ends' stretches' heights, averaged).
 		z : number
+		-- An existing station the line joins instead of a station of ours (nil: ours). Its site is its own centre
+		-- (distance from the town's centre as for ours), facing the way the line runs through it. On each end it
+		-- uses (by end, ±1, as existing.Result's) the line joins it either at a junction, where track leads on: the
+		-- end's stretch (ends) and the junction fitted to it (junctions); or, at a bare end (bare: nothing attached,
+		-- see existing.bareEnd), on its free track end nodes directly, as at a station of ours: the leg's end is then
+		-- its platform end (centre + out × existing.half, at bare.mid's height), with Input.approach and room to turn
+		-- beyond it along the axis. The two ends may differ. sides: the side of outward our line comes from (+1
+		-- left, −1 right), for every end used. endOf maps the leg leaving (true) and the leg arriving (false) to their
+		-- ends. Such a station is never turned or re-sited, the planner spaces things beside it by its own half
+		-- (existing.half, not the window's platform length), its footprint is its track along the stretches used and
+		-- its platforms and bare ends' approaches (see route.tl's addFootprint), and its platforms aren't counted in
+		-- the summary's length.
+		existing : PgraceRailRouterExisting.Station
+		ends : {integer : PgraceRailRouterExisting.End}
+		junctions : {integer : PgraceRailRouterJunction.Layout}
+		bare : {integer : PgraceRailRouterExisting.Bare}
+		sides : {integer : number}
+		endOf : {boolean : integer}
+		-- Per bare end, the cells (by grid index) of the station's own box along its axis, which a leg at that end may
+		-- use though the survey blocked them (route.tl's ownCells). Internal, filled in as needed.
+		own : {integer : {integer : boolean}}
 	end
 
-	-- From one station's platform end to the next one's: a straight approach of 100 m at each end, then room for the
+	-- From one station's platform end to the next one's (at an existing station's junction, its approach start, 10 m
+	-- off the existing axis, and the approach and room to turn run along that axis; at its bare end, its platform end
+	-- by its own half): a straight approach of 100 m at
+	-- each end, then room for the
 	-- search's first turn at full radius before the searched path: 45° where the search turns freely, one 22.5° step
 	-- where it spaces its turns (less where buildings or the grid edge are in the way, which may leave a curve tighter
 	-- than the radius, and never more than a quarter of the way to the other station, past both approaches).
 	record Leg
 		pieces : {PgraceRailRouterSmooth.Piece}
 		samples : {PgraceRailRouterSmooth.Sample}
-		-- Track height at each sample; the first and last are the two stations' heights.
+		-- Track height at each sample; the first and last are the two stations' heights (an existing station's: the
+		-- existing track's at the junction's approach start, or at a bare end its end nodes' mean).
 		z : {number}
 		-- Ground, bridges and tunnels. Existing track (and roads, when weights.bridgeRoads) is crossed by a bridge
 		-- with at least 9 m of clearance.
@@ -69,7 +107,7 @@ global record PgraceRailRouterRoute
 	end
 
 	record Summary
-		-- Metres of line, platforms included.
+		-- Metres of line, our own stations' platforms included.
 		length : number
 		bridges : integer
 		bridgeLength : number
@@ -96,7 +134,8 @@ global record PgraceRailRouterRoute
 		-- Why the plan failed: "no_stops", "no_site", "no_exit" (the town has clear spots for a station, but buildings
 		-- wall every one in, or a leg's search found its start closed off inside the area: a wider area can't help),
 		-- "too_close" (two consecutive stations' platforms, with their approaches, don't fit between them, or the
-		-- second isn't ahead of the first along both stations' directions) or "no_path"; nil when ok.
+		-- second isn't ahead of the first along both stations' directions), "no_path" or "no_radius" (existing stations
+		-- given without Input.radius); nil when ok.
 		failure : string
 		-- The town for no_site and no_exit; the two towns for too_close and no_path.
 		failureTowns : {string}
@@ -104,6 +143,8 @@ global record PgraceRailRouterRoute
 		stations : {Station}
 		legs : {Leg}
 		summary : Summary
+		-- Existing stations that couldn't be used, and why (a new station was planned instead), for the window.
+		notes : {string}
 	end
 
 	-- A leg's path simplified, with the platform ends and approach points added, and the guard that holds the curves
@@ -111,6 +152,12 @@ global record PgraceRailRouterRoute
 	record Simplified
 		pts : {PgraceRailRouterGeo.Pt}
 		guard : PgraceRailRouterSmooth.Guard
+		-- The leg's bare ends' own cells (route.tl's ownCells), which don't count as blocked; nil: none.
+		own : {integer : boolean}
+		-- Whether the leg leaves (bareA) or arrives at (bareB) an existing station's bare end: that end's extension
+		-- point is never given up, so no curve cuts back into the straight the network needs there.
+		bareA : boolean
+		bareB : boolean
 	end
 
 	-- A leg's curves being fitted (spread over steps, a fillet each): the stage next, the leg as fitted so far, which
@@ -189,6 +236,17 @@ global record PgraceRailRouterRoute
 		keep : LegTry
 	end
 
+	-- The track round an existing station, from its snapshot, for telling where a leg crosses it (route.tl's
+	-- trackIndex): points along the pieces (but tunnels) every 2 m or less, bucketed in squares of `bucket` metres
+	-- (key: ix × 2^20 + iy, from the floor of x and y over bucket, offset to keep them positive) as flat lists
+	-- {x1, y1, x2, y2, ...}; it holds within `reach` of `centre`. Internal.
+	record TrackIndex
+		centre : PgraceRailRouterGeo.Pt
+		reach : number
+		bucket : number
+		points : {integer : {number}}
+	end
+
 	-- Work in progress. The fields are internal.
 	record Job
 		input : Input
@@ -242,6 +300,11 @@ global record PgraceRailRouterRoute
 		-- Grid cells (by index) under the stations' platforms and approaches, which legs' searches keep off, and how
 		-- many times they have been worked out (a key of searchCache's: a re-sited station changes them).
 		footprint : {integer : boolean}
+		-- Grid cells (by index) of the existing stations' own track (their platforms, and each stretch used): searches
+		-- run along track cells there at plain cost (grid.startSearch's alongFree). Worked out once the sites are.
+		alongFree : {integer : boolean}
+		-- Each existing station's TrackIndex, in the order they were placed.
+		trackIndexes : {TrackIndex}
 		footprintVersion : integer
 		-- Grid cells (by index) under the stations placed so far, kept off by later site searches. The grid itself
 		-- is never changed.

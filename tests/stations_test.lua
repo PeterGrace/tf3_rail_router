@@ -323,3 +323,39 @@ t.test("stations: a run whose leaving end is a dead end is refused; arriving the
 	local arriving = search(false, true)
 	t.ok(arriving.site ~= nil and arriving.site.distance == 0, "a line arriving from the west may use the centre")
 end)
+
+t.test("stations: a street beside the run, under the main building, rejects the site", function()
+	local g = openGrid()
+	-- A street running north at x = -60, in the column of cells west of x = -50. A northward run at the town's centre,
+	-- x = -45, has its centre line in clear cells, but its main building (on the town's side: left, west) reaches
+	-- x = -76, over the street.
+	local a, b = { x = -60, y = -1000 }, { x = -60, y = 1000 }
+	local chord = { x = 0, y = 2000 }
+	fill(g, "road", function(c) return c.x > -150 and c.x < -50 and math.abs(c.y) <= 1000 end)
+	grid.addStreet(g, a, chord, b, chord)
+	local town = { x = -45, y = 0 }
+	local site = stations.find(g, town, { x = 0, y = 1 }, 360, 10, 1500)
+	t.ok(site ~= nil, "found")
+	t.ok(site.distance > 0, "moved off the town's centre: " .. site.distance)
+	-- The street is 31 m or more from the centre line on the town's side, 15 m on the other.
+	local d = site.dir
+	local townLeft = -d.y * (town.x - site.centre.x) + d.x * (town.y - site.centre.y) >= 0
+	local left, right = stations.BUILDING_SIDE, stations.TRACK_SIDE
+	if not townLeft then
+		left, right = right, left
+	end
+	t.ok(not grid.streetIn(g, site.centre, d, 180, left, right),
+		"the footprint clear of the street: site x " .. site.centre.x .. ", y " .. site.centre.y)
+end)
+
+t.test("grid: streetIn finds street points in a rectangle only", function()
+	local g = openGrid()
+	grid.addStreet(g, { x = 0, y = -100 }, { x = 0, y = 200 }, { x = 0, y = 100 }, { x = 0, y = 200 })
+	local east = { x = 1, y = 0 }
+	-- A run along x through the origin crosses it; one 20 m north, 180 m long, passes north of its end at y = 100.
+	t.ok(grid.streetIn(g, { x = 0, y = 0 }, east, 50, 5, 5), "crossing")
+	t.ok(not grid.streetIn(g, { x = 0, y = 130 }, east, 90, 10, 20), "29.5 m clear of its end, reaching 20 m")
+	t.ok(grid.streetIn(g, { x = 0, y = 130 }, east, 90, 10, 31), "reaching 31 m to the right (south) takes it in")
+	t.ok(not grid.streetIn(g, { x = 40, y = 0 }, east, 30, 50, 50), "ending 10 m short of it")
+	t.ok(not grid.streetIn(grid.new(-2000, -2000, 100, 41, 41), { x = 0, y = 0 }, east, 50, 5, 5), "none added")
+end)

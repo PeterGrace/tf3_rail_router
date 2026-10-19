@@ -29,7 +29,7 @@ local ROAD_FOLLOW_FACTOR = 1.5
 
 function grid.new(x0 : number, y0 : number, cell : number, nx : integer, ny : integer) : Grid
 	local g : Grid = { x0 = x0, y0 = y0, cell = cell, nx = nx, ny = ny, height = {}, water = {}, blocked = {},
-		road = {}, track = {}, junction = {}, shore = {}, joints = {} }
+		road = {}, track = {}, junction = {}, shore = {}, joints = {}, streets = {}, tracks = {} }
 	for i = 1, nx * ny do
 		g.height[i] = 0
 		g.water[i] = false
@@ -77,6 +77,7 @@ end
 
 grid.SHORE_SUB = 4
 grid.JOINT_CLEARANCE = 10.0
+grid.STREET_STEP = 5.0
 
 function grid.addJoint(g : Grid, p : Pt)
 	if not grid.inside(g, p) then
@@ -86,6 +87,91 @@ function grid.addJoint(g : Grid, p : Pt)
 	local i = grid.index(g, ix, iy)
 	g.joints[i] = g.joints[i] or {}
 	table.insert(g.joints[i], { x = p.x, y = p.y })
+end
+
+-- Points every STREET_STEP along a Hermite curve into `lists`, by cell (Grid.streets, Grid.tracks).
+local function addCurve(g : Grid, lists : {integer : {number}}, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
+	-- The tangents' lengths are about the curve's length; take the longest so a bent street is sampled finely enough.
+	local chord = math.sqrt((p1.x - p0.x) ^ 2 + (p1.y - p0.y) ^ 2)
+	local length = math.max(chord, math.sqrt(t0.x * t0.x + t0.y * t0.y), math.sqrt(t1.x * t1.x + t1.y * t1.y))
+	local steps = math.max(1, math.ceil(length / grid.STREET_STEP))
+	for k = 0, steps do
+		local t = k / steps
+		local t2, t3 = t * t, t * t * t
+		local h00, h10, h01, h11 = 2 * t3 - 3 * t2 + 1, t3 - 2 * t2 + t, -2 * t3 + 3 * t2, t3 - t2
+		local p : Pt = { x = h00 * p0.x + h10 * t0.x + h01 * p1.x + h11 * t1.x,
+			y = h00 * p0.y + h10 * t0.y + h01 * p1.y + h11 * t1.y }
+		if grid.inside(g, p) then
+			local ix, iy = grid.cellOf(g, p)
+			local i = grid.index(g, ix, iy)
+			local list = lists[i]
+			if list == nil then
+				list = {}
+				lists[i] = list
+			end
+			list[#list + 1] = p.x
+			list[#list + 1] = p.y
+		end
+	end
+end
+
+function grid.addStreet(g : Grid, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
+	addCurve(g, g.streets, p0, t0, p1, t1)
+end
+
+function grid.addTrack(g : Grid, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
+	addCurve(g, g.tracks, p0, t0, p1, t1)
+end
+
+function grid.trackNear(g : Grid, p : Pt, r : number) : boolean
+	if g.tracks == nil then
+		return false
+	end
+	local ix, iy = grid.cellOf(g, p)
+	for dy = -1, 1 do
+		for dx = -1, 1 do
+			local jx, jy = ix + dx, iy + dy
+			if jx >= 1 and jx <= g.nx and jy >= 1 and jy <= g.ny then
+				local list = g.tracks[grid.index(g, jx, jy)]
+				if list ~= nil then
+					for k = 1, #list, 2 do
+						if (list[k] - p.x) ^ 2 + (list[k + 1] - p.y) ^ 2 <= r * r then
+							return true
+						end
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
+function grid.streetIn(g : Grid, centre : Pt, dir : Pt, half : number, left : number, right : number) : boolean
+	if g.streets == nil then
+		return false
+	end
+	-- The cells the rectangle's bounding box touches.
+	local ex = math.abs(dir.x) * half + math.abs(dir.y) * math.max(left, right)
+	local ey = math.abs(dir.y) * half + math.abs(dir.x) * math.max(left, right)
+	local ax, ay = grid.cellOf(g, { x = centre.x - ex, y = centre.y - ey })
+	local bx, by = grid.cellOf(g, { x = centre.x + ex, y = centre.y + ey })
+	for iy = ay, by do
+		for ix = ax, bx do
+			local list = g.streets[grid.index(g, ix, iy)]
+			if list ~= nil then
+				for k = 1, #list, 2 do
+					local dx, dy = list[k] - centre.x, list[k + 1] - centre.y
+					local u = dx * dir.x + dy * dir.y
+					-- Left of dir is (−dir.y, dir.x).
+					local v = -dx * dir.y + dy * dir.x
+					if u >= -half and u <= half and v <= left and v >= -right then
+						return true
+					end
+				end
+			end
+		end
+	end
+	return false
 end
 
 function grid.jointNear(g : Grid, p : Pt, r : number) : boolean
@@ -506,6 +592,10 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 		return nil
 	end
 	local overWater = g.water[a] or g.water[b]
+	-- A move from track cell to track cell runs along existing track, which the profile bridges (route.tl: every
+	-- sample on a track cell is a crossing), so it costs as a bridge does, as over water; crossing a line costs
+	-- w.trackCrossing on entering it instead.
+	local alongTrack = g.track[a] and g.track[b] and not (s.alongFree[a] and s.alongFree[b])
 	local length = g.cell * math.sqrt(d[1] * d[1] + d[2] * d[2])
 	local grade = math.abs(g.height[b] - g.height[a]) / length
 	-- A knight move passes between two cells: both must be passable, and the ground there (their mean height, at the
@@ -517,11 +607,12 @@ local function moveCost(s : Search, a : integer, ax : integer, ay : integer, k :
 			return nil
 		end
 		overWater = overWater or g.water[m1] or g.water[m2]
+		alongTrack = alongTrack and (g.track[m1] or g.track[m2])
 		local hm = (g.height[m1] + g.height[m2]) / 2
 		grade = math.max(grade, math.abs(hm - g.height[a]) / (length / 2), math.abs(g.height[b] - hm) / (length / 2))
 	end
 	local factor = 1.0
-	if overWater then
+	if overWater or alongTrack then
 		factor = w.bridgeFactor
 	else
 		if grade > w.maxGrade then
@@ -683,10 +774,10 @@ local function turnModel(s : Search, cell : number, radius : number)
 end
 
 -- The points along a ray from p in direction dir (a unit vector), one cell apart, out to `run` metres: p itself, then
--- each one whose straight from p stays inside the grid and off blocked, water, road and track cells (the first that
--- doesn't ends the ray). Each costs the straight from p to it, as moves do (length, and the slope penalty over the
+-- each one whose straight from p stays inside the grid and off blocked, water, road and track cells (track allowed
+-- with overTrack; the first that doesn't ends the ray). Each costs the straight from p to it, as moves do (length, and the slope penalty over the
 -- grade between neighbouring points). One per cell, the nearest to p.
-local function ray(g : Grid, w : Weights, p : Pt, dir : Pt, run : number) : {End}
+local function ray(g : Grid, w : Weights, p : Pt, dir : Pt, run : number, overTrack : boolean) : {End}
 	local ix, iy = grid.cellOf(g, p)
 	local ends : {End} = { { pt = p, cell = grid.index(g, ix, iy), x = ix, y = iy, cost = 0 } }
 	local seen : {integer : boolean} = { [ends[1].cell] = true }
@@ -694,7 +785,7 @@ local function ray(g : Grid, w : Weights, p : Pt, dir : Pt, run : number) : {End
 	while d <= run + EPSILON do
 		local q = geo.add(p, geo.scale(dir, d))
 		if not grid.inside(g, q) or not grid.cellsAlong(g, prev, q, function(i : integer) : boolean
-				return not (g.blocked[i] or g.water[i] or g.road[i] or g.track[i])
+				return not (g.blocked[i] or g.water[i] or g.road[i] or (g.track[i] and not overTrack))
 			end) then
 			break
 		end
@@ -717,7 +808,8 @@ end
 
 function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir : Pt, w : Weights,
 		radius ?: number, maxCost ?: number, startRun ?: number, goalRun ?: number, startRoom ?: number,
-		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}) : Search
+		goalRoom ?: number, approach ?: number, avoid ?: {integer : boolean}, startOverTrack ?: boolean,
+		goalOverTrack ?: boolean, alongFree ?: {integer : boolean}) : Search
 	local sx, sy = grid.cellOf(g, from)
 	local gx, gy = grid.cellOf(g, to)
 	local s : Search = { g = g, w = w, startPt = from, goalPt = to, goal = grid.index(g, gx, gy), gx = gx, gy = gy,
@@ -725,7 +817,8 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 		found = false, expansions = 0, h0 = 0, bestH = 0, heapN = 0, cost = {}, parent = {},
 		origin = {}, finishDir = 0, finishSteps = 0, finishGoal = 1, filling = true, fillHead = 1, fillTail = 0,
 		fillEdge = false, enclosed = false, buildRadius = w.minBuildRadius or 0,
-		startRoom = startRoom or 0, goalRoom = goalRoom or 0, approach = approach or math.huge, avoid = {} }
+		startRoom = startRoom or 0, goalRoom = goalRoom or 0, approach = approach or math.huge, avoid = {},
+		alongFree = alongFree or {} }
 	-- The grid's store is this search's from now on.
 	local st = storeOf(g)
 	s.store, s.id = st, st.nextId
@@ -744,12 +837,12 @@ function grid.startSearch(g : Grid, from : Pt, to : Pt, startDir : Pt, goalDir :
 	-- goalDir (only with a direction to move along).
 	local k0 = nearestDir(startDir)
 	if k0 ~= 0 and startRun ~= nil and startRun > 0 then
-		s.starts = ray(g, w, from, geo.norm(startDir), startRun)
+		s.starts = ray(g, w, from, geo.norm(startDir), startRun, startOverTrack)
 	else
 		s.starts = { { pt = from, cell = start, x = sx, y = sy, cost = 0 } }
 	end
 	if s.goalDir ~= 0 and goalRun ~= nil and goalRun > 0 then
-		s.goals = ray(g, w, to, geo.scale(geo.norm(goalDir), -1), goalRun)
+		s.goals = ray(g, w, to, geo.scale(geo.norm(goalDir), -1), goalRun, goalOverTrack)
 	else
 		s.goals = { { pt = to, cell = s.goal, x = gx, y = gy, cost = 0 } }
 	end

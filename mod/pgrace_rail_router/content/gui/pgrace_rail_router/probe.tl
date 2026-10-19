@@ -670,6 +670,916 @@ function probe.halt(settings : Settings) : {function()}
 	end) }
 end
 
+-- P15 ------------------------------------------------------------------------------------------------------------
+-- A flat junction into existing signalled double track (milestone 4b), in three stages, one click each. The local
+-- frame is x east and y north from the origin (the camera at stage 1).
+
+local type Hermite = PgraceRailRouterNetwork.Hermite
+local type Pt3 = PgraceRailRouterNetwork.Pt3
+
+local record P15Piece
+	entity : integer
+	node0 : integer
+	node1 : integer
+	h : Hermite
+	objects : integer
+	-- 1 the left (north) track, 2 the right, 0 neither.
+	track : integer
+end
+
+local record P15Cut
+	track : integer
+	x : number
+end
+
+local record P15State
+	origin : Pt
+	z : number
+	off : number
+	-- Where stage 1 put the signal on track 1.
+	signalPt : Pt
+	pieces : {P15Piece}
+end
+
+local p15Stage = 1
+local p15 : P15State = { z = 0, off = 2.5, pieces = {} }
+
+local function v3of(p : Pt3) : Vec3f
+	return api.type.Vec3f.new(p.x, p.y, p.z)
+end
+
+local function p3of(v : Vec3f) : Pt3
+	return { x = v.x, y = v.y, z = v.z }
+end
+
+-- A point relative to the origin, as text.
+local function rel(p : Pt3) : string
+	if p15.origin == nil then
+		return ("(%.1f %.1f %.1f)"):format(p.x, p.y, p.z)
+	end
+	return ("(%.1f %.1f %.1f)"):format(p.x - p15.origin.x, p.y - p15.origin.y, p.z)
+end
+
+local function trackOf(h : Hermite) : integer
+	local o = p15.origin
+	for __, t in ipairs({ 1, 2 }) do
+		local y = o.y + (t == 1 and p15.off or -p15.off)
+		if math.abs(h.p0.y - y) < 0.6 and math.abs(h.p1.y - y) < 0.6 then
+			return t
+		end
+	end
+	return 0
+end
+
+-- Every plain track piece around the line, read fresh.
+local function scanPieces() : {P15Piece}
+	local list : {P15Piece} = {}
+	local o = p15.origin
+	local found = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(o.x + 200, o.y), 300,
+		api.type.ComponentType.BASE_EDGE)
+	for __, e in ipairs(found) do
+		pcall(function() : boolean
+			local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+			if edge == nil or edge.roadType ~= api.type["enum"].RoadType.TRACK
+					or edge.type ~= api.type["enum"].BaseEdgeType.NORMAL then
+				return true
+			end
+			local h : Hermite = { p0 = p3of(edge.position0), p1 = p3of(edge.position1), t0 = p3of(edge.tangent0),
+				t1 = p3of(edge.tangent1) }
+			table.insert(list, { entity = e as integer, node0 = edge.node0 as integer, node1 = edge.node1 as integer,
+				h = h, objects = #(edge.objects or {}), track = trackOf(h) })
+			return true
+		end)
+	end
+	table.sort(list, function(a : P15Piece, b : P15Piece) : boolean
+		return math.min(a.h.p0.x, a.h.p1.x) < math.min(b.h.p0.x, b.h.p1.x)
+	end)
+	p15.pieces = list
+	return list
+end
+
+local function logPiece(p : P15Piece)
+	local ok, text = pcall(function() : string
+		return signalsOn(p.entity)
+	end)
+	log("P15", ("piece %d track %d nodes %d/%d %s -> %s, %d objects: %s"):format(p.entity, p.track, p.node0, p.node1,
+		rel(p.h.p0), rel(p.h.p1), p.objects, ok and text as string or "signalsOn failed"))
+end
+
+local function logTracks(list : {P15Piece})
+	for __, p in ipairs(list) do
+		if p.track ~= 0 then
+			logPiece(p)
+		end
+	end
+end
+
+-- The pieces a build or split proposal added, as the game has them now.
+local function logAdded(what : string, res : WorldBuildProposalCommandData)
+	local sp = res.proposal.proposal
+	for __, n in ipairs(sp.addedNodes) do
+		local ok, pos = pcall(function() : Vec3f
+			return (api.engine.getComponent(n.entity, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode).position
+		end)
+		log("P15", ("%s: new node %d at %s"):format(what, n.entity as integer, ok and rel(p3of(pos as Vec3f)) or "?"))
+	end
+	for __, seg in ipairs(sp.addedSegments) do
+		local e = seg.entity as integer
+		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+		if edge == nil then
+			log("P15", ("%s: new piece %d has no BASE_EDGE"):format(what, e))
+		else
+			local h : Hermite = { p0 = p3of(edge.position0), p1 = p3of(edge.position1), t0 = p3of(edge.tangent0),
+				t1 = p3of(edge.tangent1) }
+			logPiece({ entity = e, node0 = edge.node0 as integer, node1 = edge.node1 as integer, h = h,
+				objects = #(edge.objects or {}), track = trackOf(h) })
+		end
+	end
+end
+
+-- The node (entity, position) of any piece's end within 0.5 m of a point.
+local function findNodeAt(list : {P15Piece}, x : number, y : number) : integer, Pt3
+	for __, p in ipairs(list) do
+		for k = 1, 2 do
+			local pos = k == 1 and p.h.p0 or p.h.p1
+			if (pos.x - x) ^ 2 + (pos.y - y) ^ 2 < 0.25 then
+				return k == 1 and p.node0 or p.node1, pos
+			end
+		end
+	end
+	return nil, nil
+end
+
+-- The piece of a track holding x, metres east of the probe's origin (pieces are in world coordinates).
+local function findPiece(list : {P15Piece}, track : integer, x : number) : P15Piece
+	x = x + p15.origin.x
+	for __, p in ipairs(list) do
+		if p.track == track and math.min(p.h.p0.x, p.h.p1.x) <= x and x <= math.max(p.h.p0.x, p.h.p1.x) then
+			return p
+		end
+	end
+	return nil
+end
+
+-- A track piece from node0 to node1 along h, typed like the one it replaces. Objects (the signals) are listed on it
+-- by the caller.
+local function trackPiece(node0 : integer, node1 : integer, h : Hermite, template : Proposal.SegmentAndEntity)
+		: Proposal.SegmentAndEntity
+	local seg = api.type.SegmentAndEntity.new()
+	seg.type = 1
+	seg.comp.node0, seg.comp.node1 = node0, node1
+	seg.comp.position0, seg.comp.position1 = v3of(h.p0), v3of(h.p1)
+	seg.comp.tangent0, seg.comp.tangent1 = v3of(h.t0), v3of(h.t1)
+	seg.comp.type = template.comp.type
+	seg.comp.typeIndex = template.comp.typeIndex
+	seg.comp.laneConfigs = template.comp.laneConfigs
+	seg.comp.roadType = template.comp.roadType
+	seg.comp.roadTemplate = template.comp.roadTemplate
+	seg.comp.roadStyle = template.comp.roadStyle
+	seg.comp.distance = template.comp.distance
+	if template.streetEdge ~= nil then
+		seg.streetEdge = template.streetEdge
+	end
+	if template.playerOwned ~= nil then
+		seg.playerOwned = template.playerOwned
+	end
+	return seg
+end
+
+-- A piece shorter than this (metres, in plan) is never made by a split: the game refuses switches next to short edges
+-- (P12) and a split can't be dry-run, so the guard is ours.
+local MIN_PIECE = 10.0
+
+local function chord(h : Hermite) : number
+	return math.sqrt((h.p1.x - h.p0.x) ^ 2 + (h.p1.y - h.p0.y) ^ 2)
+end
+
+-- A track piece in pieces at parameters us (ascending), new nodes -(k+2)..: the engine's replaceSegment proposal
+-- edited, as build.tl splits a street. objectAt are the world places of the piece's signals (in the order of the
+-- template's objects); each signal goes on the sub-piece that holds its place. Returns nil, after logging why,
+-- when the split would be unsafe: a split can't be dry-run, so nothing doubtful is sent.
+local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Proposal
+	-- The sub-pieces first, and the guards on them.
+	local hs : {Hermite} = {}
+	local rest = piece.h
+	local restU = 0.0
+	for __, u in ipairs(us) do
+		if u < 0.02 or u > 0.98 then
+			log("P15", ("REFUSED split of %d: parameter %.4f is outside 0.02..0.98"):format(piece.entity, u))
+			return nil
+		end
+		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
+		table.insert(hs, here)
+		rest, restU = after, u
+	end
+	table.insert(hs, rest)
+	for j, sh in ipairs(hs) do
+		if chord(sh) < MIN_PIECE then
+			log("P15", ("REFUSED split of %d: sub-piece %d would be %.1f m (under %.0f m)"):format(piece.entity, j,
+				chord(sh), MIN_PIECE))
+			return nil
+		end
+	end
+	local rep = api.engine.util.proposal.replaceSegment(piece.entity)
+	local sp = rep.proposal
+	local template = sp.addedSegments[1]
+	local objs = template.comp.objects or {}
+	local edgeObjects = (sp.edgeObjectsToAdd or {}) as {any}
+	log("P15", ("replaceSegment(%d): %d added segments, %d added nodes, %d removed segments, %d edge objects to add, %d node configs, template objects %d"):format(
+		piece.entity, #sp.addedSegments, #sp.addedNodes, #(sp.removedSegments or {}), #edgeObjects,
+		#(sp.nodeConfigsToAdd or {}), #objs))
+	if #edgeObjects > 0 and #edgeObjects ~= #objs then
+		log("P15", ("REFUSED split of %d: %d edge objects to add against %d objects on the piece"):format(piece.entity,
+			#edgeObjects, #objs))
+		return nil
+	end
+	-- What the engine says about the objects, to compare with what we send.
+	for i, eo in ipairs(edgeObjects) do
+		local okE, text = pcall(function() : string
+			local t = eo as {string : any}
+			return ("edgeEntity %s param %s model %s left %s"):format(tostring(t.edgeEntity), tostring(t.param),
+				tostring(t.model), tostring(t.left))
+		end)
+		log("P15", ("edgeObjectsToAdd[%d]: %s"):format(i, okE and text as string or "unreadable: " .. tostring(text)))
+	end
+	for __, field in ipairs({ "new2oldEdgeObjects", "old2newEdgeObjects" }) do
+		pcall(function() : boolean
+			local m = (sp as any as {string : any})[field] as {any : any}
+			local parts : {string} = {}
+			if m ~= nil then
+				for from, to in pairs(m) do
+					local list : {string} = {}
+					if type(to) == "table" then
+						for __, x in ipairs(to as {any}) do
+							table.insert(list, tostring(x))
+						end
+					else
+						table.insert(list, tostring(to))
+					end
+					table.insert(parts, tostring(from) .. " -> " .. table.concat(list, ","))
+				end
+			end
+			log("P15", ("%s: %s"):format(field, #parts > 0 and table.concat(parts, "; ") or "empty"))
+			return true
+		end)
+	end
+	-- Which sub-piece holds each signal (the nearest point on each sub-piece's own curve), and its parameter there.
+	local objJ : {integer} = {}
+	local objU : {number} = {}
+	local lists : {{any}} = {}
+	for __ = 1, #hs do
+		table.insert(lists, {})
+	end
+	for idx, o in ipairs(objs) do
+		local okO, a, b = pcall(function() : any, any
+			return (o as {any})[1], (o as {any})[2]
+		end)
+		if not okO or a == nil or b == nil then
+			log("P15", ("REFUSED split of %d: object %d isn't a readable {entity, type} pair (%s, %s)"):format(piece.entity,
+				idx, tostring(a), tostring(b)))
+			return nil
+		end
+		local at = objectAt[idx] or objectAt[1]
+		if at == nil then
+			log("P15", ("REFUSED split of %d: object %d has no known place"):format(piece.entity, idx))
+			return nil
+		end
+		local bestJ, bestD, bestU = 1, math.huge, 0.0
+		for j, sh in ipairs(hs) do
+			local u = network.nearestParam(sh, at)
+			local q = network.hermiteAt(sh, u)
+			local d = (q.x - at.x) ^ 2 + (q.y - at.y) ^ 2
+			if d < bestD then
+				bestJ, bestD, bestU = j, d, u
+			end
+		end
+		log("P15", ("object %d (entity %s, type %s) goes on sub-piece %d at param %.3f, %.2f m off its curve"):format(idx,
+			tostring(a), tostring(b), bestJ, bestU, math.sqrt(bestD)))
+		objJ[idx], objU[idx] = bestJ, bestU
+		table.insert(lists[bestJ], { a, b })
+	end
+	local nodes : {Proposal.NodeAndEntity} = {}
+	local pieces : {Proposal.SegmentAndEntity} = {}
+	local prev = piece.node0
+	local k = #us
+	for j = 1, #hs do
+		local node1 = piece.node1
+		if j <= k then
+			local n = api.type.NodeAndEntity.new()
+			n.entity = -(k + 1 + j)
+			n.comp.position = v3of(hs[j].p1)
+			table.insert(nodes, n)
+			node1 = n.entity as integer
+		end
+		local seg = trackPiece(prev, node1, hs[j], template)
+		seg.entity = -j
+		if #lists[j] > 0 then
+			(seg.comp as any as {string : any}).objects = lists[j]
+		end
+		table.insert(pieces, seg)
+		prev = node1
+	end
+	-- The engine's own object entries, pointed at the sub-piece that now holds each signal, so the proposal agrees
+	-- with itself.
+	for i, eo in ipairs(edgeObjects) do
+		if objJ[i] ~= nil then
+			local okW, err = pcall(function() : boolean
+				local t = eo as {string : any}
+				t.edgeEntity = pieces[objJ[i]].entity
+				t.param = objU[i]
+				return true
+			end)
+			log("P15", ("edgeObjectsToAdd[%d] rewritten to edge %d param %.3f: %s"):format(i, pieces[objJ[i]].entity,
+				objU[i], okW and "ok" or tostring(err)))
+			if not okW then
+				log("P15", ("REFUSED split of %d: edge object %d couldn't be rewritten"):format(piece.entity, i))
+				return nil
+			end
+		end
+	end
+	-- The list read from the proposal may be a copy: hand the rewritten one back.
+	if #edgeObjects > 0 then
+		sp.edgeObjectsToAdd = edgeObjects as any as {Proposal.EdgeObject}
+	end
+	sp.addedNodes = nodes
+	sp.addedSegments = pieces
+	sp.nodeConfigsToAdd = {}
+	return rep
+end
+
+local p15Busy = false
+
+local function sendProposal(proposal : any, done : function(WorldBuildProposalCommandData, boolean))
+	api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(proposal as SimpleProposal, builder.newContext(), false, true),
+		function(res : WorldBuildProposalCommandData, success : boolean)
+			local ok, err = pcall(function() : boolean
+				done(res, success)
+				return true
+			end)
+			if not ok then
+				log("P15", "ERROR " .. tostring(err))
+				p15Busy = false
+			end
+		end)
+end
+
+local function p15Done(stage : integer, ok : boolean)
+	p15Busy = false
+	if ok then
+		p15Stage = stage % 3 + 1
+		log("P15", ("stage %d finished; the next click runs stage %d"):format(stage, p15Stage))
+	else
+		log("P15", ("stage %d did not finish: click again to retry stage %d"):format(stage, stage))
+	end
+end
+
+local function hasConfig(node : integer) : string
+	local ok, c = pcall(function() : any
+		return api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG)
+	end)
+	return (ok and c ~= nil) and "has a BASE_NODE_CONFIG" or ("NO BASE_NODE_CONFIG" .. (ok and "" or " (read failed)"))
+end
+
+-- A split leaves its new nodes without lane connections (nodeConfigsToAdd is emptied). Sends the engine's own,
+-- unedited replaceSegment for each track piece at the nodes, one at a time (build.tl's stepRepair for streets), and
+-- logs whether each node has its config before and after.
+local function repairNodes(what : string, nodes : {integer}, done : function())
+	for __, n in ipairs(nodes) do
+		log("P15", ("%s: node %d before repair: %s"):format(what, n, hasConfig(n)))
+	end
+	local queue : {integer} = {}
+	local seen : {integer : boolean} = {}
+	for __, n in ipairs(nodes) do
+		local ok, segs = pcall(function() : {any}
+			return api.engine.system.streetSystem.getNodeTrackSegments(n) as {any}
+		end)
+		if ok then
+			for __, sg in ipairs(segs as {any}) do
+				local e = sg as integer
+				if not seen[e] then
+					seen[e] = true
+					table.insert(queue, e)
+				end
+			end
+		else
+			log("P15", ("%s: getNodeTrackSegments(%d) failed: %s"):format(what, n, tostring(segs)))
+		end
+	end
+	local function step()
+		local seg = table.remove(queue, 1)
+		if seg == nil then
+			for __, n in ipairs(nodes) do
+				log("P15", ("%s: node %d after repair: %s"):format(what, n, hasConfig(n)))
+			end
+			return done()
+		end
+		if not api.engine.entityExists(seg) then
+			log("P15", ("%s: piece %d is gone: skipped"):format(what, seg))
+			return step()
+		end
+		local ok, rep = pcall(function() : Proposal
+			return api.engine.util.proposal.replaceSegment(seg)
+		end)
+		if not ok or rep == nil then
+			log("P15", ("%s: repair of piece %d: replaceSegment failed: %s"):format(what, seg, tostring(rep)))
+			return step()
+		end
+		sendProposal(rep, function(__ : WorldBuildProposalCommandData, success : boolean)
+			log("P15", ("%s: repair of piece %d: %s"):format(what, seg, tostring(success)))
+			step()
+		end)
+	end
+	step()
+end
+
+-- What a split sent: log it, then repair the nodes it made.
+local function afterSplit(what : string, res : WorldBuildProposalCommandData, done : function())
+	logAdded(what, res)
+	local ids : {integer} = {}
+	for __, n in ipairs(res.proposal.proposal.addedNodes) do
+		table.insert(ids, n.entity as integer)
+	end
+	repairNodes(what, ids, done)
+end
+
+-- Stage 1: 400 m of double track east of the camera, a one-way signal on each track at x = 300.
+local function p15Build(settings : Settings)
+	local c = camera()
+	p15.origin = c
+	p15.z = groundAt(c)
+	p15.off = settings.network.offset
+	local east : Pt = { x = 1, y = 0 }
+	local opts : Options = {}
+	for k, v in pairs(settings.network as {string : any}) do
+		(opts as {string : any})[k] = v
+	end
+	opts.fan = nil
+	opts.crossovers = false
+	opts.chunkLength = 100000
+	-- One 400 m piece per track: no node on track 2 near stage 3's crossing at x = 200 (with two 200 m pieces, the
+	-- crossing beside track 2's node at x = 200 was refused, one at x = 245 wasn't).
+	opts.maxEdge = 1000
+	local s = with(settings, function(copy : Settings)
+		copy.network = opts
+		copy.signal = "::/infrastructure/signal/signal_path_" .. (settings.year < 1950 and "a" or "c") .. ".con"
+	end)
+	local plan = testPlan({ straight(c, east, 400) }, p15.z, 0, "ground")
+	local net = network.build(plan, opts)
+	for __, e in ipairs(net.edges) do
+		if (e.track == 1 or e.track == 2) and e.s0 <= 300 and 300 <= e.s1 then
+			local u = (300 - e.s0) / (e.s1 - e.s0)
+			e.signals = { { param = u, forward = e.track == 2 } }
+			log("P15", ("signal on track %d edge s %.1f..%.1f at %.3f, facing %s"):format(e.track, e.s0, e.s1, u,
+				e.track == 2 and "east (node0->node1)" or "west (node1->node0)"))
+		end
+	end
+	p15.signalPt = { x = c.x + 300, y = c.y + p15.off }
+	local proposal, why = builder.chunkProposal(net, 1, #net.edges, s)
+	if proposal == nil then
+		log("P15", "no proposal: " .. tostring(why))
+		return p15Done(1, false)
+	end
+	local ok, cost, messages, __, data = builder.dryRun(proposal)
+	log("P15", ("stage 1 dry run: %s, %d"):format(ok and "clean" or table.concat(messages, "; "), cost))
+	logCollisions("P15", data)
+	if not ok then
+		return p15Done(1, false)
+	end
+	sendProposal(proposal, function(res : WorldBuildProposalCommandData, success : boolean)
+		log("P15", "stage 1 built: " .. tostring(success))
+		if not success then
+			return p15Done(1, false)
+		end
+		logAdded("stage 1", res)
+		log("P15", "tracks as scanned:")
+		logTracks(scanPieces())
+		p15Done(1, true)
+	end)
+end
+
+-- Stage 2: split track 1 at x = 100, then the piece with the signal at x = 270 (clear of stage 3's crossing at 200 and the signal at 300). A
+-- cut that already has a node (a retry) is skipped: a second split there would make a ~0 m piece.
+local function p15Split()
+	local o = p15.origin
+	if o == nil then
+		log("P15", "no origin: run stage 1 first")
+		return p15Done(2, false)
+	end
+	local function second()
+		local list = scanPieces()
+		if findNodeAt(list, o.x + 270, o.y + p15.off) ~= nil then
+			log("P15", "split 2 skipped: a node is already at x = 270")
+			logTracks(list)
+			return p15Done(2, true)
+		end
+		local b : P15Piece = nil
+		for __, p in ipairs(list) do
+			if p.track == 1 and p.objects > 0 then
+				b = p
+			end
+		end
+		if b == nil then
+			log("P15", "after split 1 no track 1 piece carries an object: the signal was lost")
+			return p15Done(2, false)
+		end
+		log("P15", ("the signal piece is now %d"):format(b.entity))
+		local u2 = network.nearestParam(b.h, { x = o.x + 270, y = o.y + p15.off })
+		log("P15", ("split 2: piece %d at param %.4f"):format(b.entity, u2))
+		local rep = splitTrack(b, { u2 }, { p15.signalPt })
+		if rep == nil then
+			return p15Done(2, false)
+		end
+		sendProposal(rep, function(res2 : WorldBuildProposalCommandData, success2 : boolean)
+			log("P15", "split 2 sent: " .. tostring(success2))
+			if not success2 then
+				return p15Done(2, false)
+			end
+			afterSplit("split 2", res2, function()
+				log("P15", "tracks after both splits:")
+				logTracks(scanPieces())
+				p15Done(2, true)
+			end)
+		end)
+	end
+	local list = scanPieces()
+	if findNodeAt(list, o.x + 100, o.y + p15.off) ~= nil then
+		log("P15", "split 1 skipped: a node is already at x = 100")
+		return second()
+	end
+	local a = findPiece(list, 1, 100)
+	if a == nil then
+		log("P15", "no track 1 piece under x = 100")
+		return p15Done(2, false)
+	end
+	local u = network.nearestParam(a.h, { x = o.x + 100, y = o.y + p15.off })
+	log("P15", ("split 1: piece %d at param %.4f (x = 100)"):format(a.entity, u))
+	local rep = splitTrack(a, { u }, a.objects > 0 and { p15.signalPt } or {})
+	if rep == nil then
+		return p15Done(2, false)
+	end
+	sendProposal(rep, function(res : WorldBuildProposalCommandData, success : boolean)
+		log("P15", "split 1 sent: " .. tostring(success))
+		if not success then
+			return p15Done(2, false)
+		end
+		afterSplit("split 1", res, second)
+	end)
+end
+
+-- The length of the main-track piece that runs east from a switch node (the branch's side), logged.
+local function branchSide(list : {P15Piece}, what : string, node : integer)
+	local best : number = nil
+	for __, p in ipairs(list) do
+		if p.track ~= 0 and (p.node0 == node or p.node1 == node) then
+			local other = p.node0 == node and p.h.p1 or p.h.p0
+			local here = p.node0 == node and p.h.p0 or p.h.p1
+			if other.x > here.x then
+				best = chord(p.h)
+			end
+		end
+	end
+	log("P15", ("%s: main piece on the branch's side is %s m (the game wants over 16.6)"):format(what,
+		best ~= nil and ("%.1f"):format(best) or "not found"))
+end
+
+-- Stage 3, step 2: with every cut made, one proposal of the new track.
+-- Stage 3's crossing track: its angle to track 1 at the crossing (degrees). It is one circular arc off track 2's
+-- switch into the crossing node and its mirror out of it, so each piece that lies over an existing track shares a node
+-- with it (the game refuses a piece over track it isn't joined to: a node of ours 1.5 m beside track 2 was refused).
+local CROSS_ANGLE = 12.0
+
+-- The length along x of each of the crossing track's arcs: each climbs 2 * off.
+local function crossRun() : number
+	return 2 * p15.off / math.tan(math.rad(CROSS_ANGLE) / 2)
+end
+
+-- Where the crossing track leaves track 2.
+local function crossSwitchX() : number
+	return 200 - crossRun()
+end
+
+local function p15Junction(settings : Settings)
+	local o = p15.origin
+	local off = p15.off
+	local list = scanPieces()
+	local n1, p1 = findNodeAt(list, o.x + 60, o.y + off)
+	local n4, p4 = findNodeAt(list, o.x + crossSwitchX(), o.y - off)
+	local n5, p5 = findNodeAt(list, o.x + 200, o.y + off)
+	if n1 == nil or n4 == nil or n5 == nil then
+		log("P15", ("cut nodes missing: x=60 %s, track 2 switch %s, x=200 %s"):format(tostring(n1), tostring(n4), tostring(n5)))
+		return p15Done(3, false)
+	end
+	log("P15", ("cut nodes: x=60 -> %d, track 2 switch -> %d, crossing x=200 -> %d"):format(n1, n4, n5))
+	branchSide(list, "switch at x=60 (track 1)", n1)
+	branchSide(list, "switch on track 2", n4)
+	local z = p1.z
+	local function at(x : number, y : number, node ?: integer) : Pt3
+		return { x = o.x + x, y = o.y + y, z = z, entity = node }
+	end
+	-- The crossing track: an arc from track 2's switch into the crossing node at CROSS_ANGLE, the mirror arc out of
+	-- it onto our near track's line, then straight on.
+	local theta = math.rad(CROSS_ANGLE)
+	local run = crossRun()
+	local radius = run / math.sin(theta)
+	local cx = 200.0
+	local nodes : {Pt3} = {
+		{ x = p1.x, y = p1.y, z = p1.z, entity = n1 },
+		at(170, 5 * off),
+		at(330, 5 * off),
+		{ x = p4.x, y = p4.y, z = p4.z, entity = n4 },
+		{ x = p5.x, y = p5.y, z = p5.z, entity = n5 },
+		at(cx + run, 3 * off),
+		at(330, 3 * off),
+	}
+	log("P15", ("crossing track: %.1f degrees at the crossing, arcs of radius %.0f m over %.1f m; its switch at x = %.1f"):format(
+		CROSS_ANGLE, radius, run, p4.x - o.x))
+	local function dir(dx : number) : Pt3
+		return { x = dx, y = 0, z = 0 }
+	end
+	local edges : {PgraceRailRouterNetwork.Edge} = {}
+	local function add(a_ : integer, b_ : integer, h : Hermite)
+		table.insert(edges, { node0 = a_, node1 = b_, p0 = h.p0, p1 = h.p1, t0 = h.t0, t1 = h.t1, kind = "ground", track = 0,
+			leg = 1, s0 = 0, s1 = 0 })
+	end
+	-- A circular arc's tangents are as long as the arc (R theta).
+	local arc = radius * theta
+	local slant : Pt3 = { x = math.cos(theta) * arc, y = math.sin(theta) * arc, z = 0 }
+	-- All edges run east from their first node, as they leave an existing node there.
+	add(1, 2, { p0 = nodes[1], p1 = nodes[2], t0 = dir(nodes[2].x - nodes[1].x), t1 = dir(nodes[2].x - nodes[1].x) })
+	add(2, 3, { p0 = nodes[2], p1 = nodes[3], t0 = dir(nodes[3].x - nodes[2].x), t1 = dir(nodes[3].x - nodes[2].x) })
+	add(4, 5, { p0 = nodes[4], p1 = nodes[5], t0 = dir(arc), t1 = slant })
+	add(5, 6, { p0 = nodes[5], p1 = nodes[6], t0 = slant, t1 = dir(arc) })
+	add(6, 7, { p0 = nodes[6], p1 = nodes[7], t0 = dir(nodes[7].x - nodes[6].x), t1 = dir(nodes[7].x - nodes[6].x) })
+	local net : PgraceRailRouterNetwork.Network = { nodes = nodes, edges = edges, chunks = {} }
+	for __, part in ipairs({ { "merge only", 1, 2 }, { "crossing track only", 3, 5 },
+			{ "switch to crossing node only", 3, 3 } }) do
+		local pr, whyNot = builder.chunkProposal(net, part[2] as integer, part[3] as integer, settings)
+		if pr == nil then
+			log("P15", ("%s: no proposal: %s"):format(part[1], tostring(whyNot)))
+		else
+			local okP, costP, messagesP, ___, dataP = builder.dryRun(pr)
+			local hits : {string} = {}
+			for __, h in ipairs(builder.collisions(dataP)) do
+				table.insert(hits, ("%s %d"):format(h.what, h.entity))
+			end
+			log("P15", ("%s dry run: %s, %d %s"):format(part[1], okP and "clean" or table.concat(messagesP, "; "), costP,
+				table.concat(hits, ", ")))
+		end
+	end
+	local proposal, why = builder.chunkProposal(net, 1, #edges, settings)
+	if proposal == nil then
+		log("P15", "no junction proposal: " .. tostring(why))
+		return p15Done(3, false)
+	end
+	local ok, cost, messages, __, data = builder.dryRun(proposal)
+	log("P15", ("junction dry run: %s, %d"):format(ok and "clean" or table.concat(messages, "; "), cost))
+	for __, h in ipairs(builder.collisions(data)) do
+		log("P15", ("collision: %s %d"):format(h.what, h.entity))
+	end
+	if not ok then
+		return p15Done(3, false)
+	end
+	sendProposal(proposal, function(res : WorldBuildProposalCommandData, success : boolean)
+		log("P15", "junction built: " .. tostring(success))
+		if not success then
+			return p15Done(3, false)
+		end
+		logAdded("junction", res)
+		for __, pair in ipairs({ { "x=60 switch", n1 }, { "track 2 switch", n4 }, { "x=200 crossing", n5 } }) do
+			local okS, segs = pcall(function() : {any}
+				return api.engine.system.streetSystem.getNodeTrackSegments(pair[2] as integer) as {any}
+			end)
+			if okS then
+				local ids : {string} = {}
+				for __, sgm in ipairs(segs as {any}) do
+					table.insert(ids, tostring(sgm))
+				end
+				log("P15", ("node %s (%d): %d track pieces: %s"):format(pair[1] as string, pair[2] as integer,
+					#(segs as {any}), table.concat(ids, " ")))
+			else
+				log("P15", ("node %s: getNodeTrackSegments failed: %s"):format(pair[1] as string, tostring(segs)))
+			end
+		end
+		-- The existing nodes now have a branch: the engine's own proposal for each piece there gives the lanes.
+		repairNodes("junction", { n1, n4, n5 }, function()
+			log("P15", "tracks after the junction:")
+			for __, p in ipairs(scanPieces()) do
+				logPiece(p)
+			end
+			p15Done(3, true)
+		end)
+	end)
+end
+
+-- Stage 3: cut the existing tracks where the junction meets them (one proposal per piece, one after another), then
+-- build the junction. Cuts that already have a node are skipped, so a retry carries on.
+local function p15Cuts(settings : Settings)
+	local o = p15.origin
+	if o == nil then
+		log("P15", "no origin: run stage 1 first")
+		return p15Done(3, false)
+	end
+	-- The crossing is at track 1's existing node at x = 200 (stage 1's piece end), so no cut there. The crossing
+	-- track's switch is on track 2 where its arc onto the crossing line begins (x ≈ 153.5): from x = 180, 20 m short of
+	-- the next node, the
+	-- branch was refused ("Construction Not Possible"; it had pulled only 0.6 m clear of the main track there).
+	local wanted : {P15Cut} = { { track = 1, x = 60 }, { track = 1, x = 200 }, { track = 2, x = crossSwitchX() } }
+	local function nextCut(attempt : integer)
+		if attempt > 8 then
+			log("P15", "too many cuts")
+			return p15Done(3, false)
+		end
+		local list = scanPieces()
+		local pending : {P15Cut} = {}
+		for __, c in ipairs(wanted) do
+			if findNodeAt(list, o.x + c.x, o.y + (c.track == 1 and p15.off or -p15.off)) == nil then
+				table.insert(pending, c)
+			end
+		end
+		if #pending == 0 then
+			return p15Junction(settings)
+		end
+		local piece = findPiece(list, pending[1].track, pending[1].x)
+		if piece == nil then
+			log("P15", ("no track %d piece holds x = %.0f"):format(pending[1].track, pending[1].x))
+			return p15Done(3, false)
+		end
+		local us : {number} = {}
+		for __, c in ipairs(pending) do
+			local same = findPiece(list, c.track, c.x)
+			if same ~= nil and same.entity == piece.entity then
+				local u = network.nearestParam(piece.h, { x = o.x + c.x, y = o.y + (c.track == 1 and p15.off or -p15.off) })
+				log("P15", ("cut: piece %d at param %.4f (x = %.0f, track %d)"):format(piece.entity, u, c.x, c.track))
+				table.insert(us, u)
+			end
+		end
+		table.sort(us)
+		local rep = splitTrack(piece, us, piece.objects > 0 and { p15.signalPt } or {})
+		if rep == nil then
+			return p15Done(3, false)
+		end
+		sendProposal(rep, function(res : WorldBuildProposalCommandData, success : boolean)
+			log("P15", "cut sent: " .. tostring(success))
+			if not success then
+				return p15Done(3, false)
+			end
+			afterSplit("cut", res, function()
+				nextCut(attempt + 1)
+			end)
+		end)
+	end
+	nextCut(1)
+end
+
+function probe.junction(settings : Settings) : {function()}
+	return { function()
+		if p15Busy then
+			log("P15", "busy: a stage is still running, click again when it has finished")
+			return
+		end
+		p15Busy = true
+		local stage = p15Stage
+		log("P15", ("stage %d"):format(stage))
+		local ok, err = pcall(function() : boolean
+			if stage == 1 then
+				p15Build(settings)
+			elseif stage == 2 then
+				p15Split()
+			else
+				p15Cuts(settings)
+			end
+			return true
+		end)
+		if not ok then
+			log("P15", "ERROR " .. tostring(err))
+			p15Busy = false
+		end
+	end }
+end
+
+-- P16 ------------------------------------------------------------------------------------------------------------
+
+-- P16: the game's own shallow crossing, copied. A track the player drew across a double track at 6.5° became a
+-- diamond at each track: a straight crossing track through a node on each, four pieces there, each pair straight
+-- on (P1, 2026-10-18). So: a 360 m double track east of the camera, both its tracks split where a straight track at
+-- 6.5° crosses them, and that track built through the two nodes, dry-run with the spacing 0 (as our junction's
+-- pieces) and 5 (as the game's), and built if one is clean. Uses P15's split and repair helpers and state.
+local P16_ANGLE = 6.5
+
+function probe.trackCrossing(settings : Settings) : {function()}
+	return { guarded("P16", function()
+		local c = camera()
+		local east : Pt = { x = 1, y = 0 }
+		local ground = groundAt(c)
+		p15.origin, p15.z, p15.off = c, ground, 2.5
+		local opts : Options = {}
+		for k, v in pairs(settings.network as {string : any}) do
+			(opts as {string : any})[k] = v
+		end
+		opts.fan, opts.crossovers, opts.chunkLength, opts.maxEdge = nil, false, 100000, 250
+		local s = with(settings, function(copy : Settings) copy.network = opts end)
+		local net = network.build(testPlan({ straight(c, east, 360) }, ground, 0, "ground"), opts)
+		local proposal, why = builder.chunkProposal(net, 1, #net.edges, s)
+		if proposal == nil then
+			log("P16", "no proposal: " .. tostring(why))
+			return
+		end
+		local ok, __, messages = builder.dryRun(proposal)
+		log("P16", "double track dry run: " .. (ok and "clean" or table.concat(messages, "; ")))
+		if not ok then
+			return
+		end
+		-- The crossing line: through (180, 0) at P16_ANGLE, from x = 60 to x = 300.
+		local a = math.rad(P16_ANGLE)
+		local slope = math.tan(a)
+		local function onLine(x : number) : Pt3
+			return { x = c.x + x, y = c.y + (x - 180) * slope, z = ground }
+		end
+		local x1 = 180 + 2.5 / slope
+		local x2 = 180 - 2.5 / slope
+		log("P16", ("crossing at %.1f degrees: track 1 (y = 2.5) at x = %.1f, track 2 (y = -2.5) at x = %.1f"):format(
+			P16_ANGLE, x1, x2))
+		local function split(track : integer, x : number, done : function())
+			local list = scanPieces()
+			if findNodeAt(list, c.x + x, c.y + (track == 1 and 2.5 or -2.5)) ~= nil then
+				return done()
+			end
+			local piece = findPiece(list, track, x)
+			if piece == nil then
+				log("P16", ("no track %d piece at x = %.1f"):format(track, x))
+				return
+			end
+			local u = network.nearestParam(piece.h, { x = c.x + x, y = c.y + (track == 1 and 2.5 or -2.5) })
+			local rep = splitTrack(piece, { u }, {})
+			if rep == nil then
+				log("P16", "split refused")
+				return
+			end
+			sendProposal(rep, function(res : WorldBuildProposalCommandData, success : boolean)
+				log("P16", ("split of track %d at x = %.1f: %s"):format(track, x, tostring(success)))
+				if success then
+					afterSplit("P16 split", res, done)
+				end
+			end)
+		end
+		local function crossing()
+			local list = scanPieces()
+			local n1, q1 = findNodeAt(list, c.x + x1, c.y + 2.5)
+			local n2, q2 = findNodeAt(list, c.x + x2, c.y - 2.5)
+			if n1 == nil or n2 == nil then
+				log("P16", ("crossing nodes missing: %s %s"):format(tostring(n1), tostring(n2)))
+				return
+			end
+			local pts : {Pt3} = { onLine(60), { x = q2.x, y = q2.y, z = q2.z, entity = n2 },
+				{ x = q1.x, y = q1.y, z = q1.z, entity = n1 }, onLine(300) }
+			local winner : SimpleProposal = nil
+			for __, track in ipairs({ 0, 1 }) do
+				local edges : {PgraceRailRouterNetwork.Edge} = {}
+				for i = 1, 3 do
+					local p, q = pts[i], pts[i + 1]
+					local t : Pt3 = { x = q.x - p.x, y = q.y - p.y, z = 0 }
+					table.insert(edges, { node0 = i, node1 = i + 1, p0 = p, p1 = q, t0 = t, t1 = t, kind = "ground",
+						track = track, leg = 1, s0 = 0, s1 = 0 })
+				end
+				local cross : PgraceRailRouterNetwork.Network = { nodes = pts, edges = edges, chunks = {} }
+				local pr = builder.chunkProposal(cross, 1, 3, s)
+				if pr ~= nil then
+					local okC, costC, messagesC, ___, dataC = builder.dryRun(pr)
+					local hits : {string} = {}
+					for __, h in ipairs(builder.collisions(dataC)) do
+						table.insert(hits, ("%s %d"):format(h.what, h.entity))
+					end
+					log("P16", ("crossing track through both nodes, spacing %s: %s, %d %s"):format(track == 1 and "5" or "0",
+						okC and "clean" or table.concat(messagesC, "; "), costC, table.concat(hits, ", ")))
+					if okC and winner == nil then
+						winner = pr
+					end
+				end
+			end
+			if winner == nil then
+				log("P16", "no clean crossing: nothing more built")
+				return
+			end
+			sendProposal(winner, function(res : WorldBuildProposalCommandData, success : boolean)
+				log("P16", "crossing built: " .. tostring(success))
+				if success then
+					logAdded("P16 crossing", res)
+					for __, n in ipairs({ n1, n2 }) do
+						log("P16", ("  node %d: %d track pieces"):format(n,
+							#api.engine.system.streetSystem.getNodeTrackSegments(n)))
+					end
+				end
+			end)
+		end
+		sendProposal(proposal, function(__ : WorldBuildProposalCommandData, built : boolean)
+			log("P16", "double track built: " .. tostring(built))
+			if built then
+				split(1, x1, function() split(2, x2, crossing) end)
+			end
+		end)
+	end) }
+end
+
 -- P6 -------------------------------------------------------------------------------------------------------------
 
 local function moduleLookup(name : string) : string

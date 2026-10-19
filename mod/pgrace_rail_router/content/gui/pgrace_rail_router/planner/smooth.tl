@@ -140,6 +140,9 @@ local probe : Pt = { x = 0, y = 0 }
 -- Whether the points every `step` (or less) along a piece, both ends included, pass the guard.
 local function pieceClear(piece : Piece, guard : Guard, from : integer, to : integer) : boolean
 	local m = math.max(1, math.ceil(piece.length / guard.step))
+	if guard.begin ~= nil then
+		guard.begin()
+	end
 	for k = 0, m do
 		probe.x, probe.y = smooth.pointAtXY(piece, piece.length * k / m)
 		if not guard.clear(probe, from, to) then
