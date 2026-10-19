@@ -211,14 +211,15 @@ local function sendChunk(b : Build, net : Network, first : integer, last : integ
 	end
 	local junctions = builder.junctionCount(net, first, last)
 	send(b, proposal, x, y, function(res : WorldBuildProposalCommandData)
+		-- Queued first, so an error below still leaves them repaired; from the next step: in a build's callback a node
+		-- may list only some of its pieces (AGENTS.md).
+		for __, n in ipairs(joined) do
+			table.insert(b.repairNodes, n)
+		end
 		local matched = recordNodes(net, res)
 		log(("chunk %d built (%d edges, %d), %d new nodes recorded"):format(b.chunk, last - first + 1, cost, matched))
 		if junctions > 0 then
 			b.junctions = b.junctions + junctions
-			-- From the next step: in a build's callback a node may list only some of its pieces (AGENTS.md).
-			for __, n in ipairs(joined) do
-				table.insert(b.repairNodes, n)
-			end
 			log(("chunk %d: %d junctions built, %d existing nodes to repair"):format(b.chunk, junctions, #joined))
 		end
 		b.chunk = b.chunk + 1
@@ -280,12 +281,8 @@ local function trackPiece(node0 : integer, node1 : integer, h : Hermite, templat
 	return seg
 end
 
--- How far a signal's model may stand from its piece's curve (metres in plan) for its place to be trusted; and the
--- shortest piece a split of track may leave (metres in plan): network.build keeps cuts 0.5 m (MIN_EDGE) from a
--- piece's ends and junction.fit 3 m from existing nodes, so this only stops a degenerate proposal, which can't be
--- dry-run.
+-- How far a signal's model may stand from its piece's curve (metres in plan) for its place to be trusted.
 local OBJECT_OFF = 8.0
-local MIN_SPLIT_PIECE = 1.0
 
 -- Where an edge object (a signal) is, in the world: its EDGE_OBJECT's transform, if near the piece's curve h, else its
 -- param along h; nil and why if neither can be read.
@@ -324,24 +321,10 @@ end
 local function splitEdge(entity : integer, edge : Engine.Component.BaseEdge, h : Hermite, us : {number}) : Proposal,
 		string
 	local isTrack = edge.roadType == api.type["enum"].RoadType.TRACK
-	local hs : {Hermite} = {}
-	local rest = h
-	local restU = 0.0
-	for __, u in ipairs(us) do
-		if isTrack and (u <= restU or u >= 1) then
-			return nil, ("piece %d: cut parameters %s aren't ascending inside it"):format(entity, tostring(u))
-		end
-		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
-		table.insert(hs, here)
-		rest, restU = after, u
-	end
-	table.insert(hs, rest)
-	if isTrack then
-		for j, sh in ipairs(hs) do
-			if dist2(sh.p0, sh.p1) < MIN_SPLIT_PIECE then
-				return nil, ("piece %d: its part %d would be %.1f m"):format(entity, j, dist2(sh.p0, sh.p1))
-			end
-		end
+	-- The parts; a track's no shorter than MIN_SPLIT_PIECE (a split can't be dry-run, so nothing doubtful is sent).
+	local hs, whyParts = builder.splitParts(h, us, isTrack and builder.MIN_SPLIT_PIECE or nil)
+	if hs == nil then
+		return nil, ("piece %d: %s"):format(entity, tostring(whyParts))
 	end
 	local rep = api.engine.util.proposal.replaceSegment(entity)
 	if rep == nil or rep.proposal == nil or #rep.proposal.addedSegments == 0 then
@@ -374,14 +357,7 @@ local function splitEdge(entity : integer, edge : Engine.Component.BaseEdge, h :
 			if at == nil then
 				return nil, ("piece %d: where its signal %s is isn't known (%s)"):format(entity, tostring(a), how)
 			end
-			local bestJ, bestD, bestU = 1, math.huge, 0.0
-			for j, sh in ipairs(hs) do
-				local u = network.nearestParam(sh, { x = at.x, y = at.y })
-				local d = dist2(network.hermiteAt(sh, u), at)
-				if d < bestD then
-					bestJ, bestD, bestU = j, d, u
-				end
-			end
+			local bestJ, bestU, bestD = builder.partOf(hs, at)
 			log(("piece %d: signal %s (from %s) goes on part %d at %.3f, %.1f m off its curve"):format(entity, tostring(a),
 				how, bestJ, bestU, bestD))
 			objJ[idx], objU[idx] = bestJ, bestU
@@ -594,7 +570,7 @@ end
 local function stepSplit(b : Build, chunk : PgraceRailRouterNetwork.Chunk)
 	local net = b.check.net
 	local split = chunk.splits[b.splitting]
-	local done, why = builder.splitDone(net, b.chunk, split)
+	local done, why, joinedNow = builder.splitDone(net, b.chunk, split)
 	local cuts = builder.cutNodes(net, b.chunk, split.piece)
 	local at = cuts[1] or net.edges[chunk.first].p0
 	if why ~= nil then
@@ -602,10 +578,12 @@ local function stepSplit(b : Build, chunk : PgraceRailRouterNetwork.Chunk)
 		return
 	end
 	if done then
-		for __, n in ipairs(cuts) do
-			table.insert(b.repairNodes, n.entity)
+		-- Repaired again only where joined just now (after a game restart; a retry joined them before).
+		for __, n in ipairs(joinedNow) do
+			table.insert(b.repairNodes, n)
 		end
-		log(("chunk %d: piece %d was split before; its %d cuts joined to the nodes there"):format(b.chunk, split.piece, #cuts))
+		log(("chunk %d: piece %d was split before; %d of its %d cuts joined to the nodes there now"):format(b.chunk,
+			split.piece, #joinedNow, #cuts))
 		b.splitting = b.splitting + 1
 		return
 	end
@@ -644,14 +622,17 @@ local function stepSplit(b : Build, chunk : PgraceRailRouterNetwork.Chunk)
 	end
 	log(("chunk %d: splitting existing piece %d at %d cuts"):format(b.chunk, split.piece, #us))
 	send(b, rep, at.x, at.y, function(res : WorldBuildProposalCommandData)
-		-- The new nodes, read now, matched to the cuts by place.
+		-- The new nodes, queued for repair first (whatever follows), then read now and matched to the cuts by place;
+		-- the cuts take them only if every one is matched.
 		local made : {Pt3} = {}
 		for __, nd in ipairs(res.proposal.proposal.addedNodes) do
+			table.insert(b.repairNodes, nd.entity as integer)
 			local p = nodePos(nd.entity as integer)
 			if p ~= nil then
 				table.insert(made, p)
 			end
 		end
+		local match : {Pt3 : integer} = {}
 		for __, n in ipairs(open) do
 			local best : Pt3 = nil
 			for __, p in ipairs(made) do
@@ -663,10 +644,10 @@ local function stepSplit(b : Build, chunk : PgraceRailRouterNetwork.Chunk)
 				fail(b, { "the existing track's split nodes can't be found" }, n.x, n.y)
 				return
 			end
-			n.entity = best.entity
+			match[n] = best.entity
 		end
-		for __, p in ipairs(made) do
-			table.insert(b.repairNodes, p.entity)
+		for n, entity in pairs(match) do
+			n.entity = entity
 		end
 		log(("chunk %d: existing piece %d split, %d new nodes"):format(b.chunk, split.piece, #made))
 		b.splitting = b.splitting + 1
@@ -681,7 +662,22 @@ local function stepChunk(b : Build)
 	local cr = b.crossings
 	if cr == nil and b.splitting == nil then
 		if builder.builtChunk(net, b.chunk) then
-			log(("chunk %d already built"):format(b.chunk))
+			-- A junction's nodes on the existing track go again for their lanes (in case the build stopped before;
+			-- a second repair is harmless).
+			local queued = 0
+			for i = chunk.first, chunk.last do
+				local e = net.edges[i]
+				if e.whole then
+					for __, k in ipairs({ e.node0, e.node1 }) do
+						local n = net.nodes[k]
+						if n.existing ~= nil and n.entity ~= nil then
+							table.insert(b.repairNodes, n.entity)
+							queued = queued + 1
+						end
+					end
+				end
+			end
+			log(("chunk %d already built%s"):format(b.chunk, queued > 0 and (", %d junction nodes to repair"):format(queued) or ""))
 			b.chunk = b.chunk + 1
 			return
 		end
@@ -1204,8 +1200,41 @@ function build.start(check : PgraceRailRouterBuilder.Check) : Build
 		junctions = 0, charged = 0, roads = 0, roadsMissing = {}, roadRepair = {}, repairNodes = {}, trackRepair = {} }
 end
 
+-- Track pieces still to repair (a split's or a junction's nodes): worked off even after a failure.
+local function repairsPending(b : Build) : boolean
+	return #b.repairNodes > 0 or #b.trackRepair > 0
+end
+
+local function stepRepairs(b : Build)
+	if #b.repairNodes > 0 then
+		queueNodeRepairs(b)
+	else
+		stepRepair(b, b.trackRepair)
+	end
+end
+
+function build.busy(b : Build) : boolean
+	if b.phase == "done" then
+		return false
+	end
+	return b.phase ~= "failed" or b.waiting or repairsPending(b)
+end
+
 function build.step(b : Build) : boolean
-	if b.phase == "done" or b.phase == "failed" then
+	if b.phase == "done" then
+		return true
+	end
+	if b.phase == "failed" then
+		if not b.waiting and repairsPending(b) then
+			local ok, err = pcall(function() : boolean
+				stepRepairs(b)
+				return true
+			end)
+			if not ok then
+				log("repair after the failure: " .. tostring(err))
+				b.repairNodes, b.trackRepair = {}, {}
+			end
+		end
 		return true
 	end
 	if b.waiting then
@@ -1228,10 +1257,8 @@ function build.step(b : Build) : boolean
 			stepStation(b)
 		elseif b.phase == "track" then
 			-- Track pieces at new or joined nodes go again for their lanes before anything else is built.
-			if #b.repairNodes > 0 then
-				queueNodeRepairs(b)
-			elseif #b.trackRepair > 0 then
-				stepRepair(b, b.trackRepair)
+			if repairsPending(b) then
+				stepRepairs(b)
 			else
 				stepChunk(b)
 			end

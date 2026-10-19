@@ -162,4 +162,7 @@ global record PgraceRailRouterNetwork
 	-- lists the cuts' pieces in `splits`. The leg's first signals there sit 15 m out from the approach start, one-way,
 	-- each facing its own track's trains (with or without Halt 2+2; none on the junction pieces).
 	build : function(plan : PgraceRailRouterRoute.Plan, options : Options) : Network
+	-- Sets `problem` on every chunk that splits an existing piece an earlier chunk splits too (network.build calls it):
+	-- the first split replaces the piece, and the later one would find it gone.
+	sharedSplits : function(net : Network)
 end

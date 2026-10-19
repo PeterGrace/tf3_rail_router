@@ -85,8 +85,12 @@ global record PgraceRailRouterBuild
 	end
 
 	start : function(check : PgraceRailRouterBuilder.Check) : Build
-	-- The next action, unless a command is in flight or the build is over. true once it's over (done or failed).
+	-- The next action, unless a command is in flight or the build is over. true once it's over (done or failed); a
+	-- failed build still works off its pending repairs, one a step.
 	step : function(b : Build) : boolean
+	-- Whether the build still needs stepping: under way, or failed with a command in flight or track pieces still to
+	-- repair (a split's or a junction's nodes, worked off after a failure too).
+	busy : function(b : Build) : boolean
 	-- Items built (stations, then chunks), and how many there are.
 	progress : function(b : Build) : integer, integer
 	-- After a failure: start the failed item again (a chunk from its dry run, so streets and existing track already

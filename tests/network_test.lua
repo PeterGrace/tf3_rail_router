@@ -1009,3 +1009,15 @@ t.test("network: junctions at both ends of a leg; heights on the stretch's grade
 		end
 	end
 end)
+
+t.test("network: two chunks splitting one existing piece is refused on the later one", function()
+	local net = { nodes = {}, edges = {}, chunks = {
+		{ first = 1, last = 1, leg = 1, length = 0, splits = { { piece = 7, s = { 0.4 } }, { piece = 8, s = { 0.5 } } } },
+		{ first = 2, last = 2, leg = 1, length = 0 },
+		{ first = 3, last = 3, leg = 2, length = 0, splits = { { piece = 9, s = { 0.2 } } } },
+		{ first = 4, last = 4, leg = 2, length = 0, splits = { { piece = 8, s = { 0.7 } } } } } }
+	network.sharedSplits(net)
+	t.eq(net.chunks[1].problem, nil, "the first keeps its split")
+	t.eq(net.chunks[3].problem, nil, "another piece is fine")
+	t.ok(net.chunks[4].problem ~= nil and net.chunks[4].problem:find("(8)", 1, true) ~= nil, "the later one is refused, naming the piece")
+end)

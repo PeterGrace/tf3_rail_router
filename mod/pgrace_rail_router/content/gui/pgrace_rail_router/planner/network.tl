@@ -1035,7 +1035,22 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			k = j + 1
 		end
 	end
+	network.sharedSplits(net)
 	return net
+end
+
+function network.sharedSplits(net : PgraceRailRouterNetwork.Network)
+	local first : {integer : integer} = {}
+	for ci, c in ipairs(net.chunks) do
+		for __, sp in ipairs(c.splits or {}) do
+			if first[sp.piece] == nil then
+				first[sp.piece] = ci
+			elseif first[sp.piece] ~= ci and c.problem == nil then
+				c.problem = ("two junctions cut the same piece of existing track (%d), in chunks %d and %d: the first split would leave the second nothing to cut")
+					:format(sp.piece, first[sp.piece], ci)
+			end
+		end
+	end
 end
 
 return network

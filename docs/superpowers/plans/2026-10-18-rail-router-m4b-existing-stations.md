@@ -667,33 +667,40 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
 - [ ] **Step 3: Failure.** On failure, use Show and "Retry from here" as now. Splits already made stay (harmless).
 - [ ] **Step 4:** `just check` and `just test`, then commit as `feat: the build splits existing track for a junction, then joins it`.
 - **As built:**
-  - `builder.junctionHits(collisions, splits, nodes?)` returns `all, rest`: true when there is at least one collision
-    and every one is a split piece or one of its nodes (those given, read from the pieces' BASE_EDGE, and those the
-    collisions list for the pieces); `rest` (what the splits don't explain) goes on to the level-crossing count, so a
-    junction chunk that also crosses a road is still clean. Only where every message is "Collision"; anything else
-    stays an error. `builder.junctionCount(net, first, last)` counts one junction per leg end (whole edges with s
-    below 0, or past the leg); `Check.junctions`, `Outcome.junctions` and `Build.junctions` add them up.
+  - `builder.junctionCount(net, first, last)` counts one junction per leg end (whole edges with s below 0, or past
+    the leg); `Check.junctions`, `Outcome.junctions` and `Build.junctions` add them up. (`junctionHits`, planned in
+    Step 1, was dropped after review: with the junction pieces left out of the check (below), a collision of the
+    rest with existing track is a real overlap, so any collision but a level crossing is an error.)
   - **Resume:** `builder.splitDone(net, c, split)` treats a split as made when its piece is gone, or its id (ids are
-    reused) now names track that doesn't pass the cuts' places; the cut nodes then take the entities of the track
-    nodes at their places (`builder.trackNodeAt`, 0.5 m), or the chunk fails with "the existing track ... has changed
-    since the route was found ...: find the route again". The check uses it too (a re-check after a partial build),
-    and leaves such splits out of `junctionHits`. Nothing is planned again.
+    reused) now names track that doesn't pass every open cut's place clear of its ends (`builder.cutFits`: 0.5 m,
+    and more than `MIN_SPLIT_PIECE` from both ends, so a part that kept the id and ends at the cut doesn't count);
+    the open cut nodes then take the entities of the track nodes at their places (`builder.trackNodeAt`, 0.5 m), or
+    the chunk fails with "the existing track ... has changed since the route was found ...: find the route again".
+    It returns the nodes it joined, and only those are repaired again. The check uses it too. Nothing is planned
+    again.
+  - **One piece, two junctions:** `network.sharedSplits` (called by `network.build`) sets `problem` on a chunk that
+    splits a piece an earlier chunk splits.
   - `splitEdge(entity, edge, h, us)` reads each signal's place itself (its EDGE_OBJECT transform if within 8 m of the
-    piece, else its param), rather than taking places from the caller; it refuses (fails the chunk, sends nothing)
-    when a signal's place can't be read, the engine lists edge objects to add that don't match the piece's, or a
-    track part would be under 1 m. Track parts copy the engine's replacement (`type`, `typeIndex`, lanes, template,
-    style, `distance`, `streetEdge`, owner); street parts are made as before (Bus Loops).
+    piece, else its param). Its pure part is in builder: `splitParts(h, us, minPiece?)` (the parts; for track, cuts
+    ascending inside 0..1 and no part under `MIN_SPLIT_PIECE` = 2.5 m) and `partOf(parts, at)` (the part holding a
+    signal), unit-tested. It refuses (fails the chunk, sends nothing) when a signal's place can't be read, the engine
+    lists edge objects to add that don't match the piece's, or the parts fail the guard. Track parts copy the
+    engine's replacement (`type`, `typeIndex`, lanes, template, style, `distance`, `streetEdge`, owner); street parts
+    are made as before (Bus Loops).
   - **Lanes:** `Build.repairNodes` (nodes) and `Build.trackRepair` (pieces) are worked off at the start of every track
-    step, before anything else: a split's new nodes are queued in its callback and their pieces (from
-    `getNodeTrackSegments` on the next step) sent again unedited before the next split; after a junction chunk is
-    built, the existing nodes its `whole` pieces join (switches, crossing) are queued the same way, as P15 did.
+    step, before anything else, and **after a failure too** (`build.busy`, which the window's `building()` now uses,
+    stays true until they're done): a split's new nodes are queued first thing in its callback (the cuts take their
+    entities only if all match), and their pieces (from `getNodeTrackSegments` on the next step) sent again unedited
+    before the next split; after a junction chunk is built, the existing nodes its `whole` pieces join (switches,
+    crossing) are queued the same way, before anything else in the callback, as P15 did; a junction chunk found
+    already built queues its cut nodes again (harmless).
   - A chunk's `problem` fails the check (no dry run) and the build (before any split).
   - **The check can't see the junction pieces** (fix after review): a new piece over existing track it shares no node
     with is refused as "Construction Not Possible" (P15, never "Collision"), so before the split a junction chunk's
     dry run would always fail. `builder.checkedEdges(net, first, last)` (pure, tested) leaves out the `whole` pieces
     and any other edge ending on a cut node (`existing`); the check dry-runs the rest, logs "junction pieces not
-    dry-run before the split", still counts `junctions`, and keeps `junctionHits` for what the rest reports against
-    the pieces to split. A junction's own refusal only shows at build time, when the whole chunk is dry-run after the
+    dry-run before the split", still counts `junctions`, and diagnoses "Construction Not Possible" on that filtered
+    network. A junction's own refusal only shows at build time, when the whole chunk is dry-run after the
     splits; it then fails with Show / "Retry from here" (the splits stay, harmless).
 
 ### Task 9: The window

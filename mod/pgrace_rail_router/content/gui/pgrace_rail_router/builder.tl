@@ -331,33 +331,58 @@ function builder.levelCrossings(messages : {string}, collisions : {Collision},
 	return count
 end
 
-function builder.junctionHits(collisions : {Collision}, splits : {PgraceRailRouterNetwork.Split}, nodes ?: {integer})
-		: boolean, {Collision}
-	-- The split pieces, and their nodes: those given, and those of the pieces as the collisions list them.
-	local allowed : {integer : boolean} = {}
-	for __, sp in ipairs(splits or {}) do
-		allowed[sp.piece] = true
+-- The shortest part a split of existing track may leave (metres in plan): network.build keeps cuts 0.5 m (MIN_EDGE)
+-- from a piece's ends and junction.fit 3 m from existing nodes (or puts them on one).
+builder.MIN_SPLIT_PIECE = 2.5
+
+local function chord(h : PgraceRailRouterNetwork.Hermite) : number
+	return math.sqrt((h.p1.x - h.p0.x) ^ 2 + (h.p1.y - h.p0.y) ^ 2)
+end
+
+function builder.splitParts(h : PgraceRailRouterNetwork.Hermite, us : {number}, minPiece ?: number)
+		: {PgraceRailRouterNetwork.Hermite}, string
+	local parts : {PgraceRailRouterNetwork.Hermite} = {}
+	local rest = h
+	local restU = 0.0
+	for __, u in ipairs(us) do
+		if minPiece ~= nil and (u <= restU or u >= 1) then
+			return nil, ("cut parameters %s aren't ascending inside it"):format(tostring(u))
+		end
+		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
+		table.insert(parts, here)
+		rest, restU = after, u
 	end
-	for __, n in ipairs(nodes or {}) do
-		allowed[n] = true
-	end
-	for __, c in ipairs(collisions) do
-		if allowed[c.entity] then
-			if c.node0 ~= nil then
-				allowed[c.node0] = true
-			end
-			if c.node1 ~= nil then
-				allowed[c.node1] = true
+	table.insert(parts, rest)
+	if minPiece ~= nil then
+		for j, part in ipairs(parts) do
+			if chord(part) < minPiece then
+				return nil, ("its part %d would be %.1f m"):format(j, chord(part))
 			end
 		end
 	end
-	local rest : {Collision} = {}
-	for __, c in ipairs(collisions) do
-		if not allowed[c.entity] then
-			table.insert(rest, c)
+	return parts, nil
+end
+
+function builder.partOf(parts : {PgraceRailRouterNetwork.Hermite}, at : Pt3) : integer, number, number
+	local bestJ, bestD, bestU = 1, math.huge, 0.0
+	for j, part in ipairs(parts) do
+		local u = network.nearestParam(part, { x = at.x, y = at.y })
+		local q = network.hermiteAt(part, u)
+		local d = math.sqrt((q.x - at.x) ^ 2 + (q.y - at.y) ^ 2)
+		if d < bestD then
+			bestJ, bestD, bestU = j, d, u
 		end
 	end
-	return #collisions > 0 and #rest == 0, rest
+	return bestJ, bestU, bestD
+end
+
+function builder.cutFits(h : PgraceRailRouterNetwork.Hermite, p : Pt3) : boolean
+	local q = network.hermiteAt(h, network.nearestParam(h, { x = p.x, y = p.y }))
+	local function d(a : Pt3, b : Pt3) : number
+		return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+	end
+	return d(q, p) <= 0.5 and math.abs(q.z - p.z) <= 1.5 and d(q, h.p0) > builder.MIN_SPLIT_PIECE
+		and d(q, h.p1) > builder.MIN_SPLIT_PIECE
 end
 
 function builder.checkedEdges(net : Network, first : integer, last : integer) : Network, integer, integer
@@ -722,10 +747,11 @@ local function trackPiece(piece : integer) : Engine.Component.BaseEdge
 	return edge as Engine.Component.BaseEdge
 end
 
-function builder.splitDone(net : Network, c : integer, split : PgraceRailRouterNetwork.Split) : boolean, string
+function builder.splitDone(net : Network, c : integer, split : PgraceRailRouterNetwork.Split) : boolean, string,
+		{integer}
 	local cuts = builder.cutNodes(net, c, split.piece)
-	-- Still there: a track piece by that id that passes every open cut's place (ids are reused: P15's new pieces had
-	-- ids below the old ones).
+	-- Still there: a track piece by that id that passes every open cut's place, clear of its ends (ids are reused:
+	-- P15's new pieces had ids below the old ones, and a part of the split piece may carry its id, ending at the cut).
 	local edge = trackPiece(split.piece)
 	if edge ~= nil then
 		local h : PgraceRailRouterNetwork.Hermite = { p0 = { x = edge.position0.x, y = edge.position0.y, z = edge.position0.z },
@@ -734,28 +760,27 @@ function builder.splitDone(net : Network, c : integer, split : PgraceRailRouterN
 			t1 = { x = edge.tangent1.x, y = edge.tangent1.y, z = edge.tangent1.z } }
 		local fits = true
 		for __, n in ipairs(cuts) do
-			if n.entity == nil then
-				local q = network.hermiteAt(h, network.nearestParam(h, { x = n.x, y = n.y }))
-				if dist2(q, n) > NODE_MATCH or math.abs(q.z - n.z) > 1.5 then
-					fits = false
-				end
+			if n.entity == nil and not builder.cutFits(h, n) then
+				fits = false
 			end
 		end
 		if fits then
-			return false, nil
+			return false, nil, {}
 		end
 	end
+	local joined : {integer} = {}
 	for __, n in ipairs(cuts) do
 		if n.entity == nil then
 			local ok, found = pcall(trackNodeAt, n)
 			if not ok or found == nil then
 				return true, ("the existing track where a junction meets it (%.0f, %.0f) has changed since the route was found (piece %d is gone, and no node is there): find the route again")
-					:format(n.x, n.y, split.piece)
+					:format(n.x, n.y, split.piece), joined
 			end
 			n.entity = found as integer
+			table.insert(joined, n.entity)
 		end
 	end
-	return true, nil
+	return true, nil, joined
 end
 
 function builder.builtChunk(net : Network, c : integer) : boolean
@@ -829,7 +854,8 @@ function builder.step(check : Check) : boolean
 		chunk = check.net.chunks[item.index]
 	end
 	-- A junction's splits still to make (one made already, by a build that stopped: its cut nodes are then joined to
-	-- the nodes it made), and why the chunk can't be built.
+	-- the nodes it made), and why the chunk can't be built. The rest of the chunk's dry run must be clean but for level
+	-- crossings: with the junction's pieces left out, a collision with the existing track is a real overlap.
 	local splits : {PgraceRailRouterNetwork.Split} = {}
 	local problem : string = chunk ~= nil and chunk.problem or nil
 	if chunk ~= nil and problem == nil then
@@ -890,35 +916,7 @@ function builder.step(check : Check) : boolean
 		local data : ProposalData
 		ok, cost, messages, us, data = builder.dryRun(proposal as SimpleProposal)
 		collisions = builder.collisions(data)
-		-- What the junction's splits don't explain: before the split, a junction's node lies on the existing piece,
-		-- and the dry run collides with it (and its nodes). Only where every message is a collision.
 		local rest = collisions
-		if not ok and #splits > 0 then
-			local onlyCollisions = #messages > 0
-			for __, m in ipairs(messages) do
-				if m:lower() ~= "collision" then
-					onlyCollisions = false
-				end
-			end
-			if onlyCollisions then
-				local nodes : {integer} = {}
-				for __, sp in ipairs(splits) do
-					pcall(function() : boolean
-						local e = api.engine.getComponent(sp.piece, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
-						if e ~= nil then
-							table.insert(nodes, e.node0 as integer)
-							table.insert(nodes, e.node1 as integer)
-						end
-						return true
-					end)
-				end
-				local all : boolean
-				all, rest = builder.junctionHits(collisions, splits, nodes)
-				if all then
-					ok, messages = true, {}
-				end
-			end
-		end
 		if not ok and item.kind == "chunk" and check.settings.levelCrossings and #rest > 0 then
 			crossings = builder.levelCrossings(messages, rest, function(street : integer) : boolean
 				local okLevel, level = pcall(builder.crossesOnLevel, sub, 1, #sub.edges, street)
@@ -956,11 +954,10 @@ function builder.step(check : Check) : boolean
 			c.components ~= nil and (" [" .. c.components .. "]") or ""))
 	end
 	if not ok and item.kind == "chunk" and #messages > 0 and messages[1] == "Construction Not Possible" then
-		builder.diagnose(check.net, chunk.first, chunk.last, check.settings)
+		builder.diagnose(sub, 1, #sub.edges, check.settings)
 	end
 	debugPrint(LOG_PREFIX .. ("dry run %s %d%s: %s, cost %d, %d us%s%s"):format(item.kind, item.index, extra,
 		ok and (crossings > 0 and ("clean but for %d level crossings"):format(crossings)
-			or (#splits > 0 and #collisions > 0) and "clean but for the junction's existing track"
 			or leftWhole > 0 and "clean but for the junction's pieces (not dry-run)" or "clean") or "errors", cost,
 		us, #messages > 0 and (": " .. table.concat(messages, "; ")) or "",
 		#hits > 0 and ("; collided with " .. table.concat(hits, ", ")) or ""))

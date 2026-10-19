@@ -585,7 +585,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 	-- A build under way: commands are in flight, so the plan and settings stay as they are until it's over.
 	local function building() : boolean
 		local b = buildRef:get()
-		return b ~= nil and b.phase ~= "done" and b.phase ~= "failed"
+		return b ~= nil and build.busy(b)
 	end
 
 	-- Build, once the check is clean: the button, then the build's progress, its result, or what failed with Show and
