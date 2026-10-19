@@ -1,6 +1,7 @@
 -- Reads a route capture: the "CAPTURE" lines the window's probe writes to the game log (the planner's input for one
 -- Find route). Plain Lua. Returns {x0, y0, cell, nx, ny, weights {key = value}, platform, stops {{id, name, pos}},
--- height, blocked, water, road, track (lists at (iy - 1) * nx + ix), rows (how many were read), complete}.
+-- approach (the straight at each platform end; nil in captures from before Halt 2+2, and for simple stations), height,
+-- blocked, water, road, track (lists at (iy - 1) * nx + ix), rows (how many were read), complete}.
 local capture = {}
 
 function capture.load(path)
@@ -22,6 +23,8 @@ function capture.load(path)
 			end
 		elseif kind == "platform" then
 			c.platform = tonumber(rest)
+		elseif kind == "approach" then
+			c.approach = tonumber(rest)
 		elseif kind == "stop" then
 			local id, x, y, name = rest:match("^(%S+) (%S+) (%S+) (.*)$")
 			table.insert(c.stops, { id = math.floor(tonumber(id)), name = name, pos = { x = tonumber(x), y = tonumber(y) } })

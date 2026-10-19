@@ -917,6 +917,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 		end
 		debugPrint(tag .. "weights " .. table.concat(fields, ";"))
 		debugPrint(tag .. "platform " .. tostring(work.platform))
+		if work.approach ~= nil then
+			debugPrint(tag .. "approach " .. tostring(work.approach))
+		end
 		for __, stop in ipairs(work.stops) do
 			debugPrint(tag .. "stop " .. string.format("%d %.3f %.3f ", stop.id, stop.pos.x, stop.pos.y) .. stop.name)
 		end

@@ -274,7 +274,8 @@ return function(root)
 		end
 		applyOverrides(weights, opts.overrides)
 		r.weights, r.stops = weights, stops
-		r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, c.platform, opts.expansions)
+		r.plan, r.paths, r.slowest, r.worstStep, r.ms, r.alloc = lib.runPlan(g, stops, weights, c.platform, opts.expansions,
+			c.approach)
 		return r
 	end
 
