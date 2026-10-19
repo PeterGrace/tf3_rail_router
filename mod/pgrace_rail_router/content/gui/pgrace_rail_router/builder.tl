@@ -809,8 +809,11 @@ function builder.start(plan : Plan, settings : Settings, settingsUs ?: integer) 
 	local clock = api.type.Clock.new()
 	local net = network.build(plan, settings.network)
 	local items : {Item} = {}
-	for i = 1, #plan.stations do
-		table.insert(items, { kind = "station", index = i })
+	-- Only our own stations: an existing one the line joins is there already (nothing is built for it).
+	for i, station in ipairs(plan.stations) do
+		if station.existing == nil then
+			table.insert(items, { kind = "station", index = i })
+		end
 	end
 	for i = 1, #net.chunks do
 		table.insert(items, { kind = "chunk", index = i })

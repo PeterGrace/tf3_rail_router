@@ -1,7 +1,7 @@
 -- Builds a checked plan (milestone 3): the stations, then the track chunk by chunk, each joined to the station ends
 -- and chunks built before it, with level crossings where a chunk crosses a street and junctions into an existing
 -- station's track (its pieces split first; milestone 4b), then a road from each station's
--- main building to the town's streets. One command in flight at a time,
+-- main building to the town's streets. Existing stations the line joins are skipped (no station, no road). One command in flight at a time,
 -- each dry-run clean before it's sent (a street split, which can't be, aside); stepped from the window's join, and
 -- advanced by the commands' callbacks. Main thread only.
 global record PgraceRailRouterBuild
@@ -93,6 +93,8 @@ global record PgraceRailRouterBuild
 	busy : function(b : Build) : boolean
 	-- Items built (stations, then chunks), and how many there are.
 	progress : function(b : Build) : integer, integer
+	-- The plan's stations we build (an existing station the line joins gets no station and no road).
+	ownStations : function(plan : PgraceRailRouterRoute.Plan) : integer
 	-- After a failure: start the failed item again (a chunk from its dry run, so streets and existing track already
 	-- split are used).
 	retry : function(b : Build)

@@ -686,7 +686,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 					"font-scale-annotation"))
 			end
 			table.insert(rows, textRow(fill(_("Roads to {count} of {total} stations."), { count = tostring(b.roads),
-				total = tostring(#checked.plan.stations) }), "font-scale-annotation"))
+				total = tostring(build.ownStations(checked.plan)) }), "font-scale-annotation"))
 			if #b.roadsMissing > 0 then
 				table.insert(rows, textRow(fill(_("No road could be built to: {towns}"), {
 					towns = table.concat(b.roadsMissing, ", ") }), "font-scale-annotation"))

@@ -121,6 +121,13 @@ local function stepStation(b : Build)
 	local check = b.check
 	local station = check.plan.stations[b.station]
 	local c = station.site.centre
+	-- An existing station the line joins: nothing to build.
+	if station.existing ~= nil then
+		log(("station %d (%s): the existing station, nothing to build"):format(b.station,
+			station.town ~= nil and station.town.name or "?"))
+		b.station = b.station + 1
+		return
+	end
 	-- Built before (a build that stopped, then the game restarted): join to it and go on.
 	if builder.builtStation(check.plan, b.station, check.net) then
 		log(("station %d already built"):format(b.station))
@@ -1062,6 +1069,11 @@ local function stepRoad(b : Build)
 	local check = b.check
 	local station = check.plan.stations[b.road]
 	local name = station.town ~= nil and station.town.name or tostring(b.road)
+	-- An existing station has its own roads (or not): none of ours.
+	if station.existing ~= nil then
+		b.road = b.road + 1
+		return
+	end
 	local layout = builder.stationLayout(check.plan, b.road, check.settings)
 	local e : Pt3 = { x = layout.entrance.x, y = layout.entrance.y, z = station.z }
 	local out : Pt3 = { x = layout.outward.x, y = layout.outward.y, z = 0 }
@@ -1194,6 +1206,16 @@ local function stepRoad(b : Build)
 		or ("%d roads tried, none clean"):format(b.roadNext - 1))
 end
 
+function build.ownStations(plan : PgraceRailRouterRoute.Plan) : integer
+	local n = 0
+	for __, station in ipairs(plan.stations) do
+		if station.existing == nil then
+			n = n + 1
+		end
+	end
+	return n
+end
+
 function build.start(check : PgraceRailRouterBuilder.Check) : Build
 	log(("start: %d stations, %d chunks"):format(#check.plan.stations, #check.net.chunks))
 	return { check = check, phase = "stations", station = 1, chunk = 1, road = 1, waiting = false, levelCrossings = 0,
@@ -1249,7 +1271,7 @@ function build.step(b : Build) : boolean
 	if b.phase == "roads" and b.road > #b.check.plan.stations and #b.roadRepair == 0 and b.roadJunction == nil then
 		b.phase = "done"
 		log(("done: %d level crossings, %d junctions, roads to %d of %d stations, charged %d"):format(b.levelCrossings,
-			b.junctions, b.roads, #b.check.plan.stations, b.charged))
+			b.junctions, b.roads, build.ownStations(b.check.plan), b.charged))
 		return true
 	end
 	local ok, err = pcall(function() : boolean
