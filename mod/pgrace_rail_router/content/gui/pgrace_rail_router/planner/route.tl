@@ -1481,8 +1481,14 @@ local function existingStop(input : Input, i : integer) : Station, string
 			local e = result.ends[k]
 			if e == nil and result.why[k] == "left-hand" then
 				return nil, note(("can't be used: the tracks at the %s end run left-handed"):format(neighbours[forward].name))
+			elseif e == nil and result.why[k] == "no double track" then
+				return nil, note(("can't be used: there's no straight double track (two tracks 5 m apart) past its %s end")
+					:format(neighbours[forward].name))
 			elseif e == nil then
-				return nil, room
+				return nil, note(("has no room for a junction at its %s end (needs %d m of straight double track; the "
+					.. "longest is %d m)"):format(neighbours[forward].name,
+					math.floor(junction.needed(input.radius) + JUNCTION_STRAIGHT + 0.5),
+					math.floor((result.longest[k] or 0) + 0.5)))
 			end
 			local j = junction.fit(e.length - JUNCTION_STRAIGHT, input.radius, sides[k], e.signals, e.nodes)
 			if j == nil then

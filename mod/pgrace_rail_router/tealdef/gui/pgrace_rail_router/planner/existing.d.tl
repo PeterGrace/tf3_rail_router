@@ -57,6 +57,8 @@ global record PgraceRailRouterExisting
 	record Result
 		ends : {integer : End}
 		why : {integer : string}
+		-- Per end, the longest stretch read (metres; nil where none was).
+		longest : {integer : number}
 	end
 
 	-- Each end's first straight (on a steady grade), plain double-track stretch at least junction.needed(radius)

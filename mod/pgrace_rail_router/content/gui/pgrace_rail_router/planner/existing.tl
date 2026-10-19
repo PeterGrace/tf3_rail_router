@@ -470,7 +470,7 @@ end
 -- (see `fromStation`), so one past a switch the scan stepped over (between stretches, or a track joining before
 -- the first) stops it too ("short").
 function existing.analyse(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
-	local result : Result = { ends = {}, why = {} }
+	local result : Result = { ends = {}, why = {}, longest = {} }
 	local needed = junction.needed(radius)
 	local len = math.sqrt(station.dir.x * station.dir.x + station.dir.y * station.dir.y)
 	for __, k in ipairs({ 1, -1 }) do
@@ -483,6 +483,7 @@ function existing.analyse(station : Station, snap : Snapshot, side : {integer : 
 			local st = stretchAt(c, snap, x)
 			if st then
 				found = found + 1
+				result.longest[k] = math.max(result.longest[k] or 0, st.length)
 				if not fromStation(c, snap, st.firsts, st.mid) then
 					break
 				end

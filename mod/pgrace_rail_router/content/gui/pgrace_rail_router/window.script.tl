@@ -1067,6 +1067,9 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				.. ", retries " .. tostring(work.retries) .. ", guarded "
 				.. tostring(plan.summary ~= nil and plan.summary.guarded or 0) .. ", leg searches (radius/expansions/time lost) "
 				.. table.concat(searches, " "))
+			for __, note in ipairs(plan.notes or {}) do
+				debugPrint(LOG_PREFIX .. "plan note: " .. note)
+			end
 			-- Perhaps the way round lies outside the surveyed area: start over on a wider one, unless that is the same
 			-- area (already the whole map that way). no_exit (walled in) never gets better with a wider area.
 			local wider = not plan.ok and plan.failure == "no_path" and work.retries < MAX_RETRIES
