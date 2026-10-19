@@ -22,6 +22,8 @@ Each step ends with an in-game test.
    all from a script (see "Unknowns").
 2. **4b-1:** finding the stations, the window option, and the flat junction.
 3. **4b-2:** the flying junction where the straight stretch is long enough. Otherwise the junction stays flat.
+4. **Junctions on curves (later, its own milestone and probe):** a junction that follows the existing line into its
+   curve. Needed for stations Rail Router built (see "First in-game test").
 
 ## What the player sees
 
@@ -213,6 +215,22 @@ crossing.
   geometry"), at the turnout radius rather than P15's 12°, so the crossing angle is 7.4° to 14.8° by track type;
   P16's 6.5° built, so all are within what the game accepts. Its switch keeps the 16.6 m rule and the 15 m signal
   clearance like any other.
+
+### First in-game test (2026-10-19)
+
+- **Rail Router's own stations can't take a flat junction.** Past Aloha's fan, its line runs 141 m (north) and 195 m
+  (south) of straight double track, crossovers included, before curving; the stations' 225 m approach is all the
+  straight the planner gives them. A junction needed 524 m on Standard track (299 m for 300 m turnouts, and our 225 m
+  approach beside the existing line). Now it uses 150 m turnouts whatever the track and 50 m of our straight
+  (`route.tl` JUNCTION_STRAIGHT; none gave curves tighter than the radius with the stops in line): about 282 m. 4b-1
+  joins long straight lines (hand-built main lines); Rail Router's stations fall back with the "no room" note.
+- **Rejected:** a 250 m straight past every station of ours, so later lines could join (23 of 37 regression routes got
+  worse: loops, tight curves, a stall); and squeezing the junction (100 m turnouts, no margins: about 187 m, still
+  short at Aloha's north end).
+- **Found on the way, older than 4b:** a station's main building over streets in the next 100 m cell (Bangor), and a
+  bridge crossing a line at a shallow angle dipping below 8 m over it in cells not marked track. Both now check the
+  streets' and track's own points (`Grid.streets`, `Grid.tracks`). Also: an existing station within reach of two
+  towns was offered to both (now only the nearer), and captures now record the station approach.
 
 ## Testing
 
