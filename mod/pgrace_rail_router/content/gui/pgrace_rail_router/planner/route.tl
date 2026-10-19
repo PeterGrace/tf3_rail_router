@@ -1643,7 +1643,8 @@ end
 -- end is read from the station's snapshot: a bare end (existing.bareEnd) must have 2 or 4 tracks as Rail Router joins
 -- them, and room for our approach beyond it; any other must be usable (existing.analyse, told which side of it the
 -- neighbour lies on) and fit a junction (junction.fit). nil, and a note saying why, where it can't be used. Pure Lua
--- over the snapshot (a few hundred pieces at most): a millisecond or two, once per stop.
+-- over the snapshot (a few hundred pieces at most), reading both ends' tracks out to existing.REACH: 5–7 ms on the
+-- desktop for a 268-piece Halt 2+2, once per stop.
 local function existingStop(input : Input, i : integer) : Station, string
 	local st, town = input.existingStations[i], input.stops[i]
 	local dir = geo.norm(st.dir)

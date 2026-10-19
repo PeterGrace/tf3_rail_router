@@ -1,6 +1,7 @@
 local t = ...
 local grid = t.requireTl("gui/pgrace_rail_router/planner/grid.tl")
 local route = t.requireTl("gui/pgrace_rail_router/planner/route.tl")
+local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 
 local W = { maxGrade = 0.085, minRadius = 220, minBuildRadius = 55, minSearchRadius = 220, slopePenalty = 3, bridgeFactor = 6, turnPenalty = 20,
 	roadCrossing = 50, trackCrossing = 400, costPerMetre = 360, bridgeCostFactor = 5, tunnelCostFactor = 8,
@@ -1244,7 +1245,11 @@ for __, case in ipairs({
 			{ grid = g, weights = withWeights({ minRadius = 1000, minSearchRadius = 220 }) })
 		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
 		t.ok(plan.stations[2].existing == station, "existing")
-		t.near(plan.stations[2].ends[1].length, 1000, 1e-6, "the stretch ends where the line swings aside")
+		-- The stretch reads on through the swing (milestone 4c); its straight part ends where the line swings aside
+		-- (a 5.7° kink here, which the midline's 5 m samples round off a few metres early).
+		local e = plan.stations[2].ends[1]
+		t.ok(e.length > 1000, "the stretch reads on through the swing")
+		t.near(midline.straightUntil(e.frame, 0, 0.005), 1000, 6, "straight until the line swings aside")
 		t.eq(plan.summary.bridges, 0, "no bridges")
 		t.eq(plan.summary.tightCurves, 0, "no tight curves")
 	end)

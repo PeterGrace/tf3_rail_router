@@ -1,5 +1,5 @@
--- An existing station's ends, read from a snapshot of its track (milestone 4b). Pure: the survey fills in the
--- snapshot, and the planner uses each usable end's straight double-track stretch for a junction.
+-- An existing station's ends, read from a snapshot of its track (milestone 4b; through curves, 4c). Pure: the survey
+-- fills in the snapshot, and the planner uses a usable end's double-track stretches for a junction.
 global record PgraceRailRouterExisting
 	record Piece
 		entity : integer
@@ -9,8 +9,8 @@ global record PgraceRailRouterExisting
 		p1 : PgraceRailRouterNetwork.Pt3
 		t0 : PgraceRailRouterNetwork.Pt3
 		t1 : PgraceRailRouterNetwork.Pt3
-		-- "ground", "bridge" or "tunnel"; "unknown" when the survey couldn't read all its signals (the analyser stops
-		-- there, as at any piece that isn't "ground")
+		-- "ground", "bridge" or "tunnel"; "unknown" when the survey couldn't read all its signals (a stretch ends
+		-- there, as at any piece that isn't "ground", and the reading goes on past it as past a bridge)
 		kind : string
 		-- One-way signals only (the survey leaves out two-way path signals, type 0): param along the piece, and +1
 		-- facing node0 → node1 trains, −1 the other way.
@@ -40,11 +40,11 @@ global record PgraceRailRouterExisting
 		box : PgraceRailRouterArea.Bounds
 	end
 
-	-- A usable end: the straight double-track stretch's start on the two tracks' midline (and its height), its grade
-	-- (dz per metre outward: the track at x along the stretch is at z + grade × x, and so is the junction), the unit
-	-- outward direction, the stretch's length (metres), each track's pieces along it ("near": the track on our
-	-- line's side, "far"), ordered outward, and each track's signals as positions along the stretch (metres from its
-	-- start), and each track's nodes (its pieces' ends) the same way.
+	-- A usable end: a plain double-track stretch (milestone 4c: through curves). Its start on the two tracks' midline
+	-- (and its height), its grade there (dz per metre outward over the first metres), the unit outward direction
+	-- there, the stretch's length along its midline (metres), each track's pieces along it ("near": the track on our
+	-- line's side, "far"), ordered outward, each track's one-way signals as positions along the stretch (metres from
+	-- its start, projected onto the frame), and each track's nodes (its pieces' ends) the same way.
 	record End
 		origin : PgraceRailRouterGeo.Pt
 		z : number
@@ -54,8 +54,10 @@ global record PgraceRailRouterExisting
 		pieces : {string : {Piece}}
 		signals : {string : {number}}
 		nodes : {string : {number}}
-		-- The stretch's frame (milestone 4c): x along its midline from its start, y to the left. Every use of the
-		-- stretch's geometry goes through it; on a straight stretch it is midline.line(origin, dir, z, grade, length).
+		-- The stretch's frame (milestone 4c): x along its midline from its start, y to the left; the midline through
+		-- the two tracks' midpoints, every midline.STEP. Every use of the stretch's geometry goes through it. Past
+		-- `length` it runs on straight along the end's direction (where a stretch ends mid-curve it parts from the
+		-- track there).
 		frame : PgraceRailRouterMidline.Frame
 	end
 
@@ -66,19 +68,22 @@ global record PgraceRailRouterExisting
 		why : {integer : string}
 		-- Per end, the longest stretch read (metres; nil where none was).
 		longest : {integer : number}
+		-- Per end, every stretch long enough (junction.needed), nearest first, through curves (milestone 4c); ends[k]
+		-- is the first.
+		stretches : {integer : {End}}
 	end
 
-	-- Each end's first straight (on a steady grade), plain double-track stretch at least junction.needed(radius)
-	-- long. Frame: x outward from the platform end, y to the left; the scan starts at the station's end nodes and
-	-- reads up to 1.5 km out, 12 m either side. A stretch starts where exactly two straight ground pieces 4.5–5.5 m
-	-- apart cross x, their grades within 0.2% of each other. Each track is then walked piece by piece through plain
-	-- nodes (degree 2), and the stretch ends at the first node that isn't plain, a bridge or tunnel, a piece that
-	-- isn't straight (tangents within 0.5% of the axis sideways and of the grade upward), or where the tracks stop
-	-- being the only two, 4.5–5.5 m apart, with midline and height within 0.5 m of the straight line through the
-	-- start (checked every 5 m and at each node). Past a short stretch the scan reads on only after a bridge or
-	-- tunnel, such a drift, or a crossover; any other switch, the track's end or single track stops it. A stretch's
-	-- tracks must also lead back only to the station's end nodes (through the fan's merges and crossovers), so a
-	-- stretch past a siding, branch or another line's switch stops the scan too.
+	-- Each end's plain double-track stretches at least junction.needed(radius) long, read through curves (milestone
+	-- 4c). The reading starts where, scanning out along the station's axis from its end nodes, exactly two straight
+	-- ground pieces 4.5–5.5 m apart first cross it, their grades within 0.2% of each other (past the station's fan),
+	-- and goes on up to 1.5 km out along the track. The tracks behind that start must lead back only to the station's
+	-- end nodes (through the fan's merges and crossovers), or nothing is read. Each track is then walked piece by
+	-- piece, whatever their shape, through plain nodes (degree 2) and through crossovers to the other track (keeping
+	-- to its own track); any other switch, a dead end or a piece turning back ends the reading. Sampled every 2 m,
+	-- the two tracks make a stretch while they are 4.5–5.5 m apart square across, level within 0.3 m, both on the
+	-- ground, and no other track comes within 12 m of their midline. A bridge or tunnel, a crossover (between and at
+	-- its switches) or such a drift ends a stretch, and the next starts where the pair holds again. Each stretch's
+	-- frame is the midline through the pairs' midpoints.
 	-- `side[k]`: which side of end k our line comes from (+1 left of outward, −1 right; nil +1).
 	analyse : function(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
 

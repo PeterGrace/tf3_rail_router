@@ -17,7 +17,7 @@ end
 local function builder()
 	local b = { pieces = {}, ids = {}, nextNode = 1, nextPiece = 100 }
 	function b.node(x, y)
-		local k = x .. "," .. y
+		local k = ("%.6f,%.6f"):format(x, y)
 		if not b.ids[k] then
 			b.ids[k] = b.nextNode
 			b.nextNode = b.nextNode + 1
@@ -93,6 +93,193 @@ local function plain()
 	local Rt = b.track(-2.5, steps(180, 1000, 100))
 	return b, station, L, Rt
 end
+
+-- A piece along an arc: from angle a0 to a1 (radians, CCW positive) on a circle centre (cx, cy), radius r; tangents
+-- by the 4R·tan(θ/4) rule the game's curves follow (a negative θ gives tangents pointing clockwise).
+local function arcPiece(id, n0, n1, cx, cy, r, a0, a1)
+	local th = a1 - a0
+	local k = 4 * r * math.tan(th / 4) / r
+	local function pt(a) return { x = cx + r * math.cos(a), y = cy + r * math.sin(a), z = 0 } end
+	local function tg(a) return { x = -math.sin(a) * r * k, y = math.cos(a) * r * k, z = 0 } end
+	return { entity = id, node0 = n0, node1 = n1, p0 = pt(a0), p1 = pt(a1), t0 = tg(a0), t1 = tg(a1),
+		kind = "ground", signals = {} }
+end
+
+-- Adds an arc to the builder in `n` pieces (nodes shared by position, as b.piece does); returns its end point and the
+-- unit direction of travel there.
+local function addArc(b, cx, cy, r, a0, a1, n)
+	local pieces = {}
+	for i = 1, n do
+		local s0, s1 = a0 + (a1 - a0) * (i - 1) / n, a0 + (a1 - a0) * i / n
+		local p = arcPiece(b.nextPiece, 0, 0, cx, cy, r, s0, s1)
+		p.node0, p.node1 = b.node(p.p0.x, p.p0.y), b.node(p.p1.x, p.p1.y)
+		b.nextPiece = b.nextPiece + 1
+		b.pieces[#b.pieces + 1] = p
+		pieces[i] = p
+	end
+	local last = pieces[n]
+	local d = math.sqrt(last.t1.x ^ 2 + last.t1.y ^ 2)
+	return last.p1, { x = last.t1.x / d, y = last.t1.y / d }, pieces
+end
+
+-- A straight track from p along the unit d, `len` long, in pieces of `step`.
+local function addStraight(b, p, d, len, step)
+	local out = {}
+	local n = math.ceil(len / step - 1e-9)
+	for i = 1, n do
+		local l0, l1 = len * (i - 1) / n, len * i / n
+		out[i] = b.piece(p.x + d.x * l0, p.y + d.y * l0, p.x + d.x * l1, p.y + d.y * l1)
+	end
+	return out
+end
+
+-- The fan, 150 m of straight double track (x = 180 to 330), both tracks turning `deg` degrees left on concentric arcs
+-- (midline radius `r`, in `n` pieces each), then `tail` metres straight on in 100 m pieces. Returns the builder, the
+-- station, the arcs' centre and each track's tail pieces ([1] the left track's, [2] the right one's).
+local function curved(r, deg, tail, n)
+	local b = builder()
+	local station = fanStation(b)
+	b.track(2.5, { 180, 230, 330 })
+	b.track(-2.5, { 180, 280, 330 })
+	local th = math.rad(deg)
+	local cx, cy = 330, r
+	local tails = {}
+	for i, y in ipairs({ 2.5, -2.5 }) do
+		local p, d = addArc(b, cx, cy, r - y, -math.pi / 2, -math.pi / 2 + th, n or 2)
+		tails[i] = tail > 0 and addStraight(b, p, d, tail, 100) or {}
+	end
+	return b, station, { x = cx, y = cy }, tails
+end
+
+t.test("existing: the arc helper stays on its circle", function()
+	local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+	for __, case in ipairs({ { 0, 0.7 }, { 1, -0.6 } }) do
+		local p = arcPiece(1, 1, 2, 10, 20, 300, case[1], case[1] + case[2])
+		for i = 0, 10 do
+			local q = network.hermiteAt(p, i / 10)
+			t.near(math.sqrt((q.x - 10) ^ 2 + (q.y - 20) ^ 2), 300, 0.02, "on the circle, θ = " .. case[2])
+		end
+	end
+end)
+
+t.test("existing: a stretch carries on through a curve", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
+	local b, station, c = curved(300, 40, 400)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	local e = r.ends[1]
+	t.ok(e ~= nil, "usable: " .. tostring(r.why[1]))
+	t.near(e.origin.x, 180, 1e-6, "starts past the fan")
+	t.near(e.length, 150 + 300 * math.rad(40) + 400, 5, "through the curve to the track's end")
+	t.eq(#r.stretches[1], 1, "one stretch")
+	t.ok(r.stretches[1][1] == e, "ends[1] is the first stretch")
+	local p = midline.at(e.frame, 150 + 300 * math.rad(20))
+	t.near(math.sqrt((p.x - c.x) ^ 2 + (p.y - c.y) ^ 2), 300, 0.3, "the midline halfway round lies on the curve")
+	local q, d = midline.at(e.frame, e.length - 1)
+	t.near(d.x, math.cos(math.rad(40)), 0.01, "the direction past the curve: x")
+	t.near(d.y, math.sin(math.rad(40)), 0.01, "the direction past the curve: y")
+	t.near(midline.straightUntil(e.frame, 0, 0.005), 150, 3, "straight until the curve")
+	t.eq(#e.pieces.near, 2 + 2 + 4, "near pieces: two straight, two on the arc, four after")
+	t.eq(#e.pieces.far, 2 + 2 + 4, "far pieces")
+	-- The nodes along the midline: the arc's middle node of the left (inner) track lies at 150 + 300·θ/2.
+	local found = false
+	for __, x in ipairs(e.nodes.near) do
+		found = found or math.abs(x - (150 + 300 * math.rad(20))) < 0.5
+	end
+	t.ok(found, "the inner track's mid-arc node, projected onto the midline")
+	t.ok(q ~= nil, "a point")
+end)
+
+t.test("existing: tracks drifting apart on a curve end the stretch where they pass 5.5 m", function()
+	local b = builder()
+	local station = fanStation(b)
+	b.track(2.5, { 180, 230, 330 })
+	b.track(-2.5, { 180, 280, 330 })
+	-- The left track turns on radius 297.5 about (330, 300); the right one starts tangent beside it but on a circle
+	-- 4 m wider (306.5 about (330, 304)), so the gap grows from 5 m as they turn.
+	local th = math.rad(40)
+	local p, d = addArc(b, 330, 300, 297.5, -math.pi / 2, -math.pi / 2 + th, 2)
+	addStraight(b, p, d, 400, 100)
+	p, d = addArc(b, 330, 304, 306.5, -math.pi / 2, -math.pi / 2 + th, 2)
+	addStraight(b, p, d, 400, 100)
+	-- The gap at angle φ round the left arc: 306.5 − |(297.5 sin φ, −297.5 cos φ − 4)|; 5.5 m at cos φ = 2078.75 / 2380.
+	local phi = math.acos(2078.75 / 2380)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.near(r.longest[1], 150 + 300 * phi, 3, "the stretch ends where the gap passes 5.5 m")
+	t.eq(#r.stretches[1], 1, "and no other: they stay apart")
+end)
+
+t.test("existing: a third track beside the stretch ends it, and the next starts past it", function()
+	local b = builder()
+	local station = fanStation(b)
+	b.track(2.5, steps(180, 1200, 100))
+	b.track(-2.5, steps(180, 1200, 100))
+	-- A lone track 9 m left of the midline from x = 600 to 700.
+	b.piece(600, 9, 700, 9)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.eq(#r.stretches[1], 2, "two stretches")
+	local s1, s2 = r.stretches[1][1], r.stretches[1][2]
+	t.near(s1.origin.x, 180, 1e-6, "the first from the fan")
+	t.near(s1.length, 420, 3, "ends near x = 600")
+	t.near(s2.origin.x, 700, 3, "the second starts near x = 700")
+	t.near(s2.origin.x + s2.length, 1200, 1e-6, "to the track's end")
+end)
+
+t.test("existing: a bridge past a curve ends a stretch, and the next starts past it", function()
+	local b, station, __, tails = curved(300, 40, 600)
+	tails[1][2].kind, tails[2][2].kind = "bridge", "bridge"
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.eq(#r.stretches[1], 2, "two stretches")
+	local s1, s2 = r.stretches[1][1], r.stretches[1][2]
+	t.ok(r.ends[1] == s1, "ends[1] is the first")
+	t.near(s1.length, 150 + 300 * math.rad(40) + 100, 1, "to the bridge")
+	local far = { x = (tails[1][2].p1.x + tails[2][2].p1.x) / 2, y = (tails[1][2].p1.y + tails[2][2].p1.y) / 2 }
+	t.near(s2.origin.x, far.x, 0.05, "the second starts at the bridge's far end: x")
+	t.near(s2.origin.y, far.y, 0.05, "y")
+	t.near(s2.length, 400, 0.05, "to the track's end")
+	t.near(s2.dir.x, math.cos(math.rad(40)), 1e-3, "along the track past the curve")
+end)
+
+t.test("existing: stretches lists every long one, split by a crossover pair; ends[k] is the first", function()
+	local b = builder()
+	local station = fanStation(b)
+	-- A crossover from the left track at 600 to the right one at 645, and back from 665 to 710.
+	b.track(2.5, cat({ 180, 300, 400, 500, 600 }, steps(710, 1400, 100)))
+	b.track(-2.5, cat({ 180, 300, 400, 500, 600, 645 }, steps(665, 1400, 100)))
+	b.piece(600, 2.5, 645, -2.5)
+	b.piece(665, -2.5, 710, 2.5)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	t.eq(#r.stretches[1], 2, "two long stretches (the 20 m between the crossovers is short)")
+	local s1, s2 = r.stretches[1][1], r.stretches[1][2]
+	t.ok(r.ends[1] == s1, "ends[1] is the first")
+	t.near(s1.origin.x, 180, 1e-6, "the first from the fan")
+	t.near(s1.length, 420, 1e-6, "to the first crossover's switch")
+	t.near(s2.origin.x, 710, 1e-6, "the second past the second crossover")
+	t.near(s2.length, 690, 1e-6, "to the track's end")
+	t.near(r.longest[1], 690, 1e-6, "the longest")
+end)
+
+t.test("existing: a stretch still on a curve at REACH ends there, its frame running on straight", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
+	-- 150 m straight, then 150° on a 600 m radius: past REACH (1500 m from the platform end at x = 80).
+	local b, station, c = curved(600, 150, 0, 6)
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
+	local e = r.ends[1]
+	t.ok(e ~= nil, "usable: " .. tostring(r.why[1]))
+	-- Each track is read 1400 m along itself from the start (100 m out); the outer (right) one gets there first,
+	-- 1250 m round its 602.5 m arc.
+	local phi = 1250 / 602.5
+	t.near(e.length, 150 + 600 * phi, 2, "ends where the outer track reaches REACH")
+	local p, d = midline.at(e.frame, e.length)
+	t.near(math.sqrt((p.x - c.x) ^ 2 + (p.y - c.y) ^ 2), 600, 0.3, "on the curve at its end")
+	t.near(d.x, math.cos(phi), 0.01, "the curve's direction there: x")
+	t.near(d.y, math.sin(phi), 0.01, "y")
+	-- Past its length the frame runs on straight along that direction, leaving the curve (accepted: a junction's
+	-- footprint reaching past a stretch's end is bounded by REACH).
+	local q = midline.at(e.frame, e.length + 50)
+	t.near(q.x, p.x + d.x * 50, 1e-9, "straight on: x")
+	t.near(q.y, p.y + d.y * 50, 1e-9, "straight on: y")
+	t.ok(math.sqrt((q.x - c.x) ^ 2 + (q.y - c.y) ^ 2) > 601, "off the curve")
+end)
 
 t.test("existing: a straight double track past the fan is usable", function()
 	local b, station, L, Rt = plain()
@@ -253,22 +440,45 @@ t.test("existing: a reversed piece's signal facing is read along its own directi
 	t.near(r.ends[1].length, 820, 1e-9, "the reversed piece continues the track")
 end)
 
-t.test("existing: a double track bending off the axis is not a straight stretch", function()
+t.test("existing: a double track bending off the axis is read on, the frame following the bend", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 	local b = builder()
 	local station = fanStation(b)
-	-- From x = 180, both tracks bend 20 m to the left within 200 m, in 20 m chords.
+	-- Straight from x = 180 to 230, then both tracks bend 20 m to the left within 200 m in 20 m chords (kinks at the
+	-- nodes), then run 400 m straight on along the last chord.
+	b.track(2.5, { 180, 230 })
+	b.track(-2.5, { 180, 230 })
+	local last
 	for i = 1, 10 do
-		local x0, x1 = 180 + 20 * (i - 1), 180 + 20 * i
+		local x0, x1 = 230 + 20 * (i - 1), 230 + 20 * i
 		local d0, d1 = 20 * ((i - 1) / 10) ^ 2, 20 * (i / 10) ^ 2
 		b.piece(x0, 2.5 + d0, x1, 2.5 + d1)
 		b.piece(x0, -2.5 + d0, x1, -2.5 + d1)
+		last = { x = 20, y = d1 - d0 }
 	end
+	local l = math.sqrt(last.x ^ 2 + last.y ^ 2)
+	local d = { x = last.x / l, y = last.y / l }
+	addStraight(b, { x = 430, y = 22.5 }, d, 400, 100)
+	addStraight(b, { x = 430, y = 17.5 }, d, 400, 100)
 	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
-	t.eq(r.ends[1], nil, "not usable")
-	t.ok(r.why[1] == "short" or r.why[1] == "no double track", "short or none: " .. tostring(r.why[1]))
+	local e = r.ends[1]
+	t.ok(e ~= nil, "usable: " .. tostring(r.why[1]))
+	t.near(e.origin.x, 180, 1e-6, "from the fan")
+	t.near(midline.straightUntil(e.frame, 0, 0.005), 50, 3, "straight until the bend")
+	-- The midline through the bend: the centre of the tracks' chords (they're 5 m apart up and down, a little less
+	-- square across, so the midline keeps to their middle).
+	local x, y = midline.project(e.frame, { x = 330, y = 5 })
+	t.near(y, 0, 0.2, "the bend's middle on the midline")
+	x, y = midline.project(e.frame, { x = 430 + d.x * 200, y = 20 + d.y * 200 })
+	t.near(y, 0, 0.2, "past the bend on the midline")
+	local __, dir = midline.at(e.frame, e.length - 10)
+	t.near(dir.y, d.y, 1e-3, "along the tracks past the bend")
+	t.ok(x > 0, "x")
 end)
 
-t.test("existing: a piece bulging sideways between straight chord ends breaks the stretch", function()
+t.test("existing: a piece bulging sideways between straight chord ends is read along its curve", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
+	local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
 	local b = builder()
 	local station = fanStation(b)
 	b.track(2.5, { 180, 280 })
@@ -279,8 +489,27 @@ t.test("existing: a piece bulging sideways between straight chord ends breaks th
 		p.t1 = { x = 1000, y = 300, z = 0 }
 	end
 	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
-	t.eq(r.ends[1], nil, "not usable")
-	t.eq(r.why[1], "short", "100 m before the bulging piece")
+	local e = r.ends[1]
+	t.ok(e ~= nil, "usable: " .. tostring(r.why[1]))
+	-- The bulging pieces leave the straight ones at a 17° kink, where a point just past it on one track isn't square
+	-- across from the other: the 100 m before it is a short stretch, and the long one starts a step or two past it.
+	t.near(e.origin.x, 280, 3, "from just past the kink")
+	-- The two curves are the same one 5 m apart up and down; the midline is their middle one (y = 0), whose length
+	-- it takes.
+	local centre = { p0 = { x = 280, y = 0, z = 0 }, p1 = { x = 1280, y = 0, z = 0 }, t0 = { x = 1000, y = 300, z = 0 },
+		t1 = { x = 1000, y = 300, z = 0 } }
+	local len, prev = 0, network.hermiteAt(centre, 0)
+	for i = 1, 2000 do
+		local q = network.hermiteAt(centre, i / 2000)
+		len, prev = len + math.sqrt((q.x - prev.x) ^ 2 + (q.y - prev.y) ^ 2), q
+	end
+	-- (Within 1.5 m: the tracks' ends, level up and down, are 1.4 m apart along them where the curve ends at 17°.)
+	t.near(e.length, len - (e.origin.x - 280), 1.5, "along the curve to the track's end")
+	for __, s in ipairs({ 0.2, 0.5, 0.8 }) do
+		local q = network.hermiteAt(centre, s)
+		local __, y = midline.project(e.frame, q)
+		t.near(y, 0, 0.05, "the middle curve is the midline at s = " .. s)
+	end
 end)
 
 -- Puts the track from x = 180 on a grade (rising outward), level again from `kink` if given.
@@ -309,21 +538,24 @@ t.test("existing: a steady grade is usable, and the end carries it", function()
 	t.near(e.length, 820, 1e-9, "to the track's end")
 end)
 
-t.test("existing: a change of grade ends the stretch at the kink", function()
+t.test("existing: a change of grade is read on, the frame following it", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 	local b, station = plain()
 	grade(b, 0.02, 580)
 	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
 	local e = r.ends[1]
-	t.ok(e ~= nil, "400 m on 2% before the kink: " .. tostring(r.why[1]))
-	t.near(e.length, 400, 1e-9, "ends at the kink, world x = 580")
-	t.near(e.grade, 0.02, 1e-9, "the grade")
+	t.ok(e ~= nil, "usable: " .. tostring(r.why[1]))
+	t.near(e.length, 820, 1e-6, "on past the kink at world x = 580 to the track's end")
+	t.near(e.grade, 0.02, 1e-9, "the start's grade")
+	t.near(midline.grade(e.frame, 200), 0.02, 1e-9, "2% before the kink")
+	t.near(midline.grade(e.frame, 600), 0, 1e-9, "level past it")
+	t.near(midline.at(e.frame, 700).z, 8, 1e-9, "at the kink's height")
 	local b2, station2 = plain()
 	grade(b2, 0.02, 380)
 	local r2 = existing.analyse(station2, b2.snapshot(), { [1] = 1 }, R)
-	t.ok(r2.ends[1] ~= nil, "the level part beyond a kink at 380: " .. tostring(r2.why[1]))
-	t.near(r2.ends[1].origin.x, 380, 1e-9, "starts at the kink")
-	t.near(r2.ends[1].grade, 0, 1e-9, "level")
-	t.near(r2.ends[1].z, 4, 1e-9, "at the kink's height")
+	t.ok(r2.ends[1] ~= nil, "a kink at 380: " .. tostring(r2.why[1]))
+	t.near(r2.ends[1].origin.x, 180, 1e-6, "from the fan")
+	t.near(midline.at(r2.ends[1].frame, 500).z, 4, 1e-9, "level at the kink's height past it")
 end)
 
 t.test("existing: tracks on different grades are not a double track", function()
@@ -337,7 +569,8 @@ t.test("existing: tracks on different grades are not a double track", function()
 	t.eq(r.ends[1], nil, "1% apart")
 end)
 
-t.test("existing: a hump between level ends breaks the stretch", function()
+t.test("existing: a hump between level ends is read over, the frame rising and falling with it", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 	local b, station, L, Rt = plain()
 	-- The 280–380 pieces rise and fall again: level ends, tangents 30% up and down.
 	for __, p in ipairs({ L[2], Rt[2] }) do
@@ -345,9 +578,13 @@ t.test("existing: a hump between level ends breaks the stretch", function()
 		p.t1 = { x = 100, y = 0, z = -30 }
 	end
 	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
-	t.ok(r.ends[1] ~= nil, "usable beyond the hump: " .. tostring(r.why[1]))
-	t.near(r.ends[1].origin.x, 380, 1e-9, "starts past the hump")
-	t.near(r.ends[1].length, 620, 1e-9, "to the track's end")
+	local e = r.ends[1]
+	t.ok(e ~= nil, "usable: " .. tostring(r.why[1]))
+	t.near(e.origin.x, 180, 1e-6, "from the fan")
+	t.near(e.length, 820, 1e-6, "to the track's end")
+	-- The hump's top, halfway along the piece: (h10(½) − h11(½)) × 30 = 7.5 m.
+	t.near(midline.at(e.frame, 150).z, 7.5, 0.05, "over the hump")
+	t.near(midline.at(e.frame, 300).z, 0, 1e-9, "level again")
 end)
 
 -- A 2-track station at (0, 0) facing +x, half 80, its end nodes at the platform end (frame x = 0).
@@ -578,7 +815,8 @@ local function findMapsDir()
 	return nil
 end
 
-t.test("existing: line1 map: Aloha's station reads as Rail Router built it (offline, from the capture)", function()
+t.test("existing: line1 map: Aloha's ends read on past the crossovers and through the first curve", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 	local maps = findMapsDir()
 	local mapFile = maps and (maps .. "/rail-router-test-5x14km-line1.map")
 	local f = mapFile and io.open(mapFile, "r")
@@ -595,14 +833,18 @@ t.test("existing: line1 map: Aloha's station reads as Rail Router built it (offl
 	t.ok(#st.ends >= 4, "its track ends")
 	t.ok(#snap.pieces > 50, "its track snapshot")
 	local r = existing.analyse(st, snap, { [1] = 1, [-1] = 1 }, 150)
-	-- Today (straight stretches only) neither end has room. Past the platforms' fans the tracks merge to two, but
-	-- Halt 2+2's crossovers (every 48 m) cut the straight double track into stretches of 29 m at +dir and 66 m at
-	-- -dir, and the line curves 141-195 m past the fans.
-	t.ok(r.ends[1] == nil and r.ends[-1] == nil, "no straight stretch long enough yet")
-	t.eq(r.why[1], "short", "+dir")
-	t.eq(r.why[-1], "short", "-dir")
-	t.near(r.longest[1], 29, 2, "the longest stretch read at +dir")
-	t.near(r.longest[-1], 66, 3, "the longest stretch read at -dir")
+	-- Past the platforms' fans the tracks merge to two 255 m from the centre, then Halt 2+2's crossovers (switches at
+	-- 289, 334, 337 and 382 m) cut them into stretches of 29 m and 3 m. Past the last switch the double track runs on
+	-- through the line's first curve (about 390 m out) up to REACH.
+	for __, k in ipairs({ 1, -1 }) do
+		local e = r.ends[k]
+		t.ok(e ~= nil, "end " .. k .. " usable: " .. tostring(r.why[k]))
+		local along = (e.origin.x - st.centre.x) * st.dir.x * k + (e.origin.y - st.centre.y) * st.dir.y * k
+		t.near(along, 382, 1, "end " .. k .. ": starts at the last crossover's switch")
+		t.ok(e.length >= 600, "end " .. k .. ": at least 600 m")
+		t.ok(midline.straightUntil(e.frame, 0, 0.005) < e.length, "end " .. k .. ": the frame turns (the curve)")
+		t.ok(r.stretches[k][1] == e, "end " .. k .. ": the first stretch")
+	end
 end)
 
 t.test("existing: stationFromEnds: two groups of ends give the centre, direction and half-length", function()
@@ -620,7 +862,7 @@ t.test("existing: stationFromEnds: two groups of ends give the centre, direction
 	t.ok(none == nil and why ~= nil, "fewer than two ends")
 end)
 
-t.test("existing: planOnMap with Aloha's station: it falls back to a new station of ours, with a note", function()
+t.test("existing: planOnMap with Aloha's station: it joins the station", function()
 	local maps = findMapsDir()
 	local mapFile = maps and (maps .. "/rail-router-test-5x14km-line1.map")
 	local f = mapFile and io.open(mapFile, "r")
@@ -633,13 +875,12 @@ t.test("existing: planOnMap with Aloha's station: it falls back to a new station
 	local map = lib.maplib.load(mapFile)
 	local r = lib.planOnMap(map, { from = "Aloha", to = "Mercer Island", stops = {}, existing = { "Aloha" } })
 	t.ok(r.plan.ok, "the plan is made")
-	local noted = false
+	-- Its ends now read through the first curve (milestone 4c), so the station is joined rather than replaced. (Where
+	-- on the stretch the junction goes is the planner's: on its straight part, from 4c's Task 5.)
 	for __, note in ipairs(r.plan.notes) do
-		if note:find("Aloha", 1, true) then
-			noted = true
-		end
+		t.ok(not note:find("Aloha", 1, true), "no note about Aloha's station: " .. note)
 	end
-	t.ok(noted, "a note about Aloha's station (its ends are short today)")
+	t.ok(r.plan.stations[1].existing ~= nil, "Aloha's station is the existing one")
 	t.ok(not pcall(lib.planOnMap, map, { from = "Aloha", to = "Mercer Island", stops = {}, existing = { "Antelope" } }),
 		"an existing town that isn't a stop is an error")
 end)
