@@ -110,6 +110,12 @@ t.test("existing: a straight double track past the fan is usable", function()
 	t.ok(e.pieces.far[1] == Rt[1] and e.pieces.far[9] == Rt[9], "far: the −2.5 track, ordered outward")
 	t.eq(r.ends[-1], nil, "nothing at the other end")
 	t.eq(r.why[-1], "no double track", "no track at −x")
+	-- Each track's nodes along the stretch: 0, 100, ... 800 and its end at 820.
+	for __, track in ipairs({ "near", "far" }) do
+		t.eq(#e.nodes[track], 10, track .. ": ten nodes")
+		t.near(e.nodes[track][2], 100, 1e-9, track .. ": 100 m out")
+		t.near(e.nodes[track][10], 820, 1e-9, track .. ": the track's end")
+	end
 end)
 
 t.test("existing: near and far follow the side", function()

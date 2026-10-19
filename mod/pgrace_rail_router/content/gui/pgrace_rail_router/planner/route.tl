@@ -1475,7 +1475,7 @@ local function existingStop(input : Input, i : integer) : Station, string
 			elseif e == nil then
 				return nil, room
 			end
-			local j = junction.fit(e.length - approachOf(input), input.radius, sides[k], e.signals)
+			local j = junction.fit(e.length - approachOf(input), input.radius, sides[k], e.signals, e.nodes)
 			if j == nil then
 				return nil, room
 			end

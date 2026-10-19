@@ -1004,9 +1004,10 @@ local function runExisting(stops, i, station, snap, changes)
 	return route.plan(job)
 end
 
--- With R = 300 and a 1000 m stretch from each platform end (x = 3000 ± 80), the junction fits from its start (15 m
--- clear, the 110 m merge, 20 m, two 54.54 m crossing arcs and 30 m): its approach starts 284.087 m out.
-local JX = 15 + 110 + 20 + 2 * 300 * math.sin(math.acos(1 - 5 / 300)) + 30
+-- With R = 300 and a 1000 m stretch from each platform end (x = 3000 ± 80), in 100 m pieces, the junction would fit
+-- from its start (15 m clear, the 110 m merge, 20 m, two 54.54 m crossing arcs and 30 m), but that puts the crossing
+-- 0.46 m short of the node at 200 m; it moves out to cross at that node: its approach starts 284.544 m out.
+local JX = 200 + 300 * math.sin(math.acos(1 - 5 / 300)) + 30
 local IN_END = { x = 2920 - JX, y = -10 }
 local OUT_END = { x = 3080 + JX, y = -10 }
 
@@ -1033,7 +1034,7 @@ t.test("route: a middle stop with a usable existing station is joined at junctio
 	t.eq(b.sides[-1], 1, "A lies left of −x")
 	t.eq(b.sides[1], -1, "C lies right of +x")
 	t.ok(b.junctions[-1] ~= nil and b.junctions[1] ~= nil, "a junction at each end")
-	t.near(JX, 284.087, 1e-3, "the junction's approach start")
+	t.near(JX, 284.544, 1e-3, "the junction's approach start")
 	t.near(legEnd(plan.legs[1]).x, IN_END.x, 1e-6, "leg in ends at the −x junction's approach start (x)")
 	t.near(legEnd(plan.legs[1]).y, IN_END.y, 1e-6, "10 m off the axis, on A's side")
 	t.near(legStart(plan.legs[2]).x, OUT_END.x, 1e-6, "leg out starts at the +x junction's approach start (x)")
@@ -1077,7 +1078,7 @@ t.test("route: a leg meets a raised, graded existing stretch at its height", fun
 	local plan = runExisting(AXC, 2, station, snap)
 	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
 	t.near(plan.stations[2].ends[1].z, 5, 1e-9, "the stretch starts at the platform end")
-	t.near(plan.legs[2].z[1], 5 + 0.01 * JX, 1e-6, "the leg out leaves at the track's height there (7.84 m)")
+	t.near(plan.legs[2].z[1], 5 + 0.01 * JX, 1e-6, "the leg out leaves at the track's height there (7.85 m)")
 	t.near(plan.legs[1].z[#plan.legs[1].z], 0, 1e-9, "the flat end")
 end)
 

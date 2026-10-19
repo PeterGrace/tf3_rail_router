@@ -40,7 +40,13 @@ global record PgraceRailRouterJunction
 	crossRun : function(radius : number) : number
 	-- The junction nearest the stretch's start that fits, keeping every cut CLEAR (15 m) from the existing signals
 	-- (x positions along the stretch, per track) and from the stretch's start: nil if none fits within `length`.
-	fit : function(length : number, radius : number, side : number, signals : {string : {number}}) : Layout
+	-- `nodes` (nil: none): each track's existing nodes (its pieces' ends) as x along the stretch. A switch cut keeps
+	-- every node 20 m outward of it and 3 m behind it away (the game refuses a switch whose main track on the branch's
+	-- side is 16.6 m or shorter), but one within 0.5 m, which becomes the switch (the cut and its piece's end move
+	-- onto it); the crossing cut keeps nodes 3 m away but one at its place (within 0.01 m). Placements every 5 m are
+	-- tried, and those that put a cut on a node.
+	fit : function(length : number, radius : number, side : number, signals : {string : {number}},
+		nodes ?: {string : {number}}) : Layout
 	-- Total length a junction needs at radius r (no signals in the way): sCurve(10, r) + 2 crossRun(r) + 80.
 	needed : function(radius : number) : number
 end

@@ -78,3 +78,63 @@ t.test("junction: moves out past existing signals, and fails when it can't fit",
 	t.ok(junction.fit(junction.needed(R), R, 1, { near = {}, far = {} }) ~= nil, "exactly the length needed fits")
 	t.ok(junction.fit(junction.needed(R) - 1, R, 1, { near = {}, far = {} }) == nil, "1 m less is too short")
 end)
+
+-- With no nodes in the way the merge's switch is at 15, the far switch at 145 and the crossing at 145 + C.
+local function cutsOf(j)
+	local by = {}
+	for __, c in ipairs(j.cuts) do
+		by[c.track .. " " .. c.kind] = c.x
+	end
+	return by
+end
+
+local NONE = { near = {}, far = {} }
+
+t.test("junction: no existing node within 20 m outward of a switch or 3 m behind it", function()
+	-- A far node 5 m past the far switch (145) would leave 5 m of main track beside the branch: the junction moves out
+	-- 5 m, putting the switch on that node.
+	local by = cutsOf(junction.fit(600, R, 1, NONE, { near = {}, far = { 150 } }))
+	t.near(by["far switch"], 150, 1e-9, "the far switch on the node")
+	t.near(by["near switch"], 20, 1e-9, "the merge 5 m further out")
+	-- A far node 19 m past it: still too close; 21 m: fine.
+	by = cutsOf(junction.fit(600, R, 1, NONE, { near = {}, far = { 164 } }))
+	t.near(by["far switch"], 164, 1e-9, "19 m: moved onto it")
+	by = cutsOf(junction.fit(600, R, 1, NONE, { near = {}, far = { 166 } }))
+	t.near(by["far switch"], 145, 1e-9, "21 m: left where it was")
+	-- A near node 0.6 m behind the merge's switch (and before the stretch's 15 m clearance, so not a switch itself):
+	-- the merge moves to the next place 3 m clear.
+	by = cutsOf(junction.fit(600, R, 1, NONE, { near = { 14.4 }, far = {} }))
+	t.near(by["near switch"], 20, 1e-9, "the merge at 20, 5.6 m past the node")
+end)
+
+t.test("junction: a node within half a metre of a switch becomes the switch", function()
+	local j = junction.fit(600, R, 1, NONE, { near = { 15.3 }, far = {} })
+	local by = cutsOf(j)
+	t.near(by["near switch"], 15.3, 1e-9, "the merge's switch on the node")
+	for __, p in ipairs(j.pieces) do
+		if p.role == "merge" then
+			t.near(p.x0, 15.3, 1e-9, "the merge starts there")
+			t.near(p.x1, 125, 1e-9, "and ends where it did")
+		end
+	end
+	j = junction.fit(600, R, 1, NONE, { near = {}, far = { 144.6 } })
+	by = cutsOf(j)
+	t.near(by["far switch"], 144.6, 1e-9, "the far switch on its node")
+	t.near(by["near crossing"], 145 + C, 1e-9, "the crossing where it was")
+end)
+
+t.test("junction: the crossing keeps 3 m from a node, or crosses at it", function()
+	-- A near node 1 m past where the crossing would be: the junction moves so it crosses at the node.
+	local j = junction.fit(600, R, 1, NONE, { near = { 145 + C + 1 }, far = {} })
+	t.near(cutsOf(j)["near crossing"], 145 + C + 1, 1e-6, "crosses at the node")
+	-- At the node exactly: kept as it is.
+	j = junction.fit(600, R, 1, NONE, { near = { 145 + C }, far = {} })
+	t.near(cutsOf(j)["near crossing"], 145 + C, 1e-9, "the node reused")
+	t.near(cutsOf(j)["near switch"], 15, 1e-9, "nothing moved")
+	-- Nodes every 2 m along the near track: nowhere to put either cut, so no junction.
+	local many = {}
+	for x = 0, 600, 2 do
+		table.insert(many, x + 0.7)
+	end
+	t.ok(junction.fit(600, R, 1, NONE, { near = many, far = {} }) == nil, "no junction where nodes crowd the track")
+end)

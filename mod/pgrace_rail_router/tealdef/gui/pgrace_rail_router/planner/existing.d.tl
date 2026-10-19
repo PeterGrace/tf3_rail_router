@@ -40,7 +40,7 @@ global record PgraceRailRouterExisting
 	-- (dz per metre outward: the track at x along the stretch is at z + grade × x, and so is the junction), the unit
 	-- outward direction, the stretch's length (metres), each track's pieces along it ("near": the track on our
 	-- line's side, "far"), ordered outward, and each track's signals as positions along the stretch (metres from its
-	-- start).
+	-- start), and each track's nodes (its pieces' ends) the same way.
 	record End
 		origin : PgraceRailRouterGeo.Pt
 		z : number
@@ -49,6 +49,7 @@ global record PgraceRailRouterExisting
 		length : number
 		pieces : {string : {Piece}}
 		signals : {string : {number}}
+		nodes : {string : {number}}
 	end
 
 	-- Both ends: [1] the end at +dir, [-1] the one at −dir; nil where not usable, and why in `why` ("no double

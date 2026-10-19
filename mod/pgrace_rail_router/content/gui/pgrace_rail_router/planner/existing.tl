@@ -431,12 +431,22 @@ local function readEnd(st : Stretch, side : number, ox : number, oy : number, ex
 		length = st.length,
 		pieces = { near = {}, far = {} },
 		signals = { near = {}, far = {} },
+		nodes = { near = {}, far = {} },
 	}
 	for __, track in ipairs({ { st.left, true }, { st.right, false } }) do
 		local list, left = track[1] as {Span}, track[2] as boolean
 		local name = (left == (side > 0)) and "near" or "far"
 		for __, s in ipairs(list) do
 			table.insert(e.pieces[name], s.piece)
+			for __, x in ipairs({ s.xa - st.start, s.xb - st.start }) do
+				local seen = false
+				for __, n in ipairs(e.nodes[name]) do
+					seen = seen or math.abs(n - x) < 1e-6
+				end
+				if not seen then
+					table.insert(e.nodes[name], x)
+				end
+			end
 			for __, sig in ipairs(s.piece.signals or {}) do
 				if (sig[2] * s.dir > 0) == left then
 					return nil, "left-hand"
@@ -448,6 +458,8 @@ local function readEnd(st : Stretch, side : number, ox : number, oy : number, ex
 	end
 	table.sort(e.signals.near)
 	table.sort(e.signals.far)
+	table.sort(e.nodes.near)
+	table.sort(e.nodes.far)
 	return e, nil
 end
 
