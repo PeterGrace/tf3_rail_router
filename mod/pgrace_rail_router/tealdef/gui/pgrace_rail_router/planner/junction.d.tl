@@ -44,9 +44,11 @@ global record PgraceRailRouterJunction
 	-- every node 20 m outward of it and 3 m behind it away (the game refuses a switch whose main track on the branch's
 	-- side is 16.6 m or shorter), but one within 0.5 m, which becomes the switch (the cut and its piece's end move
 	-- onto it); the crossing cut keeps nodes 3 m away but one at its place (within 0.01 m). Placements every 5 m are
-	-- tried, and those that put a cut on a node.
+	-- tried, and those that put a cut on a node. `accept` (nil: any): a placement that fits is returned only if
+	-- `accept` takes it; otherwise the search goes on outward (milestone 4c: the planner takes only placements on
+	-- straight midline).
 	fit : function(length : number, radius : number, side : number, signals : {string : {number}},
-		nodes ?: {string : {number}}) : Layout
+		nodes ?: {string : {number}}, accept ?: function(Layout) : boolean) : Layout
 	-- Total length a junction needs at radius r (no signals in the way): sCurve(10, r) + 2 crossRun(r) + 80.
 	needed : function(radius : number) : number
 end

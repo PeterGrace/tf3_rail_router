@@ -33,6 +33,8 @@ end
 -- got, and it made a junction need 524 m of straight existing double track. With none, a leg in line with the
 -- station came off the junction in curves tighter than its radius; 50 m was enough.
 local JUNCTION_STRAIGHT = 50.0
+-- Junctions go on straight parts of an existing stretch only (milestone 4c stage 1), and so does our straight past one.
+local STRAIGHT_TOL = existing.STRAIGHT_TOL
 -- The estimate's price for a metre of bridge and of tunnel, as a multiple of plain track: what the game charged.
 -- Probe P3 (300 m of each on flat ground): 1.8 and 3.0; Bangor - Imperial Beach, Fastest, 985 m of bridges: 1.8.
 -- Not the planner's own weights (Weights.bridgeCostFactor, tunnelCostFactor), which also steer it off structures.
@@ -334,6 +336,46 @@ local function extensionLength(input : Input, radius : number) : number
 	return r * math.tan(math.pi / 16)
 end
 
+-- Our straight past a junction is a ray from its approach start along the frame's direction there (junctionEnds), and
+-- runs on as the leg's extension and run (stationEnds, runRoom). It may go as far as it stays beside the stretch: up to
+-- the stretch's end, and no nearer the existing track than at its start, less RAY_SLACK. With junctions on straight
+-- parts only (milestone 4c stage 1) that's the straight's end where the track then curves towards our side (the ray
+-- would cut across it), but on past it where the track curves away: the ray parts from it on open ground, and a leg
+-- in line with the station keeps straight on. (Capped at the straight's end instead, the legs in route_test's
+-- "running on past its stretches, stops in line" case jogged aside and back, in curves tighter than their radius.)
+local RAY_SLACK = 1.0
+
+-- How far our straight at end k's junction may run (metres along the ray from its approach start; see RAY_SLACK),
+-- kept in station.rays. The frame's samples past the approach start are read off the ray (how far along it, and how far
+-- across from it): the ray ends at the first that comes within JUNCTION_OFFSET − RAY_SLACK of it, or that lies no
+-- further along than the one before (the track turning back), else at the last (the stretch's end; on a straight
+-- exactly there). One pass over the samples: projecting points along the ray onto the frame instead cost a leg's
+-- first search step 8 ms on the line1 map (two ends, 1.3 km stretches).
+local function rayRoom(station : Station, k : integer) : number
+	station.rays = station.rays or {}
+	if station.rays[k] ~= nil then
+		return station.rays[k]
+	end
+	local e, j, side = station.ends[k], station.junctions[k], station.sides[k]
+	local f = e.frame
+	local start = midline.world(f, j.approachX, JUNCTION_OFFSET * side)
+	local __, out = midline.at(f, j.approachX)
+	local d = 0.0
+	for i = math.floor(j.approachX / f.step) + 2, #f.pts do
+		local p = f.pts[i]
+		local rx, ry = p.x - start.x, p.y - start.y
+		local along = rx * out.x + ry * out.y
+		-- The midline's offset from the ray towards our side: −JUNCTION_OFFSET where they run parallel.
+		local across = (out.x * ry - out.y * rx) * side
+		if across > -(JUNCTION_OFFSET - RAY_SLACK) or along <= d then
+			break
+		end
+		d = along
+	end
+	station.rays[k] = d
+	return d
+end
+
 -- Where a leg meets an existing station's junction, on the leg's leaving side (forward = true) or its arriving side:
 -- the junction's approach start, on our tracks' midline (in place of a platform end), and JUNCTION_STRAIGHT out along
 -- the existing axis from it (in place of the approach point); the unit outward direction; and the track's heights at
@@ -378,13 +420,13 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 		other : Station, radius ?: number) : Pt, Pt, Pt
 	local g = input.grid
 	if atJunction(station, forward) then
-		-- At an existing station's junction alike, from the junction's approach (junctionEnds) out along its axis; the
+		-- At an existing station's junction alike, from the junction's approach (junctionEnds) straight on along the
+		-- frame's direction there; the
 		-- way ahead to the neighbouring station measured from that approach.
 		local platformEnd, approach, out = junctionEnds(input, station, forward)
-		-- No farther than the stretch runs (junction.fit left it room for the approach).
-		local k = station.endOf[forward]
-		local ext = math.min(extensionLength(input, radius),
-			station.ends[k].length - station.junctions[k].approachX - JUNCTION_STRAIGHT)
+		-- No farther than our straight's ray stays beside the stretch (rayRoom; junction.fit and onStraight left it
+		-- room for the approach).
+		local ext = math.min(extensionLength(input, radius), rayRoom(station, station.endOf[forward]) - JUNCTION_STRAIGHT)
 		if other ~= nil then
 			local ahead = geo.dot(geo.sub(other.site.centre, approach), out)
 			ext = math.min(ext, (ahead - (halfOf(input, other) + approachAt(input, other, not forward))) / 4)
@@ -433,17 +475,18 @@ local function stationEnds(input : Input, station : Station, forward : boolean, 
 end
 
 -- How far a leg's search may run its end on beyond the extension point at a station (grid.startSearch's runs, where
--- turns are spaced): at an existing station's junction, to the end of its stretch, beside the existing track (the
--- search's ray passes its track cells there, and its footprint's cells along the ray are the run's own), so the leg
--- may leave the stretch anywhere along it and the fixed straight stays beside it; no limit at a station of ours (or
--- an existing station's bare end).
+-- turns are spaced): at an existing station's junction, as far as our straight's ray stays beside the stretch
+-- (rayRoom), by the existing track (the search's ray passes its track cells there, and its footprint's cells along the
+-- ray are the run's own), so the leg may leave the stretch anywhere along it and the fixed straight stays beside it; no
+-- limit at a station of ours (or an existing station's bare end).
 local function runRoom(station : Station, forward : boolean, extension : Pt) : number
 	if not atJunction(station, forward) then
 		return math.huge
 	end
-	local e = station.ends[station.endOf[forward]]
-	local x = midline.project(e.frame, extension)
-	return math.max(0, e.length - x)
+	local k = station.endOf[forward]
+	local e, j = station.ends[k], station.junctions[k]
+	local p = midline.world(e.frame, j.approachX, JUNCTION_OFFSET * station.sides[k])
+	return math.max(0, rayRoom(station, k) - geo.dist({ x = p.x, y = p.y }, extension))
 end
 
 -- Where a leg's search starts or ends at a station (its extension point), and its room to turn: how far the
@@ -489,7 +532,7 @@ local function addFootprint(input : Input, station : Station, cells : {integer :
 			axis(c, b.out, -half, half + approachAtEnd(input, station, k))
 		end
 		for k, e in pairs(station.ends) do
-			-- In the stretch's frame (x from its start, across from its midline): from back at the station's centre out
+			-- In the stretch's frame (x along its midline from its start, y across): from back at the station's centre out
 			-- to where our straight may reach (its approach, room to turn at the full radius, and run, and a cell more).
 			local back = midline.project(e.frame, c)
 			local x = back
@@ -1638,11 +1681,25 @@ local function checkLeg(job : Job, a : Station, b : Station)
 	end
 end
 
+-- A junction's placement lies wholly on straight midline (milestone 4c stage 1): from its first cut to the end of our
+-- straight past its approach (JUNCTION_STRAIGHT), the midline's direction stays within STRAIGHT_TOL of the first
+-- cut's. So its pieces, laid out in the straight frame of 4b, map onto the track unbent.
+local function onStraight(e : PgraceRailRouterExisting.End) : function(PgraceRailRouterJunction.Layout) : boolean
+	return function(j : PgraceRailRouterJunction.Layout) : boolean
+		local first = math.huge
+		for __, c in ipairs(j.cuts) do
+			first = math.min(first, c.x)
+		end
+		return midline.straightUntil(e.frame, first, STRAIGHT_TOL) >= j.approachX + JUNCTION_STRAIGHT - 1e-6
+	end
+end
+
 -- Stop i joined at its existing station (input.existingStations[i]) rather than a station of ours: the leg in uses the
 -- end facing the previous stop, the leg out the end facing the next (different ends, in the middle of the line). Each
 -- end is read from the station's snapshot: a bare end (existing.bareEnd) must have 2 or 4 tracks as Rail Router joins
 -- them, and room for our approach beyond it; any other must be usable (existing.analyse, told which side of it the
--- neighbour lies on) and fit a junction (junction.fit). nil, and a note saying why, where it can't be used. Pure Lua
+-- neighbour lies on) and fit a junction (junction.fit) on a straight part of one of its stretches, the nearest that
+-- has room (onStraight). nil, and a note saying why, where it can't be used. Pure Lua
 -- over the snapshot (a few hundred pieces at most), reading both ends' tracks out to existing.REACH: 5–7 ms on the
 -- desktop for a 268-piece Halt 2+2, once per stop.
 local function existingStop(input : Input, i : integer) : Station, string
@@ -1712,21 +1769,26 @@ local function existingStop(input : Input, i : integer) : Station, string
 			z, n = z + b.mid.z, n + 1
 		elseif k ~= nil then
 			result = result or existing.analyse(st, snap, sides, input.radius)
-			local e = result.ends[k]
-			if e == nil and result.why[k] == "left-hand" then
+			if result.ends[k] == nil and result.why[k] == "left-hand" then
 				return nil, note(("can't be used: the tracks at the %s end run left-handed"):format(neighbours[forward].name))
-			elseif e == nil and result.why[k] == "no double track" then
+			elseif result.ends[k] == nil and result.why[k] == "no double track" then
 				return nil, note(("can't be used: there's no straight double track (two tracks 5 m apart) past its %s end")
 					:format(neighbours[forward].name))
-			elseif e == nil then
-				return nil, note(("has no room for a junction at its %s end (needs %d m of straight double track; the "
-					.. "longest is %d m)"):format(neighbours[forward].name,
-					math.floor(junction.needed(input.radius) + JUNCTION_STRAIGHT + 0.5),
-					math.floor((result.longest[k] or 0) + 0.5)))
 			end
-			local j = junction.fit(e.length - JUNCTION_STRAIGHT, input.radius, sides[k], e.signals, e.nodes)
+			-- The nearest stretch with room for a junction on a straight part of it (milestone 4c stage 1).
+			local e, j : PgraceRailRouterExisting.End, PgraceRailRouterJunction.Layout = nil, nil
+			for __, s in ipairs(result.stretches[k] or {}) do
+				j = junction.fit(s.length - JUNCTION_STRAIGHT, input.radius, sides[k], s.signals, s.nodes, onStraight(s))
+				if j ~= nil then
+					e = s
+					break
+				end
+			end
 			if j == nil then
-				return nil, room
+				return nil, note(("has no room for a junction at its %s end (needs %d m of straight double track within "
+					.. "%g km; the longest straight is %d m)"):format(neighbours[forward].name,
+					math.floor(junction.needed(input.radius) + JUNCTION_STRAIGHT + 0.5), existing.REACH / 1000,
+					math.floor((result.longestStraight[k] or 0) + 0.5)))
 			end
 			ends[k], junctions[k] = e, j
 			z, n = z + e.z, n + 1

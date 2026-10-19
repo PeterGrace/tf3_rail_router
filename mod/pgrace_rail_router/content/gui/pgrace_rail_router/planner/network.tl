@@ -650,7 +650,7 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 		local x = midline.project(f, { x = p.x, y = p.y })
 		return x
 	end
-	-- The piece on `track` whose x range holds x, and its parameter where its curve is at x along the axis (bisected,
+	-- The piece on `track` whose x range holds x, and its parameter where its curve is at x along the frame (bisected,
 	-- so the node sits exactly there, whichever way the piece was laid).
 	local function pieceAt(track : string, x : number) : PgraceRailRouterExisting.Piece, number
 		for __, p in ipairs(e.pieces[track] or {}) do

@@ -13,6 +13,9 @@ local type Result = PgraceRailRouterExisting.Result
 -- the approach is looked for (metres).
 local REACH = 1500.0
 existing.REACH = REACH
+-- A junction goes only where the midline is straight (milestone 4c stage 1): its direction within this (the sine of
+-- the angle) of the direction where the junction starts.
+existing.STRAIGHT_TOL = 0.005
 local WIDE = 12.0
 local STEP = 5.0
 local EPS = 1e-6
@@ -1073,6 +1076,17 @@ local function readEnd(run : Run, frame : PgraceRailRouterMidline.Frame, left : 
 	return e, why
 end
 
+-- The longest run of a frame on which its direction stays within STRAIGHT_TOL (midline.straightUntil from every
+-- STEP along it). Starts past length − best can't beat the best, so a straight frame takes one call.
+local function longestStraight(f : PgraceRailRouterMidline.Frame) : number
+	local best, x = 0.0, 0.0
+	while x < f.length and f.length - x > best do
+		best = math.max(best, midline.straightUntil(f, x, existing.STRAIGHT_TOL) - x)
+		x = x + midline.STEP
+	end
+	return best
+end
+
 -- Per end, the stretches of plain double track out to REACH. The reading starts at the first x along the axis (in
 -- STEP steps from the end nodes) where two straight tracks begin (see startAt): until then it's the station's fan. If
 -- the tracks behind that start lead anywhere but the station (see `fromStation`), nothing is read ("short"). From
@@ -1081,7 +1095,7 @@ end
 -- the reading carries on along the tracks, and a stretch starts again where the pair holds again; any other switch
 -- (a scissors crossover's four-piece node among them), the track's end or REACH ends it.
 function existing.analyse(station : Station, snap : Snapshot, side : {integer : number}, radius : number) : Result
-	local result : Result = { ends = {}, why = {}, longest = {}, stretches = {} }
+	local result : Result = { ends = {}, why = {}, longestStraight = {}, stretches = {} }
 	local needed = junction.needed(radius)
 	local len = math.sqrt(station.dir.x * station.dir.x + station.dir.y * station.dir.y)
 	local ix : Index = nil
@@ -1116,7 +1130,7 @@ function existing.analyse(station : Station, snap : Snapshot, side : {integer : 
 			local leftHand = false
 			for __, run in ipairs(pair(left, right, ix)) do
 				local frame = midline.fromPoints(run.mids, midline.STEP)
-				result.longest[k] = math.max(result.longest[k] or 0, frame.length)
+				result.longestStraight[k] = math.max(result.longestStraight[k] or 0, longestStraight(frame))
 				if frame.length >= needed then
 					local e, why = readEnd(run, frame, left, right, side and side[k] or 1)
 					if why == "left-hand" then

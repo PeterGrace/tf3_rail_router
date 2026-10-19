@@ -19,6 +19,9 @@ global record PgraceRailRouterExisting
 
 	-- How far out from each platform end the analyser reads (metres).
 	REACH : number
+	-- How far (the sine of the angle) a stretch's midline may turn from a junction's direction and still count as
+	-- straight for it (milestone 4c stage 1: junctions go on straight parts only).
+	STRAIGHT_TOL : number
 
 	record Snapshot
 		pieces : {Piece}
@@ -66,8 +69,9 @@ global record PgraceRailRouterExisting
 	record Result
 		ends : {integer : End}
 		why : {integer : string}
-		-- Per end, the longest stretch read (metres; nil where none was).
-		longest : {integer : number}
+		-- Per end, the longest straight run (direction within STRAIGHT_TOL) on any stretch read, long enough or not
+		-- (metres along the midline; nil where none was read).
+		longestStraight : {integer : number}
 		-- Per end, every stretch long enough (junction.needed), nearest first, through curves (milestone 4c); ends[k]
 		-- is the first.
 		stretches : {integer : {End}}

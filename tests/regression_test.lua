@@ -128,6 +128,16 @@ local ROUTES = {
 	{ map = TEST_LINE1_MAP, from = "Aloha", to = "Mercer Island", mode = "cheapest", track = "Standard Tracks",
 		quick = true, stops = { "Antelope" }, platform = 320, approach = 225, stopsSeen = "Aloha, Antelope, Mercer Island",
 		base = { length = 8813, estimate = 3175951, tight = 2, bridges = 3, bridgeLength = 611, tunnels = 0, tunnelLength = 0, sweep = 127, timeLost = 1.2 } },
+	-- 4c stage 1's in-game test, offline: a second line through Aloha joining its existing station (the first line's
+	-- Halt 2+2) at both ends. Each end's stretch runs from the last crossover through the line's first curve; the
+	-- junctions go on the straight past it (first cuts 397 and 347 m out from the platform ends). Recorded for 4c
+	-- stage 1 (2026-10-19). Known heavy: the sites step reading Aloha's ends (existing.analyse walks and pairs both
+	-- tracks out to 1.5 km at each end) allocates about 1.1 MB of the step's 1.45 MB, over STEP_ALLOC_KB; once per
+	-- plan, 7 ms on the desktop.
+	{ map = TEST_LINE1_MAP, from = "Antelope", to = "Imperial Beach", mode = "cheapest", track = "Standard Tracks",
+		quick = true, stops = { "Aloha" }, existing = { "Aloha" }, stopsSeen = "Antelope, Aloha, Imperial Beach",
+		maxAllocKB = 1600,
+		base = { length = 8473, estimate = 3131523, tight = 3, bridges = 5, bridgeLength = 683, tunnels = 0, tunnelLength = 0, sweep = 95, timeLost = 2.5 } },
 
 	{ map = BIG_MAP, from = "Ames", to = "Bridgeport", mode = "cheapest", track = "Standard Tracks",
 		stopsSeen = "Ames, Foster City, Temple City, Miami, Bridgeport",
@@ -327,18 +337,45 @@ local function trackClearance(map, plan)
 		trackPoints[map] = index
 	end
 	local near = 15.0
-	local least, at = math.huge, nil
-	for __, leg in ipairs(plan.legs) do
-		for i, smp in ipairs(leg.samples) do
-			local bx, by = math.floor(smp.p.x / 50), math.floor(smp.p.y / 50)
-			for kx = bx - 1, bx + 1 do
-				for ky = by - 1, by + 1 do
-					for __, q in ipairs(index[kx .. "," .. ky] or {}) do
-						if (q[1] - smp.p.x) ^ 2 + (q[2] - smp.p.y) ^ 2 <= near * near and leg.z[i] - q[3] < least then
-							least, at = leg.z[i] - q[3], smp.p
-						end
+	-- The least height over the track points within `near` of sample i of a leg (nil: none near).
+	local function over(leg, i)
+		local smp, low = leg.samples[i], nil
+		local bx, by = math.floor(smp.p.x / 50), math.floor(smp.p.y / 50)
+		for kx = bx - 1, bx + 1 do
+			for ky = by - 1, by + 1 do
+				for __, q in ipairs(index[kx .. "," .. ky] or {}) do
+					if (q[1] - smp.p.x) ^ 2 + (q[2] - smp.p.y) ^ 2 <= near * near then
+						low = math.min(low or math.huge, leg.z[i] - q[3])
 					end
 				end
+			end
+		end
+		return low
+	end
+	-- A leg at an existing station's junction starts (or ends) beside its track on purpose, on the ground 10 m off its
+	-- midline: from that end, samples are left out until the first one clear of the track.
+	local function atJunction(st, forward)
+		return st ~= nil and st.existing ~= nil and st.junctions ~= nil and st.endOf ~= nil
+			and st.junctions[st.endOf[forward]] ~= nil
+	end
+	local least, at = math.huge, nil
+	for li, leg in ipairs(plan.legs) do
+		local n = #leg.samples
+		local first, last = 1, n
+		if atJunction(plan.stations[li], true) then
+			while first <= n and over(leg, first) ~= nil do
+				first = first + 1
+			end
+		end
+		if atJunction(plan.stations[li + 1], false) then
+			while last >= first and over(leg, last) ~= nil do
+				last = last - 1
+			end
+		end
+		for i = first, last do
+			local low = over(leg, i)
+			if low ~= nil and low < least then
+				least, at = low, leg.samples[i].p
 			end
 		end
 	end
@@ -370,8 +407,9 @@ local function check(rt, planFn, name)
 	t.eq(table.concat(names, ", "), rt.stopsSeen, "stops")
 	t.ok(worst <= STEP_BUDGET_MS, ("slowest step %.2f ms (%s), budget %.0f"):format(worst,
 		tostring(r.alloc.worstKind), STEP_BUDGET_MS))
-	t.ok(r.alloc.max <= STEP_ALLOC_KB, ("most allocated in a step %.0f KB (%s), at most %.0f"):format(r.alloc.max,
-		tostring(r.alloc.maxKind), STEP_ALLOC_KB))
+	local allocKB = rt.maxAllocKB or STEP_ALLOC_KB
+	t.ok(r.alloc.max <= allocKB, ("most allocated in a step %.0f KB (%s), at most %.0f"):format(r.alloc.max,
+		tostring(r.alloc.maxKind), allocKB))
 	t.ok(r.alloc.longestStall <= MAX_STALL_STEPS, ("progress bar stood still for %d steps, at most %d"):format(
 		r.alloc.longestStall, MAX_STALL_STEPS))
 	local plan = r.plan
@@ -381,6 +419,17 @@ local function check(rt, planFn, name)
 		return
 	end
 	t.ok(plan.ok, "plans: " .. tostring(plan.failure) .. " " .. table.concat(plan.failureTowns or {}, ", "))
+	-- The existing stations the route joins (rt.existing, by name) are joined, not replaced by a station of ours.
+	for __, name in ipairs(rt.existing or {}) do
+		for __, st in ipairs(plan.stations) do
+			if st.town.name == name then
+				t.ok(st.existing ~= nil, name .. "'s existing station joined")
+			end
+		end
+		for __, note in ipairs(plan.notes) do
+			t.ok(not note:find(name, 1, true), "no note about " .. name .. "'s station: " .. note)
+		end
+	end
 	local s = plan.summary
 	local sweep = 0
 	for __, v in ipairs(lib.sweep(plan)) do
@@ -494,6 +543,10 @@ local function check(rt, planFn, name)
 		end
 	end
 	t.ok(#net.chunks > 0, "some chunks")
+	-- Every chunk builds as it is: no junction cut on no existing piece, no existing piece split by two chunks.
+	for k, c in ipairs(net.chunks) do
+		t.ok(c.problem == nil, ("chunk %d: %s"):format(k, tostring(c.problem)))
+	end
 	local b = rt.base
 	noWorse("widest sweep of a leg (a loop or a hook?)", sweep, b.sweep, 0, SWEEP_SLACK)
 	noWorse("length", s.length, b.length, TOLERANCE.length)
@@ -521,7 +574,7 @@ for _, rt in ipairs(ROUTES) do
 		t.test("regression: " .. routeName(rt), function()
 			check(rt, function()
 				return lib.planOnMap(loadMap(rt.map), { from = rt.from, to = rt.to, mode = rt.mode, track = rt.track,
-					stops = rt.stops })
+					stops = rt.stops, existing = rt.existing })
 			end, routeName(rt))
 		end)
 	end

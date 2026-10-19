@@ -138,3 +138,15 @@ t.test("junction: the crossing keeps 3 m from a node, or crosses at it", functio
 	end
 	t.ok(junction.fit(600, R, 1, NONE, { near = many, far = {} }) == nil, "no junction where nodes crowd the track")
 end)
+
+t.test("junction: a placement `accept` turns down is passed over for the next one out", function()
+	-- Taken only from 100 m on: the first try at or past it (every 5 m from 15 m).
+	local seen = 0
+	local j = junction.fit(600, R, 1, NONE, nil, function(layout)
+		seen = seen + 1
+		return cutsOf(layout)["near switch"] >= 100
+	end)
+	t.near(cutsOf(j)["near switch"], 100, 1e-9, "the first placement taken")
+	t.eq(seen, 18, "every placement from 15 m to 100 m asked")
+	t.ok(junction.fit(600, R, 1, NONE, nil, function() return false end) == nil, "none taken: no junction")
+end)

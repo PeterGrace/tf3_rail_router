@@ -41,7 +41,8 @@ global record PgraceRailRouterRoute
 		-- An existing station the line joins instead of a station of ours (nil: ours). Its site is its own centre
 		-- (distance from the town's centre as for ours), facing the way the line runs through it. On each end it
 		-- uses (by end, ±1, as existing.Result's) the line joins it either at a junction, where track leads on: the
-		-- end's stretch (ends) and the junction fitted to it (junctions); or, at a bare end (bare: nothing attached,
+		-- stretch it's on (ends: the nearest of the end's stretches with room for it on a straight part, milestone 4c)
+		-- and the junction fitted to it (junctions); or, at a bare end (bare: nothing attached,
 		-- see existing.bareEnd), on its free track end nodes directly, as at a station of ours: the leg's end is then
 		-- its platform end (centre + out × existing.half, at bare.mid's height), with Input.approach and room to turn
 		-- beyond it along the axis. The two ends may differ. sides: the side of outward our line comes from (+1
@@ -59,10 +60,14 @@ global record PgraceRailRouterRoute
 		-- Per bare end, the cells (by grid index) of the station's own box along its axis, which a leg at that end may
 		-- use though the survey blocked them (route.tl's ownCells). Internal, filled in as needed.
 		own : {integer : {integer : boolean}}
+		-- Per junction end, how far our straight past the junction may run along its ray (route.tl's rayRoom).
+		-- Internal, filled in as needed.
+		rays : {integer : number}
 	end
 
 	-- From one station's platform end to the next one's (at an existing station's junction, its approach start, 10 m
-	-- off the existing axis, and the approach and room to turn run along that axis; at its bare end, its platform end
+	-- off the existing track's midline, and the approach and room to turn run straight on along the midline's
+	-- direction there, no further than they stay clear of it; at its bare end, its platform end
 	-- by its own half): a straight approach of 100 m at
 	-- each end, then room for the
 	-- search's first turn at full radius before the searched path: 45° where the search turns freely, one 22.5° step

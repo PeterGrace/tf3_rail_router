@@ -83,7 +83,7 @@ local function crossingClear(x : number, nodes : {number}) : boolean
 end
 
 function junction.fit(length : number, radius : number, side : number, signals : {string : {number}},
-		nodes ?: {string : {number}}) : Layout
+		nodes ?: {string : {number}}, accept ?: function(Layout) : boolean) : Layout
 	local l = junction.sCurve(10, radius)
 	local theta = junction.crossAngle(radius)
 	local c = junction.crossRun(radius)
@@ -113,7 +113,7 @@ function junction.fit(length : number, radius : number, side : number, signals :
 			local ms, cs = switchAt(try, near), switchAt(c0, far)
 			if ms ~= nil and cs ~= nil and crossingClear(crossing, near) and clear(ms, signals.near)
 					and clear(crossing, signals.near) and clear(cs, signals.far) then
-				return {
+				local layout : Layout = {
 					approachX = c0 + 2 * c + APPROACH,
 					pieces = {
 						piece(ms, 2.5, try + l, 12.5, 0, 0, try + l - ms, side, "merge"),
@@ -126,6 +126,9 @@ function junction.fit(length : number, radius : number, side : number, signals :
 						{ track = "far", x = cs, kind = "switch" },
 					},
 				}
+				if accept == nil or accept(layout) then
+					return layout
+				end
 			end
 		end
 	end

@@ -1078,6 +1078,83 @@ t.test("route: an existing station as the first stop is left at the end facing t
 	t.near(legStart(plan.legs[1]).y, OUT_END.y, 1e-6, "y")
 end)
 
+-- A station as existingStation's with only its +x end leading on: 150 m straight past the platform end, then both
+-- tracks turning 40° left on concentric arcs (midline radius 300 m, four pieces each, tangents by the game's
+-- 4R·tan(θ/4) rule), then 600 m straight on in 100 m pieces. Returns the station, its snapshot and x (along the
+-- midline from the platform end) where the curve ends.
+local function curvedStation(cx)
+	local station, snap = existingStation(cx, {})
+	local pieces, ids, nextNode = snap.pieces, {}, 1000
+	local function node(x, y)
+		local key = ("%.6f,%.6f"):format(x, y)
+		if not ids[key] then
+			ids[key] = nextNode
+			nextNode = nextNode + 1
+		end
+		return ids[key]
+	end
+	-- Join the station's own pieces' +x end nodes, so the line leads on from them.
+	for __, p in ipairs(pieces) do
+		ids[("%.6f,%.6f"):format(p.p1.x, p.p1.y)] = p.node1
+	end
+	local function add(p0, p1, t0, t1)
+		pieces[#pieces + 1] = { entity = 100 + #pieces, node0 = node(p0.x, p0.y), node1 = node(p1.x, p1.y),
+			p0 = { x = p0.x, y = p0.y, z = 0 }, p1 = { x = p1.x, y = p1.y, z = 0 }, t0 = t0, t1 = t1, kind = "ground",
+			signals = {} }
+	end
+	local R, th = 300, math.rad(40)
+	for __, y in ipairs({ 2.5, -2.5 }) do
+		local x0 = cx + 80
+		add({ x = x0, y = y }, { x = x0 + 150, y = y }, { x = 150, y = 0, z = 0 }, { x = 150, y = 0, z = 0 })
+		local ccx, ccy, r = x0 + 150, R, R - y
+		local function pt(a) return { x = ccx + r * math.cos(a), y = ccy + r * math.sin(a) } end
+		local a0 = -math.pi / 2
+		for i = 1, 4 do
+			local s0, s1 = a0 + th * (i - 1) / 4, a0 + th * i / 4
+			local l = 4 * r * math.tan((s1 - s0) / 4)
+			add(pt(s0), pt(s1), { x = -math.sin(s0) * l, y = math.cos(s0) * l, z = 0 },
+				{ x = -math.sin(s1) * l, y = math.cos(s1) * l, z = 0 })
+		end
+		local p, d = pt(a0 + th), { x = math.cos(th), y = math.sin(th) }
+		for i = 1, 6 do
+			local a = { x = p.x + d.x * 100 * (i - 1), y = p.y + d.y * 100 * (i - 1) }
+			local b = { x = p.x + d.x * 100 * i, y = p.y + d.y * 100 * i }
+			add(a, b, { x = d.x * 100, y = d.y * 100, z = 0 }, { x = d.x * 100, y = d.y * 100, z = 0 })
+		end
+	end
+	local degree = {}
+	for __, p in ipairs(pieces) do
+		degree[p.node0] = (degree[p.node0] or 0) + 1
+		degree[p.node1] = (degree[p.node1] or 0) + 1
+	end
+	snap.degree = degree
+	return station, snap, 150 + R * th
+end
+
+t.test("route: a junction goes on the straight past an existing line's first curve (milestone 4c stage 1)", function()
+	local station, snap, curveEnd = curvedStation(3000)
+	-- C lies right of the station's +x end and right of the far straight (heading 40° left of +x).
+	local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 6000, -300) }, 1, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(#plan.notes, 0, "no notes: " .. tostring(plan.notes[1]))
+	local b = plan.stations[1]
+	t.ok(b.existing == station, "B uses the existing station")
+	local e, j = b.ends[1], b.junctions[1]
+	t.ok(e ~= nil and j ~= nil, "a junction at the +x end")
+	local first = math.huge
+	for __, c in ipairs(j.cuts) do
+		first = math.min(first, c.x)
+	end
+	t.ok(first > curveEnd, ("the first cut (%.1f m) is past the curve (%.1f m)"):format(first, curveEnd))
+	t.ok(midline.straightUntil(e.frame, first, 0.005) >= j.approachX + 50 - 1e-6,
+		"straight from the first cut to past our straight beyond the approach")
+	-- The leg leaves along the far straight.
+	local p = legStart(plan.legs[1])
+	local q = midline.world(e.frame, j.approachX, -10)
+	t.near(p.x, q.x, 1e-6, "the leg starts at the approach (x)")
+	t.near(p.y, q.y, 1e-6, "the leg starts at the approach (y)")
+end)
+
 t.test("route: a leg meets a raised, graded existing stretch at its height", function()
 	-- The +x end's track 5 m up at the platform end, rising 1% outward.
 	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 }, { z = { [1] = 5 }, grade = { [1] = 0.01 } })
@@ -1111,7 +1188,7 @@ t.test("route: an existing station with no room for a junction falls back to a n
 	-- Only 200 m of double track beyond the +x end: short of a 300 m radius junction.
 	local station, snap = existingStation(3000, { [1] = 200, [-1] = 1000 })
 	fellBack(runExisting(AXC, 2, station, snap), "The station in B has no room for a junction at its C end (needs 349 m "
-		.. "of straight double track; the longest is 200 m); a new station was planned.")
+		.. "of straight double track within 1.5 km; the longest straight is 200 m); a new station was planned.")
 end)
 
 t.test("route: a middle stop whose legs would use the same end of an existing station falls back", function()
@@ -1254,6 +1331,26 @@ for __, case in ipairs({
 		t.eq(plan.summary.tightCurves, 0, "no tight curves")
 	end)
 end
+
+t.test("route: our straight past a junction stops where the existing line swings towards our side", function()
+	-- Stops in line: our line comes from the left of each end (sides +1). Past 1000 m the +x end's line swings 20 m
+	-- towards +y, across the ray our straight at y = +10 would run on along; the −x end's swings away (to +y, our
+	-- side there being −y).
+	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 }, { carry = { [1] = 1, [-1] = 1 } })
+	local g = markTrack(flatGrid(), station, snap)
+	local plan = runExisting({ town(1, "A", 0, 0), town(2, "B", 3000, 0), town(3, "C", 6000, 0) }, 2, station, snap,
+		{ grid = g, weights = withWeights({ minRadius = 1000, minSearchRadius = 220 }) })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[2]
+	t.ok(b.existing == station, "existing")
+	t.eq(b.sides[1], 1, "our side of the +x end: +y")
+	-- The ray (y = +10) comes within 9 m of the midline 10 m into the swing (it closes 1 m in 10).
+	t.near(b.rays[1], 1000 - JX + 10, midline.STEP, "the +x end's ray stops in the swing")
+	t.ok(b.rays[-1] > 1000 - JX + 100, "the −x end's ray runs on past the swing, away from it")
+	local leg = plan.legs[2]
+	t.ok(leg.pieces[1].kind == "straight" and leg.pieces[1].b.x <= 3080 + 1000 + 10 + 1e-6,
+		("the leg out leaves its straight by the swing (at x = %.0f)"):format(leg.pieces[1].b.x))
+end)
 
 -- Bare ends: stations with free track ends.
 

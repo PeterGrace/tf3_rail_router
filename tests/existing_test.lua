@@ -204,8 +204,10 @@ t.test("existing: tracks drifting apart on a curve end the stretch where they pa
 	-- The gap at angle φ round the left arc: 306.5 − |(297.5 sin φ, −297.5 cos φ − 4)|; 5.5 m at cos φ = 2078.75 / 2380.
 	local phi = math.acos(2078.75 / 2380)
 	local r = existing.analyse(station, b.snapshot(), { [1] = 1 }, R)
-	t.near(r.longest[1], 150 + 300 * phi, 3, "the stretch ends where the gap passes 5.5 m")
-	t.eq(#r.stretches[1], 1, "and no other: they stay apart")
+	t.eq(#r.stretches[1], 1, "one stretch: they stay apart")
+	t.near(r.stretches[1][1].length, 150 + 300 * phi, 3, "the stretch ends where the gap passes 5.5 m")
+	-- Its straight part: up to the curve (and the few metres the midline's samples take to turn by STRAIGHT_TOL).
+	t.near(r.longestStraight[1], 150, 5, "the longest straight")
 end)
 
 t.test("existing: a third track beside the stretch ends it, and the next starts past it", function()
@@ -274,7 +276,7 @@ t.test("existing: stretches lists every long one, split by a crossover pair; end
 	t.near(s1.length, 420, 1e-6, "to the first crossover's switch")
 	t.near(s2.origin.x, 710, 1e-6, "the second past the second crossover")
 	t.near(s2.length, 690, 1e-6, "to the track's end")
-	t.near(r.longest[1], 690, 1e-6, "the longest")
+	t.near(r.longestStraight[1], 690, 1e-6, "the longest straight: the second, straight throughout")
 end)
 
 t.test("existing: a stretch still on a curve at REACH ends there, its frame running on straight", function()
@@ -889,7 +891,8 @@ t.test("existing: stationFromEnds: two groups of ends give the centre, direction
 	t.ok(none == nil and why ~= nil, "fewer than two ends")
 end)
 
-t.test("existing: planOnMap with Aloha's station: it joins the station", function()
+t.test("existing: planOnMap with Aloha's station: it joins the station on the straight past its first curve", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 	local maps = findMapsDir()
 	local mapFile = maps and (maps .. "/rail-router-test-5x14km-line1.map")
 	local f = mapFile and io.open(mapFile, "r")
@@ -902,12 +905,26 @@ t.test("existing: planOnMap with Aloha's station: it joins the station", functio
 	local map = lib.maplib.load(mapFile)
 	local r = lib.planOnMap(map, { from = "Aloha", to = "Mercer Island", stops = {}, existing = { "Aloha" } })
 	t.ok(r.plan.ok, "the plan is made")
-	-- Its ends now read through the first curve (milestone 4c), so the station is joined rather than replaced. (Where
-	-- on the stretch the junction goes is the planner's: on its straight part, from 4c's Task 5.)
+	-- Its ends now read through the first curve (milestone 4c), so the station is joined rather than replaced, at a
+	-- junction on the straight past that curve (4c stage 1): the stretch turns before the junction's first cut (67 m
+	-- out from its start at the −1 end), and runs straight from it to past our straight beyond the approach.
 	for __, note in ipairs(r.plan.notes) do
 		t.ok(not note:find("Aloha", 1, true), "no note about Aloha's station: " .. note)
 	end
-	t.ok(r.plan.stations[1].existing ~= nil, "Aloha's station is the existing one")
+	local aloha = r.plan.stations[1]
+	t.ok(aloha.existing ~= nil, "Aloha's station is the existing one")
+	local k = aloha.endOf[true]
+	local e, j = aloha.ends[k], aloha.junctions[k]
+	t.ok(j ~= nil, "joined at a junction")
+	local first = math.huge
+	for __, c in ipairs(j.cuts) do
+		first = math.min(first, c.x)
+	end
+	t.ok(midline.straightUntil(e.frame, 0, existing.STRAIGHT_TOL) < first,
+		("the stretch turns (at %.0f m) before the first cut (%.0f m)"):format(
+			midline.straightUntil(e.frame, 0, existing.STRAIGHT_TOL), first))
+	t.ok(midline.straightUntil(e.frame, first, existing.STRAIGHT_TOL) >= j.approachX + 50 - 1e-6,
+		"straight from the first cut to 50 m past the approach start")
 	t.ok(not pcall(lib.planOnMap, map, { from = "Aloha", to = "Mercer Island", stops = {}, existing = { "Antelope" } }),
 		"an existing town that isn't a stop is an error")
 end)

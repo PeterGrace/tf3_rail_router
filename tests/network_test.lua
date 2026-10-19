@@ -773,6 +773,37 @@ t.test("network: junctions at either end, either side, either way round: the mer
 	end
 end)
 
+t.test("network: a junction's edges and cuts follow the end's frame, not its origin and direction", function()
+	-- The frame starts 100 m further out than the end's origin says (its pieces run from frame x −100 to 600): every
+	-- edge and cut must be where the frame puts them, so nothing reads origin/dir for geometry (milestone 4c).
+	for __, atStart in ipairs({ true, false }) do
+		local origin, dir = { x = 2000, y = 1000 }, { x = 0.6, y = 0.8 }
+		local e = exEnd(origin, dir, 1, 10, 0)
+		local shifted = { x = origin.x + dir.x * 100, y = origin.y + dir.y * 100 }
+		e.frame = midline.line(shifted, dir, 10, 0, 700)
+		local st, j = exStation(e, 1, atStart)
+		-- The checks' frame (exEnd's helpers read origin and dir): the shifted one.
+		local seen = { origin = shifted, dir = dir, z = 10, grade = 0 }
+		local l = junctionLeg(seen, j, 1, 2500, atStart)
+		local net = network.build({ ok = true, legs = { l }, stations = atStart and { st, {} } or { {}, st },
+			platformLength = 160 }, network.defaults())
+		local __, existingNodes, c = checkJunction(net, seen, j, 1, atStart and 1 or #net.chunks, atStart)
+		t.ok(c.problem == nil, "no problem: " .. tostring(c.problem))
+		local byPiece = {}
+		for __, sp in ipairs(c.splits) do
+			byPiece[sp.piece] = sp.s
+		end
+		-- Frame x 15 (the merge's switch) is 115 m along the near piece, 700 m long.
+		t.near(byPiece[101][1], 115 / 700, 1e-9, "the merge's switch at frame x 15")
+		t.near(byPiece[102][1], 245 / 700, 1e-9, "the far switch at frame x 145")
+		for __, n in ipairs(existingNodes) do
+			local p, y = net.nodes[n], net.nodes[n].existing.piece == 101 and 2.5 or -2.5
+			t.near(p.x, origin.x + dir.x * 700 * p.existing.s - dir.y * y, 1e-9, "on its piece (x)")
+			t.near(p.y, origin.y + dir.y * 700 * p.existing.s + dir.x * y, 1e-9, "on its piece (y)")
+		end
+	end
+end)
+
 t.test("network: a cut within half a metre of an existing piece's end uses its node; one on no piece is reported", function()
 	-- The near track's first piece ends 0.3 m past the merge's switch (x 15).
 	local net = junctionNet({ x = 0, y = 0 }, { x = 1, y = 0 }, 1, true, { { 201, 0, 15.3 }, { 202, 15.3, 700 } })
