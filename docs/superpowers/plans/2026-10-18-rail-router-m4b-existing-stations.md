@@ -666,6 +666,28 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
   After all the splits, the chunk is dry-run and sent as now.
 - [ ] **Step 3: Failure.** On failure, use Show and "Retry from here" as now. Splits already made stay (harmless).
 - [ ] **Step 4:** `just check` and `just test`, then commit as `feat: the build splits existing track for a junction, then joins it`.
+- **As built:**
+  - `builder.junctionHits(collisions, splits, nodes?)` returns `all, rest`: true when there is at least one collision
+    and every one is a split piece or one of its nodes (those given, read from the pieces' BASE_EDGE, and those the
+    collisions list for the pieces); `rest` (what the splits don't explain) goes on to the level-crossing count, so a
+    junction chunk that also crosses a road is still clean. Only where every message is "Collision"; anything else
+    stays an error. `builder.junctionCount(net, first, last)` counts one junction per leg end (whole edges with s
+    below 0, or past the leg); `Check.junctions`, `Outcome.junctions` and `Build.junctions` add them up.
+  - **Resume:** `builder.splitDone(net, c, split)` treats a split as made when its piece is gone, or its id (ids are
+    reused) now names track that doesn't pass the cuts' places; the cut nodes then take the entities of the track
+    nodes at their places (`builder.trackNodeAt`, 0.5 m), or the chunk fails with "the existing track ... has changed
+    since the route was found ...: find the route again". The check uses it too (a re-check after a partial build),
+    and leaves such splits out of `junctionHits`. Nothing is planned again.
+  - `splitEdge(entity, edge, h, us)` reads each signal's place itself (its EDGE_OBJECT transform if within 8 m of the
+    piece, else its param), rather than taking places from the caller; it refuses (fails the chunk, sends nothing)
+    when a signal's place can't be read, the engine lists edge objects to add that don't match the piece's, or a
+    track part would be under 1 m. Track parts copy the engine's replacement (`type`, `typeIndex`, lanes, template,
+    style, `distance`, `streetEdge`, owner); street parts are made as before (Bus Loops).
+  - **Lanes:** `Build.repairNodes` (nodes) and `Build.trackRepair` (pieces) are worked off at the start of every track
+    step, before anything else: a split's new nodes are queued in its callback and their pieces (from
+    `getNodeTrackSegments` on the next step) sent again unedited before the next split; after a junction chunk is
+    built, the existing nodes its `whole` pieces join (switches, crossing) are queued the same way, as P15 did.
+  - A chunk's `problem` fails the check (no dry run) and the build (before any split).
 
 ### Task 9: The window
 

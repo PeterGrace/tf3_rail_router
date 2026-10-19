@@ -1,5 +1,6 @@
 -- Builds a checked plan (milestone 3): the stations, then the track chunk by chunk, each joined to the station ends
--- and chunks built before it, with level crossings where a chunk crosses a street, then a road from each station's
+-- and chunks built before it, with level crossings where a chunk crosses a street and junctions into an existing
+-- station's track (its pieces split first; milestone 4b), then a road from each station's
 -- main building to the town's streets. One command in flight at a time,
 -- each dry-run clean before it's sent (a street split, which can't be, aside); stepped from the window's join, and
 -- advanced by the commands' callbacks. Main thread only.
@@ -57,9 +58,17 @@ global record PgraceRailRouterBuild
 		-- A command was sent and its callback hasn't come yet.
 		waiting : boolean
 		crossings : Crossings
+		-- While a junction chunk's existing pieces are being split (milestone 4b): the next of its splits
+		-- (Chunk.splits); nil otherwise.
+		splitting : integer
+		-- Track nodes whose pieces are to be sent again unedited for their lanes (a split's new nodes, the existing
+		-- nodes a junction joined), queued from the next step; and those pieces still to send.
+		repairNodes : {integer}
+		trackRepair : {integer}
 		failure : Failure
-		-- Level crossings made, and the money the game charged.
+		-- Level crossings and junctions made, and the money the game charged.
 		levelCrossings : integer
+		junctions : integer
 		charged : integer
 		-- Stations given a road (or found with one), the towns of those left without, and street pieces still to send
 		-- again for their lanes (at the junctions the roads made).
@@ -80,6 +89,7 @@ global record PgraceRailRouterBuild
 	step : function(b : Build) : boolean
 	-- Items built (stations, then chunks), and how many there are.
 	progress : function(b : Build) : integer, integer
-	-- After a failure: start the failed item again (a chunk from its dry run, so streets already split are used).
+	-- After a failure: start the failed item again (a chunk from its dry run, so streets and existing track already
+	-- split are used).
 	retry : function(b : Build)
 end

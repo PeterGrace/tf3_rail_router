@@ -43,6 +43,10 @@ global record PgraceRailRouterBuilder
 		-- level crossing splits the street (milestone 3). An outcome whose only errors are these is ok; one with other
 		-- collisions too still counts them.
 		crossings : integer
+		-- Junctions into an existing station's track (milestone 4b) the chunk makes, one per junction end. Before
+		-- the existing pieces are split, the dry run collides with them (and their nodes): an outcome whose only
+		-- collisions are these (and level crossings) is ok.
+		junctions : integer
 	end
 
 	record Settings
@@ -81,8 +85,9 @@ global record PgraceRailRouterBuilder
 		-- The sum of the game's prices, and the outcomes that weren't clean.
 		total : integer
 		failures : integer
-		-- Level crossings over all the outcomes, and the items already built.
+		-- Level crossings and junctions over all the outcomes, and the items already built.
 		crossings : integer
+		junctions : integer
 		built : integer
 		-- The slowest dry run so far and the time of all of them (microseconds).
 		slowestUs : integer
@@ -116,6 +121,23 @@ global record PgraceRailRouterBuilder
 	-- on the level, else 0. Pure (but for what onLevel does).
 	levelCrossings : function(messages : {string}, collisions : {Collision},
 		onLevel ?: function(street : integer) : boolean) : integer
+	-- Whether a dry run's collisions are all with the existing pieces a junction chunk splits (`splits`) or their nodes
+	-- (`nodes`, and the end nodes the collisions list for those pieces), and there is at least one: the junction's
+	-- joints, not errors. Also returns the collisions that aren't (for the level-crossing count). Pure.
+	junctionHits : function(collisions : {Collision}, splits : {PgraceRailRouterNetwork.Split}, nodes ?: {integer})
+		: boolean, {Collision}
+	-- How many junctions edges first..last make: one at the leg's start if any junction piece (`whole`) lies before it
+	-- (s below 0), one at its end if any lies past it. Pure.
+	junctionCount : function(net : PgraceRailRouterNetwork.Network, first : integer, last : integer) : integer
+	-- The nodes of chunk c cut into the existing piece (Pt3.existing.piece), in order along it (s ascending).
+	cutNodes : function(net : PgraceRailRouterNetwork.Network, c : integer, piece : integer) : {PgraceRailRouterNetwork.Pt3}
+	-- Whether one of chunk c's splits is made already (its piece is gone, or its id now names track that doesn't pass
+	-- the cuts' places: a build stopped, or retried, after splitting it), and then its cut nodes take the entities of the track nodes at their places (trackNodeAt); with why not,
+	-- when a cut has no node there (the existing track changed since the route was found). Main thread.
+	splitDone : function(net : PgraceRailRouterNetwork.Network, c : integer, split : PgraceRailRouterNetwork.Split)
+		: boolean, string
+	-- An existing track node within 0.5 m of p in plan (and 1.5 m in height), or nil. Main thread.
+	trackNodeAt : function(p : PgraceRailRouterNetwork.Pt3) : integer
 	-- Whether a ground edge of the chunk (edges first..last) crosses the street piece within 1.5 m of its height: a
 	-- level crossing, not a street the track only runs into (an embankment's foot beside a bridge over it).
 	crossesOnLevel : function(net : PgraceRailRouterNetwork.Network, first : integer, last : integer,
