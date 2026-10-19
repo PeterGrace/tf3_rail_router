@@ -270,6 +270,9 @@ local function settingsFor(track : TrackType, electrified : boolean, year : inte
 	local era = sl.eraLetter(year)
 	local dir = "::/stations/rail/modular_station/"
 	local options = network.defaults()
+	-- An existing station's bare end with 4 tracks gets Halt 2+2's fan whatever the style: this turnout where the
+	-- style has none.
+	options.bareFan = network.turnoutLength(turnoutRadius(track))
 	local signal : string = nil
 	local halt = style ~= "simple"
 	if halt then

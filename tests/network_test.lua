@@ -1021,3 +1021,281 @@ t.test("network: two chunks splitting one existing piece is refused on the later
 	t.eq(net.chunks[3].problem, nil, "another piece is fine")
 	t.ok(net.chunks[4].problem ~= nil and net.chunks[4].problem:find("(8)", 1, true) ~= nil, "the later one is refused, naming the piece")
 end)
+
+-- Bare ends: an existing station's free track ends, joined as a station of ours (milestone 4b).
+
+-- A bare end at mid (x, y, z) facing `out`, with end nodes at offsets `vs` across it (to the left looking outward,
+-- largest first, as existing.bareEnd sorts them), entities base + i; each node nudged by `nudge` (a few cm) outward,
+-- so snapping to exact positions shows.
+local function bareEnd(kind, mx, my, mz, out, vs, nudge, base)
+	local left = { x = -out.y, y = out.x }
+	local nodes = {}
+	for i, v in ipairs(vs) do
+		nodes[i] = { x = mx + left.x * v + out.x * (nudge or 0), y = my + left.y * v + out.y * (nudge or 0), z = mz,
+			entity = (base or 900) + i }
+	end
+	return { kind = kind, nodes = nodes, mid = { x = mx, y = my, z = mz }, out = out }
+end
+
+-- An existing station met at a bare end by the leg leaving it (forward true) or arriving (false).
+local function bareSt(b, forward)
+	local k = forward and 1 or -1
+	return { existing = { entity = 1, half = 120 }, ends = {}, junctions = {}, sides = {}, bare = { [k] = b },
+		endOf = { [forward] = k } }
+end
+
+local KINDS = { direct = { 2.5, -2.5 }, island = { 5, -5 }, fan = { 7.5, 2.5, -2.5, -7.5 } }
+
+-- A 3000 m leg along +x at height 10 from a bare end of `kind` (out +x) to another (out −x); `pieces` replaces the
+-- straight.
+local function bareNet(kindStart, kindEnd, options, pieces)
+	local l = leg(pieces or { straight(0, 0, 3000, 0) })
+	local stations = { {}, {} }
+	if kindStart then
+		stations[1] = bareSt(bareEnd(kindStart, 0, 0, 10, { x = 1, y = 0 }, KINDS[kindStart], 0.03), true)
+	end
+	if kindEnd then
+		stations[2] = bareSt(bareEnd(kindEnd, l.length, 0, 10, { x = -1, y = 0 }, KINDS[kindEnd], 0.03, 800), false)
+	end
+	local net = network.build({ ok = true, legs = { l }, stations = stations, platformLength = 160 },
+		options or network.defaults())
+	return net, stations, l.length
+end
+
+-- How many edges use each node.
+local function uses(net)
+	local n = {}
+	for __, e in ipairs(net.edges) do
+		n[e.node0] = (n[e.node0] or 0) + 1
+		n[e.node1] = (n[e.node1] or 0) + 1
+	end
+	return n
+end
+
+-- The node of entity `entity`, and its index; nil if none (or more than one) has it.
+local function nodeOf(net, entity)
+	local found, index
+	for i, n in ipairs(net.nodes) do
+		if n.entity == entity then
+			if found then
+				return nil
+			end
+			found, index = n, i
+		end
+	end
+	return found, index
+end
+
+-- Each end node of a bare end is the station's (entity, exact x, y, z), on one edge only, which leaves along the axis.
+local function checkJoined(net, b, label)
+	local count = uses(net)
+	for __, sn in ipairs(b.nodes) do
+		local n, i = nodeOf(net, sn.entity)
+		t.ok(n ~= nil, label .. ": node " .. sn.entity .. " in the network once")
+		t.near(n.x, sn.x, 1e-12, label .. ": exact x") t.near(n.y, sn.y, 1e-12, label .. ": exact y")
+		t.near(n.z, sn.z, 1e-12, label .. ": exact z")
+		t.eq(count[i], 1, label .. ": one edge at the station's node")
+		for __, e in ipairs(net.edges) do
+			if e.node0 == i or e.node1 == i then
+				local p, tg = e.node0 == i and e.p0 or e.p1, e.node0 == i and e.t0 or e.t1
+				t.near(p.x, sn.x, 1e-12, label .. ": the edge's end on it") t.near(p.y, sn.y, 1e-12, label .. ": y")
+				local d = math.sqrt(tg.x ^ 2 + tg.y ^ 2)
+				t.near(math.abs(tg.x * b.out.x + tg.y * b.out.y) / d, 1, 1e-12, label .. ": tangent along the axis")
+			end
+		end
+	end
+end
+
+-- Our track k's edge at the leg's start (or end), and the node there.
+local function trackEnd(net, k, atStart)
+	local list = byTrack(net, k)
+	local e = atStart and list[1] or list[#list]
+	return e, net.nodes[atStart and e.node0 or e.node1]
+end
+
+t.test("network: a bare end with 2 tracks 5 m apart: our tracks end on its nodes, each on its side; no fan, crossovers", function()
+	for __, o in ipairs({ network.defaults(), halt() }) do
+		local label = o.fan and "halt" or "simple"
+		local net, stations = bareNet("direct", "direct", o)
+		checkJoined(net, stations[1].bare[1], label .. " start")
+		checkJoined(net, stations[2].bare[-1], label .. " end")
+		-- Track 1 is the left in the leg's direction (+x): +y at both ends. At the start that's the left looking out
+		-- (nodes[1]), at the end the right looking out (−x): nodes[2].
+		t.eq(select(2, trackEnd(net, 1, true)).entity, 901, label .. ": track 1 starts on the +y node")
+		t.eq(select(2, trackEnd(net, 2, true)).entity, 902, label .. ": track 2 on the −y node")
+		t.eq(select(2, trackEnd(net, 1, false)).entity, 802, label .. ": track 1 ends on the +y node")
+		t.eq(select(2, trackEnd(net, 2, false)).entity, 801, label .. ": track 2 on the −y node")
+		t.eq(#byTrack(net, 3), 0, label .. ": no fan")
+		local crossovers = byTrack(net, 0)
+		t.eq(#crossovers, 4, label .. ": a pair at each end")
+		for __, x in ipairs(crossovers) do
+			t.ok(math.min(x.s0, 3000 - x.s1) < 110, label .. ": from the station's nodes, not past a fan")
+		end
+		if o.fan then
+			-- No edge before the crossovers is long enough for a signal 15 m from its ends, so the starter on the leaving
+			-- track and the home signal on the arriving one both sit just past them (100 + 15 m out), facing their trains;
+			-- none nearer the station.
+			local near = {}
+			for __, e in ipairs(net.edges) do
+				for __, sg in ipairs(e.signals or {}) do
+					local s = e.s0 + sg.param * (e.s1 - e.s0)
+					t.ok(s >= 100 and s <= 3000 - 100, "no signal among the crossovers")
+					if s < 130 then
+						near[#near + 1] = e.track .. (sg.forward and "+" or "-")
+					end
+				end
+			end
+			table.sort(near)
+			t.eq(table.concat(near, " "), "1- 2+", "a home signal on track 1 and a starter on track 2 at the start")
+		end
+	end
+end)
+
+t.test("network: a bare end with 4 tracks: its outer two merge into ours as Halt 2+2's fan, whatever the style", function()
+	for __, o in ipairs({ network.defaults(), halt() }) do
+		local label = o.fan and "halt" or "simple"
+		local merge = o.fan and 20 + 75 or 20 + 55
+		local net, stations = bareNet("fan", "fan", o)
+		local count = uses(net)
+		local fans = byTrack(net, 3)
+		t.eq(#fans, 4, label .. ": two at each end")
+		for __, end_ in ipairs({ { stations[1].bare[1], true }, { stations[2].bare[-1], false } }) do
+			local b, atStart = end_[1], end_[2]
+			checkJoined(net, b, label)
+			-- The inner two are our tracks' ends; the outer two the fans' tips, each merging into our track on its side.
+			for __, i in ipairs({ 1, 4 }) do
+				local __, ni = nodeOf(net, b.nodes[i].entity)
+				for __, e in ipairs(fans) do
+					if e.node0 == ni or e.node1 == ni then
+						local m = net.nodes[e.node0 == ni and e.node1 or e.node0]
+						t.near(math.abs(m.x - b.nodes[i].x), merge - 0.03, 1e-6, label .. ": merging the turnout's way out")
+						t.near(m.y, b.nodes[i].y > 0 and 2.5 or -2.5, 1e-9, label .. ": into our track on its side")
+						t.eq(count[e.node0 == ni and e.node1 or e.node0], 3, label .. ": a switch there")
+					end
+				end
+			end
+			for __, i in ipairs({ 2, 3 }) do
+				local __, ni = nodeOf(net, b.nodes[i].entity)
+				local onTrack = false
+				for __, e in ipairs(net.edges) do
+					if (e.node0 == ni or e.node1 == ni) and (e.track == 1 or e.track == 2) then
+						onTrack = true
+					end
+				end
+				t.ok(onTrack, label .. ": an inner node is our track's end")
+			end
+		end
+		for __, x in ipairs(byTrack(net, 0)) do
+			t.ok(math.min(x.s0, 3000 - x.s1) >= merge + 30 - 1, label .. ": crossovers after the fan")
+		end
+	end
+end)
+
+t.test("network: a bare fan's turnout is shortened to fit the leg's straight there", function()
+	local o = network.defaults()
+	o.bareFan = 110
+	-- 100 m of straight (the simple style's approach), then a curve.
+	local net = bareNet("fan", nil, o, { straight(0, 0, 100, 0), arc(100, 0, 1000, 0.5), straight(0, 0, 1000, 0) })
+	local fans = byTrack(net, 3)
+	t.eq(#fans, 2, "the start's fan")
+	for __, e in ipairs(fans) do
+		t.near(e.s1, 20 + 80, 1e-9, "a 80 m turnout, its merge on the straight")
+	end
+end)
+
+-- The tightest radius in plan along an edge (sampled).
+local function tightest(e)
+	local r = math.huge
+	for k = 0, 50 do
+		local u = k / 50
+		local d1 = { x = 0, y = 0 }
+		local d2 = { x = 0, y = 0 }
+		for __, c in ipairs({ "x", "y" }) do
+			d1[c] = (6 * u * u - 6 * u) * e.p0[c] + (3 * u * u - 4 * u + 1) * e.t0[c] + (-6 * u * u + 6 * u) * e.p1[c]
+				+ (3 * u * u - 2 * u) * e.t1[c]
+			d2[c] = (12 * u - 6) * e.p0[c] + (6 * u - 4) * e.t0[c] + (-12 * u + 6) * e.p1[c] + (6 * u - 2) * e.t1[c]
+		end
+		local cross = math.abs(d1.x * d2.y - d1.y * d2.x)
+		if cross > 1e-12 then
+			r = math.min(r, (d1.x ^ 2 + d1.y ^ 2) ^ 1.5 / cross)
+		end
+	end
+	return r
+end
+
+t.test("network: a bare end with 2 tracks 10 m apart: each of ours eases out to its own over an S-curve", function()
+	for __, o in ipairs({ network.defaults(), halt() }) do
+		local label = o.fan and "halt" or "simple"
+		local net, stations = bareNet("island", "island", o)
+		local eases = byTrack(net, 3)
+		t.eq(#eases, 4, label .. ": one a track at each end")
+		for __, b in ipairs({ stations[1].bare[1], stations[2].bare[-1] }) do
+			checkJoined(net, b, label)
+		end
+		for __, e in ipairs(eases) do
+			local atStart = e.s0 == 0
+			local station = net.nodes[atStart and e.node0 or e.node1]
+			local ours = net.nodes[atStart and e.node1 or e.node0]
+			t.ok(station.entity ~= nil, label .. ": from the station's node")
+			t.near(math.abs(station.y), 5, 0.01, label .. ": 5 m off the midline")
+			t.near(ours.y, station.y / 2, 1e-9, label .. ": to our track on its side, 2.5 m off")
+			t.near(e.s1 - e.s0, 70, 1e-9, label .. ": 70 m along the axis")
+			for __, tg in ipairs({ e.t0, e.t1 }) do
+				t.near(tg.y, 0, 1e-12, label .. ": tangent along the axis")
+			end
+			t.ok(tightest(e) >= 300, label .. (": radius %.0f m, at least 300"):format(tightest(e)))
+			t.ok(e.signals == nil or o.fan ~= nil, label .. ": signals only with Halt 2+2")
+		end
+		-- Our tracks start (end) where the S-curves end, 70 m out.
+		for k = 1, 2 do
+			local list = byTrack(net, k)
+			t.near(list[1].s0, 70, 1e-9, label .. ": track " .. k .. " starts after the S-curve")
+			t.near(list[#list].s1, 2930, 1e-9, label .. ": and ends before it")
+		end
+		local crossovers = byTrack(net, 0)
+		t.eq(#crossovers, 4, label .. ": a pair at each end")
+		for __, x in ipairs(crossovers) do
+			t.ok(math.min(x.s0, 3000 - x.s1) >= 70 + 3, label .. ": past the S-curves")
+		end
+		if o.fan then
+			local starters = 0
+			for __, e in ipairs(eases) do
+				starters = starters + #(e.signals or {})
+			end
+			t.eq(starters, 2, "a starter on each leaving S-curve")
+		end
+	end
+end)
+
+t.test("network: every bare kind's edges are in exactly one chunk", function()
+	for kind in pairs(KINDS) do
+		for __, o in ipairs({ network.defaults(), halt() }) do
+			local net = bareNet(kind, kind, o)
+			local seen = {}
+			for __, c in ipairs(net.chunks) do
+				for i = c.first, c.last do
+					t.ok(not seen[i], kind .. ": edge " .. i .. " in one chunk")
+					seen[i] = true
+				end
+			end
+			t.eq(#seen, #net.edges, kind .. ": all edges chunked")
+		end
+	end
+end)
+
+t.test("network: a station with a junction at one end and a bare end at the other", function()
+	local e = exEnd({ x = 3000, y = 3000 }, { x = 1, y = 0 }, 1, 10, 0)
+	local st, j = exStation(e, 1, true)
+	local l = junctionLeg(e, j, 1, 2500, true)
+	local last = l.pieces[1].b
+	local b = bareEnd("direct", last.x, last.y, 10, { x = -1, y = 0 }, KINDS.direct, 0.03)
+	local net = network.build({ ok = true, legs = { l }, stations = { st, bareSt(b, false) }, platformLength = 160 },
+		network.defaults())
+	checkJunction(net, e, j, 1, 1, true)
+	checkJoined(net, b, "bare end")
+	local crossovers = byTrack(net, 0)
+	t.eq(#crossovers, 2, "crossovers at the bare end only")
+	for __, x in ipairs(crossovers) do
+		t.ok(x.s0 > 2000, "at the bare end")
+	end
+end)

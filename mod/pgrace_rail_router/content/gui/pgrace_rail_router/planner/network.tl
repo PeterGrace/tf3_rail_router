@@ -487,11 +487,11 @@ local CROSSOVER_MIN = 42.0
 local SWITCH_CLEAR = 20.0
 
 -- A leg's crossovers as {from track, s on it, to track, s on that}: a pair at each end whose first (last) piece is a
--- straight of CROSSOVER_STRAIGHT on the ground.
-local function crossoverPlaces(leg : Leg, total : number, base : number, atStart : boolean, atEnd : boolean)
-		: {{number}}
+-- straight of CROSSOVER_STRAIGHT on the ground, beyond that end's base (its fan, or a bare island end's S-curves).
+local function crossoverPlaces(leg : Leg, total : number, baseStart : number, baseEnd : number, atStart : boolean,
+		atEnd : boolean) : {{number}}
 	local places : {{number}} = {}
-	if #leg.pieces == 0 or total < 2 * (base + CROSSOVER_STRAIGHT) + 1 then
+	if #leg.pieces == 0 or total < baseStart + baseEnd + 2 * CROSSOVER_STRAIGHT + 1 then
 		return places
 	end
 	local function groundOver(s0 : number, s1 : number) : boolean
@@ -520,14 +520,15 @@ local function crossoverPlaces(leg : Leg, total : number, base : number, atStart
 			table.insert(places, { fromTrack, a0, toTrack, a1 })
 		end
 	end
-	local straight = base + CROSSOVER_STRAIGHT
+	local straight = baseStart + CROSSOVER_STRAIGHT
 	if atStart and first.kind == "straight" and first.length >= straight - 1e-6 and groundOver(0, straight) then
-		add(1, base + a, 2, base + a + L)
+		add(1, baseStart + a, 2, baseStart + a + L)
 		add(2, straight - a - L + 1, 1, straight - a + 1)
 	end
+	straight = baseEnd + CROSSOVER_STRAIGHT
 	if atEnd and last.kind == "straight" and last.length >= straight - 1e-6 and groundOver(total - straight, total) then
 		add(1, total - straight + a - 1, 2, total - straight + a + L - 1)
-		add(2, total - base - a - L, 1, total - base - a)
+		add(2, total - baseEnd - a - L, 1, total - baseEnd - a)
 	end
 	return places
 end
@@ -774,6 +775,75 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 	return edges, splits, problem
 end
 
+-- Bare ends (an existing station's free track ends, milestone 4b): how far each of our tracks takes to ease from an
+-- island platform's track (5 m off the midline) to its own place (2.5 m off), as one S-curve edge tangent to the axis
+-- at both ends. A cubic like that, ISLAND_EASE long over a 2.5 m shift, bends tightest at its ends, at radius
+-- ISLAND_EASE² / (6 × 2.5): 327 m at 70 m, over standard track's 300 m turnouts and far over the game's 55 m. One
+-- edge, so no switch inside it: the crossovers start CROSSOVER_START beyond it.
+local ISLAND_EASE = 70.0
+-- A bare fan end's turnout length where the window's style has no fan (options.fan nil) and the options give none
+-- (bareFan): simple track's. And the shortest turnout a bare fan may be shortened to (see fanAt).
+local BARE_FAN_DEFAULT = 55.0
+local MIN_TURNOUT = 40.0
+
+-- The bare end a leg leaving an existing station (forward = true), or arriving at it, uses; nil at a station of ours
+-- or a junction end.
+local function bareOf(station : PgraceRailRouterRoute.Station, forward : boolean) : PgraceRailRouterExisting.Bare
+	if station == nil or station.existing == nil or station.endOf == nil or station.bare == nil then
+		return nil
+	end
+	local k = station.endOf[forward]
+	if k == nil then
+		return nil
+	end
+	return station.bare[k]
+end
+
+-- A point's offset across a bare end's axis (to the left looking outward) from its nodes' midpoint.
+local function across(b : PgraceRailRouterExisting.Bare, p : Pt3) : number
+	return (p.y - b.mid.y) * b.out.x - (p.x - b.mid.x) * b.out.y
+end
+
+-- The bare end's node whose offset across the axis is nearest `v`, the offset of a place one of our tracks ends at:
+-- the station track on that side, nearest it. A copy, with its entity.
+local function bareNode(b : PgraceRailRouterExisting.Bare, v : number) : Pt3
+	local best : Pt3 = nil
+	for __, n in ipairs(b.nodes) do
+		if best == nil or math.abs(across(b, n) - v) < math.abs(across(b, best) - v) then
+			best = n
+		end
+	end
+	return { x = best.x, y = best.y, z = best.z, entity = best.entity }
+end
+
+-- A tangent turned to lie along `dir` (a unit vector in plan), keeping its length in plan and its rise.
+local function alongDir(t : Pt3, dir : Pt) : Pt3
+	local d = math.sqrt(t.x ^ 2 + t.y ^ 2)
+	return { x = dir.x * d, y = dir.y * d, z = t.z }
+end
+
+-- The turnout length of the fan at a leg's end (nil: none). At a station of ours, Halt 2+2's (options.fan). At a bare
+-- end with 4 tracks, whatever the style: options.fan, else options.bareFan, else BARE_FAN_DEFAULT, shortened in 5 m
+-- steps to keep the merge on the leg's straight there (`piece`, its first or last: the planner gives a bare end
+-- Input.approach of straight, only 100 m in the simple style), and none where not even MIN_TURNOUT fits (the
+-- station's outer tracks are then left unjoined). None at any other bare end.
+local function fanAt(b : PgraceRailRouterExisting.Bare, piece : Piece, options : Options) : number
+	if b == nil then
+		return options.fan
+	elseif b.kind ~= "fan" then
+		return nil
+	end
+	local l = options.fan or options.bareFan or BARE_FAN_DEFAULT
+	local room = (piece ~= nil and piece.kind == "straight") and piece.length - FAN_APRON or 0.0
+	if l > room + 1e-6 then
+		l = 5 * math.floor(room / 5 + 1e-9)
+	end
+	if l < MIN_TURNOUT then
+		return nil
+	end
+	return l
+end
+
 function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : PgraceRailRouterNetwork.Network
 	local net : PgraceRailRouterNetwork.Network = { nodes = {}, edges = {}, chunks = {} }
 	for li, leg in ipairs(plan.legs) do
@@ -785,15 +855,34 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 		local stations = plan.stations or {}
 		local eStart, jStart, sideStart = junctionOf(stations[li], true)
 		local eEnd, jEnd, sideEnd = junctionOf(stations[li + 1], false)
+		-- A station end (ours, or an existing station's bare end) rather than a junction.
 		local ownStart, ownEnd = jStart == nil, jEnd == nil
+		-- An existing station's bare end, met as a station of ours: our tracks end on its own nodes ("direct", a fan's
+		-- inner two), or ease out to them ("island"), and a fan's outer two merge into ours.
+		local bStart, bEnd = bareOf(stations[li], true), bareOf(stations[li + 1], false)
 		-- Halt 2+2 (options.fan set): a fan at each end, then the crossovers, so a train can turn back at any station:
 		-- reversing in the platform, it leaves on the track it came in on and crosses over before any signal faces it
 		-- the wrong way (with crossovers at the line's ends only, a line turning back at Mercer Island had no path).
 		local halt = options.fan ~= nil
 		local fanZone = halt and network.fanLength(options.fan) or 0
+		-- Each end's fan (its turnout length, nil for none), and where the crossovers start from: past the fan, past a
+		-- bare island end's S-curves, at a bare end's nodes otherwise (as fanZone at a station of ours, or a junction).
+		local fanStart : number = ownStart and fanAt(bStart, leg.pieces[1], options) or nil
+		local fanEnd : number = ownEnd and fanAt(bEnd, leg.pieces[#leg.pieces], options) or nil
+		local function baseOf(b : PgraceRailRouterExisting.Bare, fan : number) : number
+			if b == nil then
+				return fanZone
+			elseif fan ~= nil then
+				return network.fanLength(fan)
+			elseif b.kind == "island" then
+				return ISLAND_EASE
+			end
+			return 0
+		end
+		local baseStart, baseEnd = baseOf(bStart, fanStart), baseOf(bEnd, fanEnd)
 		local places : {{number}} = {}
 		if options.crossovers then
-			places = crossoverPlaces(leg, total, fanZone, ownStart, ownEnd)
+			places = crossoverPlaces(leg, total, baseStart, baseEnd, ownStart, ownEnd)
 		end
 		local cuts : {number} = {}
 		-- Each track's switch windows: the main track beside a switch's branch, kept in one edge (SWITCH_CLEAR).
@@ -805,29 +894,52 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			table.insert(keep[p[3] as integer], { p[4] - SWITCH_CLEAR, p[4] })
 		end
 		-- A fan's merge: the local track joins the line's track on its side 20 + L from the platforms, the line's
-		-- track kept in one edge from the platforms to there (the main edge beside the branch).
-		local merge = 0.0
-		if halt and total > 2 * (fanZone + 1) then
-			merge = FAN_APRON + options.fan
-			for k = 1, 2 do
-				if ownStart then
-					table.insert(keep[k], { 0, merge })
-				end
-				if ownEnd then
-					table.insert(keep[k], { total - merge, total })
-				end
+		-- track kept in one edge from the platforms to there (the main edge beside the branch). 0: no fan at that end.
+		local mergeStart, mergeEnd = 0.0, 0.0
+		if fanStart ~= nil and total > 2 * (network.fanLength(fanStart) + 1) then
+			mergeStart = FAN_APRON + fanStart
+			table.insert(cuts, mergeStart)
+		end
+		if fanEnd ~= nil and total > 2 * (network.fanLength(fanEnd) + 1) then
+			mergeEnd = FAN_APRON + fanEnd
+			table.insert(cuts, total - mergeEnd)
+		end
+		for k = 1, 2 do
+			if mergeStart > 0 then
+				table.insert(keep[k], { 0, mergeStart })
 			end
-			if ownStart then
-				table.insert(cuts, merge)
+			if mergeEnd > 0 then
+				table.insert(keep[k], { total - mergeEnd, total })
 			end
-			if ownEnd then
-				table.insert(cuts, total - merge)
-			end
+		end
+		-- A bare island end: our tracks start ISLAND_EASE out from its nodes, an S-curve before each (below).
+		local islandStart = bStart ~= nil and bStart.kind == "island" and total > 2 * (ISLAND_EASE + 1)
+		local islandEnd = bEnd ~= nil and bEnd.kind == "island" and total > 2 * (ISLAND_EASE + 1)
+		if islandStart then
+			table.insert(cuts, ISLAND_EASE)
+		end
+		if islandEnd then
+			table.insert(cuts, total - ISLAND_EASE)
 		end
 		-- Each track's edges, then grouped by stretch: a chunk takes both tracks' edges between two cut points along
 		-- the centre line, so the two tracks of a bridge are in one proposal (one parallel strip, probe P3).
 		local tracks : {{Edge}} = { network.trackEdges(leg, li, 1, options, cuts, keep[1]),
 			network.trackEdges(leg, li, -1, options, cuts, keep[2]) }
+		-- At an island end, the edges before the cut are dropped (the S-curves take their place), their grade at the
+		-- station kept for the S-curves.
+		local gradeStart, gradeEnd : {number}, {number} = {}, {}
+		for k, list in ipairs(tracks) do
+			if #list > 0 then
+				gradeStart[k] = list[1].t0.z / math.sqrt(list[1].t0.x ^ 2 + list[1].t0.y ^ 2)
+				gradeEnd[k] = list[#list].t1.z / math.sqrt(list[#list].t1.x ^ 2 + list[#list].t1.y ^ 2)
+			end
+			while islandStart and #list > 1 and list[1].s1 < ISLAND_EASE + MIN_EDGE do
+				table.remove(list, 1)
+			end
+			while islandEnd and #list > 1 and list[#list].s0 > total - ISLAND_EASE - MIN_EDGE do
+				table.remove(list)
+			end
+		end
 		for __, list in ipairs(tracks) do
 			local previous : integer = nil
 			for __, e in ipairs(list) do
@@ -840,6 +952,69 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				e.node0, e.node1 = previous, #net.nodes
 				previous = e.node1
 			end
+		end
+		-- A bare end with tracks 5 m apart ("direct", or a fan's inner two): our tracks' end nodes are the station's
+		-- own, each the station track on its side (its entity, exactly where it is), and our first (last) edge leaves
+		-- (reaches) it along the station's axis, as at a station of ours.
+		local function snap(b : PgraceRailRouterExisting.Bare, atStart : boolean)
+			for __, list in ipairs(tracks) do
+				if #list > 0 then
+					local e = atStart and list[1] or list[#list]
+					local n = atStart and e.node0 or e.node1
+					local node = bareNode(b, across(b, net.nodes[n]))
+					net.nodes[n] = node
+					if atStart then
+						e.p0, e.t0 = { x = node.x, y = node.y, z = node.z }, alongDir(e.t0, b.out)
+					else
+						e.p1, e.t1 = { x = node.x, y = node.y, z = node.z }, alongDir(e.t1, { x = -b.out.x, y = -b.out.y })
+					end
+				end
+			end
+		end
+		if bStart ~= nil and bStart.kind ~= "island" then
+			snap(bStart, true)
+		end
+		if bEnd ~= nil and bEnd.kind ~= "island" then
+			snap(bEnd, false)
+		end
+		-- A bare island end's S-curves (track 3, as a fan's pieces): one edge per track from the station's track on its
+		-- side (its node, 5 m off the midline) to our track's first node (last, at the leg's end), ISLAND_EASE along the
+		-- axis, tangent to it at both ends, at the profile's grade there. By end (true: the leg's start) and track.
+		local eases : {boolean : {Edge}} = { [true] = {}, [false] = {} }
+		local function ease(b : PgraceRailRouterExisting.Bare, atStart : boolean)
+			for k, list in ipairs(tracks) do
+				if #list > 0 then
+					local e = atStart and list[1] or list[#list]
+					local n = atStart and e.node0 or e.node1
+					local inner = net.nodes[n]
+					local node = bareNode(b, across(b, inner))
+					table.insert(net.nodes, node)
+					local station = #net.nodes
+					local l = atStart and e.s0 or total - e.s1
+					local t = atStart and e.t0 or e.t1
+					local d = math.sqrt(t.x ^ 2 + t.y ^ 2)
+					local tTrack : Pt3 = { x = t.x / d * l, y = t.y / d * l, z = t.z / d * l }
+					local way : Pt = atStart and b.out or { x = -b.out.x, y = -b.out.y }
+					local g = atStart and gradeStart[k] or gradeEnd[k]
+					local tStation : Pt3 = { x = way.x * l, y = way.y * l, z = g * l }
+					local x : Edge
+					if atStart then
+						x = { node0 = station, node1 = n, p0 = { x = node.x, y = node.y, z = node.z },
+							p1 = { x = inner.x, y = inner.y, z = inner.z }, t0 = tStation, t1 = tTrack, s0 = 0, s1 = l }
+					else
+						x = { node0 = n, node1 = station, p0 = { x = inner.x, y = inner.y, z = inner.z },
+							p1 = { x = node.x, y = node.y, z = node.z }, t0 = tTrack, t1 = tStation, s0 = total - l, s1 = total }
+					end
+					x.kind, x.track, x.leg = "ground", FAN_TRACK, li
+					eases[atStart][k] = x
+				end
+			end
+		end
+		if islandStart then
+			ease(bStart, true)
+		end
+		if islandEnd then
+			ease(bEnd, false)
 		end
 		-- The crossovers: S-curves between the two tracks' nodes at their places, along the track's direction there, at
 		-- the track's grade at each end. One edge each: a switch's branch must run some way before it ends (probe:
@@ -870,67 +1045,93 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			end
 		end
 		-- The fans: at the leg's start (the station behind it) the left local runs into track 1 and the right into
-		-- track 2 at `merge`; at its end, from `total − merge` into the station. Each one edge from a new node at the
-		-- local track's end, 5 m further out than the line's track on its side, along the track's direction.
+		-- track 2 at its merge; at its end, from `total − merge` into the station. Each one edge from a new node at the
+		-- local track's end, 5 m further out than the line's track on its side, along the track's direction; at a bare
+		-- end, from the station's outer track's node on that side instead.
 		local fans : {Edge} = {}
-		-- The ends at stations of ours (true: the leg's start), which get fans.
-		local ownEnds : {boolean} = {}
-		if ownStart then
-			table.insert(ownEnds, true)
+		-- The ends with a fan (true: the leg's start).
+		local fanEnds : {boolean} = {}
+		if mergeStart > 0 then
+			table.insert(fanEnds, true)
 		end
-		if ownEnd then
-			table.insert(ownEnds, false)
+		if mergeEnd > 0 then
+			table.insert(fanEnds, false)
 		end
-		if merge > 0 then
-			for k = 1, 2 do
-				local list = tracks[k]
-				local out = k == 1 and 1 or -1
-				for __, atStart in ipairs(ownEnds) do
-					local edge = atStart and list[1] or list[#list]
-					local tip = atStart and edge.p0 or edge.p1
-					local tan = atStart and edge.t0 or edge.t1
-					local d = math.sqrt(tan.x ^ 2 + tan.y ^ 2)
-					local nx, ny = -tan.y / d * out * FAN_SPACING, tan.x / d * out * FAN_SPACING
-					table.insert(net.nodes, { x = tip.x + nx, y = tip.y + ny, z = tip.z })
-					local localNode = #net.nodes
-					local mergeNode = nodeAtS(list, atStart and merge or total - merge)
-					local along = mergeNode ~= nil and (atStart and edgeFrom(list, mergeNode) or edgeFrom(list, list[#list].node0)) or nil
-					if mergeNode ~= nil and along ~= nil then
-						local m = net.nodes[mergeNode]
-						local gradeTip = tan.z / d
-						local gradeMerge = gradeAt(list, mergeNode)
-						local tx, ty = tan.x / d * merge, tan.y / d * merge
-						local e : Edge
-						if atStart then
-							e = { node0 = localNode, node1 = mergeNode, p0 = { x = tip.x + nx, y = tip.y + ny, z = tip.z },
-								p1 = { x = m.x, y = m.y, z = m.z }, t0 = { x = tx, y = ty, z = gradeTip * merge },
-								t1 = { x = tx, y = ty, z = gradeMerge * merge }, s0 = 0, s1 = merge }
-						else
-							e = { node0 = mergeNode, node1 = localNode, p0 = { x = m.x, y = m.y, z = m.z },
-								p1 = { x = tip.x + nx, y = tip.y + ny, z = tip.z }, t0 = { x = tx, y = ty, z = gradeMerge * merge },
-								t1 = { x = tx, y = ty, z = gradeTip * merge }, s0 = total - merge, s1 = total }
-						end
-						e.kind, e.track, e.leg = "ground", FAN_TRACK, li
-						-- Leaving the station: the tracks on the right of the way out (track 2 at the start, 1 at the end).
-						if (atStart and k == 2) or (not atStart and k == 1) then
-							addSignal(e, atStart and STARTER / merge or 1 - STARTER / merge, atStart)
-						end
-						table.insert(fans, e)
+		for k = 1, 2 do
+			local list = tracks[k]
+			local out = k == 1 and 1 or -1
+			for __, atStart in ipairs(fanEnds) do
+				local merge = atStart and mergeStart or mergeEnd
+				local b = atStart and bStart or bEnd
+				local edge = atStart and list[1] or list[#list]
+				local tip = atStart and edge.p0 or edge.p1
+				local tan = atStart and edge.t0 or edge.t1
+				local d = math.sqrt(tan.x ^ 2 + tan.y ^ 2)
+				local nx, ny = -tan.y / d * out * FAN_SPACING, tan.x / d * out * FAN_SPACING
+				table.insert(net.nodes, { x = tip.x + nx, y = tip.y + ny, z = tip.z })
+				if b ~= nil then
+					net.nodes[#net.nodes] = bareNode(b, across(b, net.nodes[#net.nodes]))
+				end
+				local localNode = #net.nodes
+				local lp = net.nodes[localNode]
+				local mergeNode = nodeAtS(list, atStart and merge or total - merge)
+				local along = mergeNode ~= nil and (atStart and edgeFrom(list, mergeNode) or edgeFrom(list, list[#list].node0)) or nil
+				if mergeNode ~= nil and along ~= nil then
+					local m = net.nodes[mergeNode]
+					local gradeTip = tan.z / d
+					local gradeMerge = gradeAt(list, mergeNode)
+					local tx, ty = tan.x / d * merge, tan.y / d * merge
+					local e : Edge
+					if atStart then
+						e = { node0 = localNode, node1 = mergeNode, p0 = { x = lp.x, y = lp.y, z = lp.z },
+							p1 = { x = m.x, y = m.y, z = m.z }, t0 = { x = tx, y = ty, z = gradeTip * merge },
+							t1 = { x = tx, y = ty, z = gradeMerge * merge }, s0 = 0, s1 = merge }
+					else
+						e = { node0 = mergeNode, node1 = localNode, p0 = { x = m.x, y = m.y, z = m.z },
+							p1 = { x = lp.x, y = lp.y, z = lp.z }, t0 = { x = tx, y = ty, z = gradeMerge * merge },
+							t1 = { x = tx, y = ty, z = gradeTip * merge }, s0 = total - merge, s1 = total }
 					end
+					e.kind, e.track, e.leg = "ground", FAN_TRACK, li
+					-- Leaving the station: the tracks on the right of the way out (track 2 at the start, 1 at the end).
+					if halt and ((atStart and k == 2) or (not atStart and k == 1)) then
+						addSignal(e, atStart and STARTER / merge or 1 - STARTER / merge, atStart)
+					end
+					table.insert(fans, e)
 				end
 			end
-			-- Starters on the line's leaving tracks, home signals on its arriving ones, facing their trains (at a
-			-- junction end, its signals below).
-			local startHome = fanZone + CROSSOVER_STRAIGHT + HOME_BEYOND
-			local endHome = fanZone + CROSSOVER_STRAIGHT + HOME_BEYOND
+		end
+		-- The S-curves go into chunks as the fans do.
+		for __, atStart in ipairs({ true, false }) do
+			for k = 1, 2 do
+				if eases[atStart][k] ~= nil then
+					table.insert(fans, eases[atStart][k])
+				end
+			end
+		end
+		if halt and total > 2 * (fanZone + 1) then
+			-- Starters on the line's leaving tracks (at an island end, on the leaving track's S-curve), home signals on
+			-- its arriving ones past the end's fan (or S-curves) and crossovers, facing their trains (at a junction end,
+			-- its signals below).
+			local startHome = baseStart + CROSSOVER_STRAIGHT + HOME_BEYOND
+			local endHome = baseEnd + CROSSOVER_STRAIGHT + HOME_BEYOND
 			if ownStart then
-				signalAt(tracks[2], STARTER, true)
+				local x = eases[true][2]
+				if x ~= nil then
+					addSignal(x, STARTER / (x.s1 - x.s0), true)
+				else
+					signalAt(tracks[2], STARTER, true)
+				end
 				signalAt(tracks[1], startHome, false)
 			else
 				startHome = JUNCTION_SIGNAL
 			end
 			if ownEnd then
-				signalAt(tracks[1], total - STARTER, false)
+				local x = eases[false][1]
+				if x ~= nil then
+					addSignal(x, 1 - STARTER / (x.s1 - x.s0), false)
+				else
+					signalAt(tracks[1], total - STARTER, false)
+				end
 				signalAt(tracks[2], total - endHome, true)
 			else
 				endHome = JUNCTION_SIGNAL
@@ -994,7 +1195,8 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				length = length + (right[r].s1 - right[r].s0)
 				r = r + 1
 			end
-			-- The crossovers and fans that end by this cut (their nodes are in this chunk or one before).
+			-- The crossovers and fans that end by this cut (their nodes are in this chunk or one before), and in the leg's
+			-- last chunk the rest (an island end's S-curves reach past the tracks' last node).
 			for m, x in ipairs(crossovers) do
 				if not added[m] and math.max(x.s0, x.s1) <= left[j].s1 + 1e-6 then
 					added[m] = true
@@ -1003,7 +1205,7 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				end
 			end
 			for m, x in ipairs(fans) do
-				if not added[-m] and x.s1 <= left[j].s1 + 1e-6 then
+				if not added[-m] and (x.s1 <= left[j].s1 + 1e-6 or j == #left) then
 					added[-m] = true
 					table.insert(net.edges, x)
 					length = length + (x.s1 - x.s0)

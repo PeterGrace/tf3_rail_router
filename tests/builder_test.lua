@@ -109,3 +109,35 @@ t.test("builder: the check leaves out a junction's pieces and edges ending on th
 	t.eq(#sub2.edges, 2, "a chunk with no junction keeps every edge")
 	t.eq(w2, 0, "nothing left out")
 end)
+
+t.test("builder: the check dry-runs the edges ending on an existing station's bare end nodes, joined by entity", function()
+	local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+	local samples, z = {}, {}
+	for s = 0, 1000, 25 do
+		samples[#samples + 1] = { p = { x = s, y = 0 }, s = s }
+		z[#z + 1] = 0
+	end
+	local l = { pieces = { { kind = "straight", a = { x = 0, y = 0 }, b = { x = 1000, y = 0 }, length = 1000 } },
+		samples = samples, z = z, spans = { { kind = "ground", s0 = 0, s1 = 1000 } }, length = 1000 }
+	local bare = { kind = "fan", mid = { x = 0, y = 0, z = 0 }, out = { x = 1, y = 0 }, nodes = {
+		{ x = 0, y = 7.5, z = 0, entity = 71 }, { x = 0, y = 2.5, z = 0, entity = 72 }, { x = 0, y = -2.5, z = 0, entity = 73 },
+		{ x = 0, y = -7.5, z = 0, entity = 74 } } }
+	local st = { existing = { entity = 1, half = 100 }, ends = {}, junctions = {}, sides = {}, bare = { [1] = bare },
+		endOf = { [true] = 1 } }
+	local net = network.build({ ok = true, legs = { l }, stations = { st, {} }, platformLength = 160 }, network.defaults())
+	local c = net.chunks[1]
+	local sub, whole, touching = builder.checkedEdges(net, c.first, c.last)
+	t.eq(whole + touching, 0, "nothing left out")
+	t.eq(#sub.edges, c.last - c.first + 1, "every edge dry-run")
+	local joined = {}
+	for __, e in ipairs(sub.edges) do
+		for __, k in ipairs({ e.node0, e.node1 }) do
+			if net.nodes[k].entity ~= nil then
+				joined[net.nodes[k].entity] = true
+			end
+		end
+	end
+	for id = 71, 74 do
+		t.ok(joined[id], "station node " .. id .. " joined in the check")
+	end
+end)
