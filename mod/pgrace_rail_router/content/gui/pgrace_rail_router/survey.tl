@@ -699,6 +699,20 @@ function survey.existingStations(town : Town, reach : number) : {Station}
 		logOnce("existing" .. tostring(town.id), "existing stations in " .. tostring(town.name) .. ": " .. tostring(found))
 		return result
 	end
+	-- A station within reach of two towns belongs to the nearer: Mercer Island was offered Bangor's, 1.5 km from it
+	-- and 400 m from Bangor.
+	local okT, towns = pcall(survey.towns)
+	local function nearerTown(p : Pt) : Town
+		if okT then
+			local d = (p.x - town.pos.x) ^ 2 + (p.y - town.pos.y) ^ 2
+			for __, other in ipairs(towns as {Town}) do
+				if other.id ~= town.id and (p.x - other.pos.x) ^ 2 + (p.y - other.pos.y) ^ 2 < d then
+					return other
+				end
+			end
+		end
+		return nil
+	end
 	for __, e in ipairs(found as {Engine.Entity}) do
 		local entity = e as integer
 		local okS, station, why = pcall(function() : Station, string
@@ -716,6 +730,9 @@ function survey.existingStations(town : Town, reach : number) : {Station}
 		if not okS then
 			logOnce("existing" .. tostring(entity), ("existing station %d in %s: %s"):format(entity, tostring(town.name),
 				tostring(station)))
+		elseif station ~= nil and nearerTown((station as Station).centre) ~= nil then
+			logOnce("existing" .. tostring(entity) .. "/" .. tostring(town.id), ("existing station %d left out of %s: nearer %s")
+				:format(entity, tostring(town.name), tostring(nearerTown((station as Station).centre).name)))
 		elseif station ~= nil then
 			local s = station as Station
 			table.insert(result, s)

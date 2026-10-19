@@ -82,7 +82,7 @@ global record PgraceRailRouterSurvey
 	-- The rail stations within reach (metres) of the town's centre: constructions with stations and frozen track. Each
 	-- one's ends split into two groups along the line between the two furthest apart: centre is the midpoint of the
 	-- groups' centroids, dir the unit vector between them, half half their distance. A terminus (ends all at one side)
-	-- is left out.
+	-- is left out, and so is a station nearer another town's centre.
 	existingStations : function(town : PgraceRailRouterCorridor.Town, reach : number) : {PgraceRailRouterExisting.Station}
 	-- Every track piece (BASE_EDGE without BASE_EDGE_STREET) within radius of centre, with its one-way signals and each
 	-- of its nodes' track piece count. The analyser reads existing.REACH out from each platform end, so pass the
