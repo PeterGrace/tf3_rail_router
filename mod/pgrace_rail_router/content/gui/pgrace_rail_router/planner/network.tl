@@ -113,10 +113,18 @@ function network.cut(net : PgraceRailRouterNetwork.Network, first : integer, las
 		end
 		return index[p]
 	end
+	-- A piece of e over its parameters s0..s1, with e's signals in that range (the last piece takes one at its end).
 	local function piece(e : Edge, h : Hermite, n0 : Pt3, n1 : Pt3, s0 : number, s1 : number)
+		local signals : {PgraceRailRouterNetwork.Signal} = nil
+		for __, sg in ipairs(e.signals or {}) do
+			if sg.param >= s0 and (sg.param < s1 or s1 >= 1) then
+				signals = signals or {}
+				table.insert(signals, { param = (sg.param - s0) / (s1 - s0), forward = sg.forward })
+			end
+		end
 		table.insert(out.edges, { node0 = nodeIndex(n0), node1 = nodeIndex(n1), p0 = n0, p1 = n1, t0 = h.t0, t1 = h.t1,
 			kind = e.kind, track = e.track, leg = e.leg, s0 = e.s0 + (e.s1 - e.s0) * s0,
-			s1 = e.s0 + (e.s1 - e.s0) * s1 })
+			s1 = e.s0 + (e.s1 - e.s0) * s1, signals = signals, paired = e.paired, whole = e.whole })
 	end
 	for i = first, last do
 		local e = net.edges[i]
@@ -140,7 +148,16 @@ function network.cut(net : PgraceRailRouterNetwork.Network, first : integer, las
 		end
 		piece(e, rest, from, n1, fromS, 1)
 	end
-	table.insert(out.chunks, { first = 1, last = #out.edges, leg = net.edges[first].leg, length = 0 })
+	-- The chunk's splits and problem, where first..last is one of net's chunks.
+	local splits : {PgraceRailRouterNetwork.Split} = nil
+	local problem : string = nil
+	for __, c in ipairs(net.chunks) do
+		if c.first == first and c.last == last then
+			splits, problem = c.splits, c.problem
+		end
+	end
+	table.insert(out.chunks, { first = 1, last = #out.edges, leg = net.edges[first].leg, length = 0, splits = splits,
+		problem = problem })
 	return out
 end
 
@@ -604,15 +621,17 @@ local function junctionOf(station : PgraceRailRouterRoute.Station, forward : boo
 end
 
 -- A junction's edges (track 4) at the leg's start (atStart) or end, into net.nodes: each junction piece taken from the
--- frame (x along e.dir from e.origin, y to its left) to the world, then a straight on our track from each piece's
--- outer end to the leg's track end beside it (`ends`: the two tracks' end nodes). At the leg's start they run outward,
--- at its end inward (pieces reversed: ends swapped, tangents negated), along the leg; s is metres along the leg,
--- before 0 or past `total`. The cuts become nodes on the existing pieces (`existing` set; the crossing's shared by
--- both crossing pieces), and the pieces to split are returned, by piece, parameters ascending.
+-- frame (x along e.dir from e.origin, y to its left) to the world, one edge never split (`whole`), then a straight on
+-- our track from each piece's outer end to the leg's track end beside it (`ends`: the two tracks' end nodes). Where
+-- our two tracks run side by side (from the outermost piece end on), the straights are a parallel pair (`paired`), so
+-- the far track's straight is cut there. At the leg's start they run outward, at its end inward (pieces reversed:
+-- ends swapped, tangents negated), along the leg; s is metres along the leg, before 0 or past `total`. The cuts become
+-- nodes on the existing pieces (`existing` set; the crossing's shared by both crossing pieces), and the pieces to
+-- split are returned, by piece, parameters ascending; and why the junction can't be built, if a cut lies on no piece.
 local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRailRouterExisting.End,
 		j : PgraceRailRouterJunction.Layout, side : number, ends : {integer}, atStart : boolean, total : number,
 		li : integer)
-		: {Edge}, {PgraceRailRouterNetwork.Split}
+		: {Edge}, {PgraceRailRouterNetwork.Split}, string
 	local left : Pt = { x = -e.dir.y, y = e.dir.x }
 	local function world(x : number, y : number) : Pt3
 		return { x = e.origin.x + e.dir.x * x + left.x * y, y = e.origin.y + e.dir.y * x + left.y * y,
@@ -627,18 +646,30 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 	local function frameX(p : Pt3) : number
 		return (p.x - e.origin.x) * e.dir.x + (p.y - e.origin.y) * e.dir.y
 	end
-	-- The piece on `track` whose x range holds x, and the parameter there by its chord (from node0, whichever way the
-	-- piece was laid).
+	-- The piece on `track` whose x range holds x, and its parameter where its curve is at x along the axis (bisected,
+	-- so the node sits exactly there, whichever way the piece was laid).
 	local function pieceAt(track : string, x : number) : PgraceRailRouterExisting.Piece, number
 		for __, p in ipairs(e.pieces[track] or {}) do
 			local xa, xb = frameX(p.p0), frameX(p.p1)
 			if math.abs(xb - xa) > 1e-9 and x >= math.min(xa, xb) - 1e-6 and x <= math.max(xa, xb) + 1e-6 then
-				return p, math.max(0, math.min(1, (x - xa) / (xb - xa)))
+				local h : Hermite = { p0 = p.p0, p1 = p.p1, t0 = p.t0, t1 = p.t1 }
+				local lo, hi = 0.0, 1.0
+				local rising = xb > xa
+				for __ = 1, 60 do
+					local mid = (lo + hi) / 2
+					if (frameX(network.hermiteAt(h, mid)) < x) == rising then
+						lo = mid
+					else
+						hi = mid
+					end
+				end
+				return p, (lo + hi) / 2
 			end
 		end
 		return nil, 0
 	end
 	local splits : {PgraceRailRouterNetwork.Split} = {}
+	local problem : string = nil
 	local function addSplit(piece : integer, s : number)
 		for __, sp in ipairs(splits) do
 			if sp.piece == piece then
@@ -654,8 +685,9 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 		return #net.nodes
 	end
 	-- Each cut's node (a piece's end at x on the existing track: near on our side, y × side > 0), made once: on the
-	-- existing piece (its own node where the cut is within MIN_EDGE of its end), else where the frame puts it (no
-	-- piece holds the cut: the build's dry run will say so).
+	-- existing piece, or as a last resort (junction.fit puts cuts on nodes or keeps them 3 m away) the piece's own node
+	-- where the cut is within MIN_EDGE of its end. Where no piece holds the cut, a plain node where the frame puts it,
+	-- and the problem is reported.
 	local cutNodes : {integer : integer} = {}
 	local function cutNode(x : number, y : number) : integer
 		for ci, c in ipairs(j.cuts) do
@@ -664,6 +696,8 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 					local piece, s = pieceAt(c.track, x)
 					if piece == nil then
 						cutNodes[ci] = newNode(world(x, y))
+						problem = problem or ("the junction's %s on the existing %s track, %.0f m along its stretch, is on no piece of it")
+							:format(c.kind, c.track, x)
 					else
 						local h : Hermite = { p0 = piece.p0, p1 = piece.p1, t0 = piece.t0, t1 = piece.t1 }
 						local at = network.hermiteAt(h, s)
@@ -685,7 +719,7 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 	end
 	local edges : {Edge} = {}
 	-- An edge from node a (frame x0) to node b (x1), with frame tangents; reversed at the leg's end.
-	local function add(a : integer, b : integer, x0 : number, x1 : number, t0 : Pt3, t1 : Pt3)
+	local function add(a : integer, b : integer, x0 : number, x1 : number, t0 : Pt3, t1 : Pt3) : Edge
 		local pa, pb = net.nodes[a], net.nodes[b]
 		local e0 : Edge = { node0 = a, node1 = b, p0 = { x = pa.x, y = pa.y, z = pa.z }, p1 = { x = pb.x, y = pb.y, z = pb.z },
 			t0 = t0, t1 = t1, s0 = x0 - j.approachX, s1 = x1 - j.approachX }
@@ -698,6 +732,7 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 		end
 		e0.kind, e0.track, e0.leg = "ground", JUNCTION_TRACK, li
 		table.insert(edges, e0)
+		return e0
 	end
 	-- Our track's end node nearest the frame's y (the leg's two tracks: 7.5 and 12.5 off the axis on our side).
 	local function legNode(y : number) : integer
@@ -709,8 +744,14 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 		end
 		return best
 	end
+	-- Where our two tracks start running side by side: the outermost piece end on our track.
+	local pairX = -math.huge
+	for __, pc in ipairs(j.pieces) do
+		pairX = math.max(pairX, pc.x1)
+	end
 	-- The pieces from the station outward: each end on existing track is a cut's node (every piece starts on it), the
-	-- outer end on our track a new node, from which a straight runs on to the leg's end.
+	-- outer end on our track a new node, from which a straight runs on to the leg's end (in two, the outer one paired,
+	-- where it starts short of pairX).
 	for __, pc in ipairs(j.pieces) do
 		local a = cutNode(pc.x0, pc.y0) or newNode(world(pc.x0, pc.y0))
 		local b = cutNode(pc.x1, pc.y1)
@@ -718,13 +759,19 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 			b = newNode(world(pc.x1, pc.y1))
 			local n = legNode(pc.y1)
 			if n ~= nil then
-				local d = j.approachX - pc.x1
-				add(b, n, pc.x1, j.approachX, vec(d, 0), vec(d, 0))
+				local from, x = b, pc.x1
+				if pairX - x > MIN_EDGE then
+					local mid = newNode(world(pairX, pc.y1))
+					add(from, mid, x, pairX, vec(pairX - x, 0), vec(pairX - x, 0))
+					from, x = mid, pairX
+				end
+				local d = j.approachX - x
+				add(from, n, x, j.approachX, vec(d, 0), vec(d, 0)).paired = true
 			end
 		end
-		add(a, b, pc.x0, pc.x1, vec(pc.tx0, pc.ty0), vec(pc.tx1, pc.ty1))
+		add(a, b, pc.x0, pc.x1, vec(pc.tx0, pc.ty0), vec(pc.tx1, pc.ty1)).whole = true
 	end
-	return edges, splits
+	return edges, splits, problem
 end
 
 function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : PgraceRailRouterNetwork.Network
@@ -912,12 +959,13 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 		-- The junctions' pieces, from the leg's track end nodes.
 		local junctionStart, junctionEnd : {Edge}, {Edge} = {}, {}
 		local splitsStart, splitsEnd : {PgraceRailRouterNetwork.Split}, {PgraceRailRouterNetwork.Split} = nil, nil
+		local problemStart, problemEnd : string, string = nil, nil
 		if jStart ~= nil and #tracks[1] > 0 and #tracks[2] > 0 then
-			junctionStart, splitsStart = junctionEdges(net, eStart, jStart, sideStart,
+			junctionStart, splitsStart, problemStart = junctionEdges(net, eStart, jStart, sideStart,
 				{ tracks[1][1].node0, tracks[2][1].node0 }, true, total, li)
 		end
 		if jEnd ~= nil and #tracks[1] > 0 and #tracks[2] > 0 then
-			junctionEnd, splitsEnd = junctionEdges(net, eEnd, jEnd, sideEnd,
+			junctionEnd, splitsEnd, problemEnd = junctionEdges(net, eEnd, jEnd, sideEnd,
 				{ tracks[1][#tracks[1]].node1, tracks[2][#tracks[2]].node1 }, false, total, li)
 		end
 		local added : {boolean} = {}
@@ -963,7 +1011,8 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			end
 			-- The junctions: at the leg's start in its first chunk, at its end in its last.
 			local splits : {PgraceRailRouterNetwork.Split} = nil
-			local function addJunction(list : {Edge}, cutPieces : {PgraceRailRouterNetwork.Split})
+			local problem : string = nil
+			local function addJunction(list : {Edge}, cutPieces : {PgraceRailRouterNetwork.Split}, why : string)
 				for __, x in ipairs(list) do
 					table.insert(net.edges, x)
 					length = length + (x.s1 - x.s0)
@@ -972,14 +1021,16 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 					splits = splits or {}
 					table.insert(splits, sp)
 				end
+				problem = problem or why
 			end
 			if k == 1 then
-				addJunction(junctionStart, splitsStart)
+				addJunction(junctionStart, splitsStart, problemStart)
 			end
 			if j == #left then
-				addJunction(junctionEnd, splitsEnd)
+				addJunction(junctionEnd, splitsEnd, problemEnd)
 			end
-			table.insert(net.chunks, { first = first, last = #net.edges, leg = li, length = length, splits = splits })
+			table.insert(net.chunks, { first = first, last = #net.edges, leg = li, length = length, splits = splits,
+				problem = problem })
 			startS = left[j].s1
 			k = j + 1
 		end

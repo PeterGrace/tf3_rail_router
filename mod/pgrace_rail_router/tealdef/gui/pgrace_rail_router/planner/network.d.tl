@@ -40,10 +40,16 @@ global record PgraceRailRouterNetwork
 		kind : string
 		-- 1: the left track (in the leg's direction of travel), 2: the right; 0: a crossover between them; 3: a fan's
 		-- piece, from a Halt 2+2 station's local track into the line's track on its side; 4: a junction's piece into
-		-- an existing station's track (one edge each, never split), or the straight on from it to the leg's end.
+		-- an existing station's track (one edge each, never split: `whole`), or a straight on from it to the leg's
+		-- end (the outer ones, where our two tracks run side by side, `paired`).
 		track : integer
 		-- One-way signals on it (Halt 2+2), or nil.
 		signals : {Signal}
+		-- One of a parallel pair of tracks (the builder sets its distance as for tracks 1 and 2), though not track 1
+		-- or 2: a junction's outer straights. And a piece never to be split (a junction's piece: the game refuses a new
+		-- piece over existing track unless they share a node), not even at a level crossing.
+		paired : boolean
+		whole : boolean
 		leg : integer
 		-- Metres along the leg's centre line where the edge starts and ends.
 		s0 : number
@@ -59,6 +65,9 @@ global record PgraceRailRouterNetwork
 		length : number
 		-- The existing pieces to split before the chunk (its junctions' cuts, by piece), or nil.
 		splits : {Split}
+		-- Why the chunk can't be built (a junction's cut on no existing piece: its node is then a plain new one), or
+		-- nil.
+		problem : string
 	end
 
 	record Network
@@ -119,8 +128,9 @@ global record PgraceRailRouterNetwork
 	-- touching ends don't count).
 	crossings : function(track : Hermite, street : Hermite) : {Crossing}
 	-- Edges first..last of net as a network of their own, with each edge that has cuts split at them (sorted by s),
-	-- the pieces meeting at each cut's node (the piece ends moved onto it). Nodes that aren't cuts are net's own
-	-- tables, so an entity set on one is seen by both. One chunk spans every edge.
+	-- the pieces meeting at each cut's node (the piece ends moved onto it), each with its edge's signals that fall on
+	-- it (and its paired and whole flags). Nodes that aren't cuts are net's own tables, so an entity set on one is seen
+	-- by both. One chunk spans every edge, with the splits and problem of net's chunk first..last, if it is one.
 	cut : function(net : Network, first : integer, last : integer, cuts : {integer : {Cut}}) : Network
 
 	-- The point at parameter s (0..1) along h.

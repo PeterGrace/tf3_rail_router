@@ -151,8 +151,9 @@ function builder.chunkProposal(net : Network, first : integer, last : integer, s
 		-- The distance between parallel tracks, as the game's own track carries it (probe P1: 5 on a double track the
 		-- player built; left at 0, the game took the two tracks for one in their parallel strip, and drew overhead wire
 		-- over one of them only).
-		-- A crossover (track 0) or a fan's piece (3) isn't one of a pair: left at 0.
-		if e.track == 1 or e.track == 2 then
+		-- A crossover (track 0), a fan's piece (3) or a junction's (4) isn't one of a pair: left at 0; a junction's
+		-- outer straights are (paired).
+		if e.track == 1 or e.track == 2 or e.paired then
 			seg.comp.distance = 2 * settings.network.offset
 		end
 		-- Owned by the player, as the game's own track is (P1: ours had no owner). The constructor isn't in the

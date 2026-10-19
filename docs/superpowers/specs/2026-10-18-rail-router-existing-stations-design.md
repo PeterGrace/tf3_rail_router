@@ -85,7 +85,9 @@ The pieces, from the station outward:
 whichever side the line comes from. So our far track always **merges** into the existing near track, and our near
 track always **crosses** to the existing far track. Coming from +y: inward trains use the existing near track
 (+2.5) and our far track (+12.5); outward trains leave on the existing far track (−2.5) and turn off onto our near
-track (+7.5). An end whose signals show left-hand running is not usable.
+track (+7.5). Coming from −y it mirrors: the existing near track (−2.5) and our far track (−12.5) carry outward
+trains, and inward trains come off our near track (−7.5) and cross to the existing far track (+2.5). An end whose
+signals show left-hand running is not usable.
 
 The crossing sits further out than the merge, so the two never cross each other. Both connections face the
 station: trains from our line can only run into it, and trains reach our line only from it (P15).
@@ -94,9 +96,21 @@ station: trains from our line can only run into it, and trains reach our line on
 plus 2C for the crossing, plus 30 m of approach, plus 15 m of signal clearance. On standard track that is
 110 + 109 + 80 = 299 m. On high-speed track, with R = 600, L₁₀ = 155 and 2C = 155, it is 390 m.
 
-**Signals of ours:**
-- one-way home signals on our two approach tracks before the junction, facing trains coming in;
-- starters and blocks on the rest of our line, as now.
+**Signals of ours** (as built):
+- one one-way signal on each of our two approach tracks, 15 m out from the approach start (and at least 15 m from
+  any node), each facing its own track's trains, with or without Halt 2+2; none on the junction pieces;
+- at our own stations, starters and home signals as now, and blocks every so many metres from the junction's
+  signals on.
+
+**Existing nodes.** The junction keeps clear of the existing track's nodes (its pieces' ends): a switch cut has no
+node within 20 m outward of it (the game refuses a switch whose main track on the branch side is 16.6 m or shorter)
+or 3 m behind it, unless one is within 0.5 m, which then is the switch; the crossing has no node within 3 m unless
+one is at its very place, which then is the crossing node. The fit also tries the placements that put a cut on a
+node.
+
+**Overhead wire.** Where our two tracks run side by side beyond the junction pieces (from the crossing's outer end
+to the approach start), the two straights are a parallel pair and carry the pair's `distance`, as our line's
+tracks do; the junction pieces carry 0.
 
 The existing line's signals are left alone. Path signals reserve the route through the junction, so trains on
 the two lines wait for each other at the level crossing.

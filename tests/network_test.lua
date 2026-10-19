@@ -635,19 +635,41 @@ local function byTrack(net, track)
 	return list
 end
 
--- The junction edges' shared checks: 5 pieces, 3 existing nodes, the crossing node shared and tangent, each end on
--- its node, the straights ending at the leg's track ends, and all in one chunk with the splits.
-local function checkJunction(net, e, j, side, chunk)
+-- The junction edges' shared checks: 3 whole pieces and 3 straights (two of them a parallel pair, 5 m apart, from the
+-- cross-out's outer end), 3 existing nodes, the crossing node shared and tangent, each edge's ends on its nodes (x, y,
+-- z), the straights ending at the leg's track ends, the merge's straights on the leg track that runs the way the
+-- existing near track does (inward on side +1, outward on side −1), and all in one chunk with the splits.
+local function checkJunction(net, e, j, side, chunk, atStart)
 	local edges = byTrack(net, 4)
-	t.eq(#edges, 5, "3 junction pieces and 2 straights to the approach start")
-	local uses, existing = {}, {}
+	t.eq(#edges, 6, "3 junction pieces and 3 straights to the approach start")
+	local function fx(p)
+		return (p.x - e.origin.x) * e.dir.x + (p.y - e.origin.y) * e.dir.y
+	end
+	local function fy(p)
+		return -(p.x - e.origin.x) * e.dir.y + (p.y - e.origin.y) * e.dir.x
+	end
+	local uses, existing, whole, paired = {}, {}, {}, {}
 	for __, x in ipairs(edges) do
 		for __, n in ipairs({ x.node0, x.node1 }) do
 			uses[n] = (uses[n] or 0) + 1
 		end
-		t.near(net.nodes[x.node0].x, x.p0.x, 1e-9, "starts on its node")
-		t.near(net.nodes[x.node1].y, x.p1.y, 1e-9, "ends on its node")
+		for __, pair in ipairs({ { x.p0, net.nodes[x.node0] }, { x.p1, net.nodes[x.node1] } }) do
+			for __, c in ipairs({ "x", "y", "z" }) do
+				t.near(pair[1][c], pair[2][c], 1e-9, "the edge's end on its node (" .. c .. ")")
+			end
+		end
+		t.ok(not (x.whole and x.paired), "a piece or a straight")
+		table.insert(x.whole and whole or (x.paired and paired or {}), x)
 	end
+	t.eq(#whole, 3, "the three junction pieces kept whole")
+	t.eq(#paired, 2, "two straights paired")
+	local c1 = j.approachX - 30
+	for __, x in ipairs(paired) do
+		local a, b = fx(x.p0), fx(x.p1)
+		t.near(math.min(a, b), c1, 1e-6, "paired from the cross-out's outer end")
+		t.near(math.max(a, b), j.approachX, 1e-6, "to the approach start")
+	end
+	t.near(math.abs(fy(paired[1].p0) - fy(paired[2].p0)), 5, 1e-6, "5 m apart")
 	for n in pairs(uses) do
 		if net.nodes[n].existing then
 			table.insert(existing, n)
@@ -674,25 +696,48 @@ local function checkJunction(net, e, j, side, chunk)
 	t.near(cross / math.sqrt((at.out.x ^ 2 + at.out.y ^ 2) * (at.into.x ^ 2 + at.into.y ^ 2)), 0, 1e-9,
 		"tangent at the crossing")
 	t.ok(at.out.x * at.into.x + at.out.y * at.into.y > 0, "running on through it")
-	-- Every junction node not on existing track (and not a leg's end) is the outer end of a piece, joined by a straight.
-	local trackNodes = {}
+	-- Every junction node not on existing track (and not a leg's end) joins two edges.
+	local trackOf = {}
 	for __, x in ipairs(net.edges) do
 		if x.track == 1 or x.track == 2 then
-			trackNodes[x.node0], trackNodes[x.node1] = true, true
+			trackOf[x.node0], trackOf[x.node1] = x.track, x.track
 		end
 	end
 	local legEnds = 0
 	for n, count in pairs(uses) do
-		if trackNodes[n] then
+		if trackOf[n] then
 			legEnds = legEnds + 1
-			local p = net.nodes[n]
-			local dx, dy = p.x - e.origin.x, p.y - e.origin.y
-			t.near(dx * e.dir.x + dy * e.dir.y, j.approachX, 1e-6, "a straight ends at the approach start")
+			t.near(fx(net.nodes[n]), j.approachX, 1e-6, "a straight ends at the approach start")
 		elseif not net.nodes[n].existing then
-			t.eq(count, 2, "an outer piece end, joined on by a straight")
+			t.eq(count, 2, "an outer piece end or the pair's start, joined on by a straight")
 		end
 	end
 	t.eq(legEnds, 2, "both of the leg's tracks joined")
+	-- The merge: the whole piece from a switch (an existing node it alone uses). Its straights lead to a leg track
+	-- running as the existing near track does: track 2 runs with the leg (outward from a start), track 1 against it.
+	local merge
+	for __, x in ipairs(whole) do
+		local a, b = net.nodes[x.node0].existing, net.nodes[x.node1].existing
+		local switch = a and x.node0 or (b and x.node1)
+		if (a == nil) ~= (b == nil) and uses[switch] == 1 then
+			merge = x
+		end
+	end
+	t.ok(merge ~= nil, "the merge found")
+	local n = net.nodes[merge.node0].existing and merge.node1 or merge.node0
+	local seen = { [merge] = true }
+	while not trackOf[n] do
+		local nextN
+		for __, x in ipairs(edges) do
+			if not seen[x] and (x.node0 == n or x.node1 == n) then
+				seen[x], nextN = true, x.node0 == n and x.node1 or x.node0
+			end
+		end
+		n = nextN
+	end
+	t.near(math.abs(fy(net.nodes[n])), 12.5, 1e-6, "the merge leads to our far track")
+	local outward = (trackOf[n] == 2) == atStart
+	t.eq(outward, side < 0, "our far track runs as the existing near track: outward on side −1, inward on +1")
 	-- All in one chunk, which lists the splits.
 	local c = net.chunks[chunk]
 	for i, x in ipairs(net.edges) do
@@ -703,6 +748,90 @@ local function checkJunction(net, e, j, side, chunk)
 	return edges, existing, c
 end
 
+-- A one-leg network with a junction at its start (atStart) or end, the end at `origin` facing `dir`, our line on
+-- `side`; `near` as exEnd's.
+local function junctionNet(origin, dir, side, atStart, near, options)
+	local e = exEnd(origin, dir, side, 10, 0, near)
+	local st, j = exStation(e, side, atStart)
+	local l = junctionLeg(e, j, side, 2500, atStart)
+	local stations = atStart and { st, {} } or { {}, st }
+	local net = network.build({ ok = true, legs = { l }, stations = stations, platformLength = 160 },
+		options or network.defaults())
+	return net, e, j
+end
+
+t.test("network: junctions at either end, either side, either way round: the merge on the track running as the existing near one", function()
+	for __, atStart in ipairs({ true, false }) do
+		for __, side in ipairs({ 1, -1 }) do
+			for __, dir in ipairs({ { x = 1, y = 0 }, { x = 0, y = -1 } }) do
+				local net, e, j = junctionNet({ x = 3000, y = 3000 }, dir, side, atStart)
+				checkJunction(net, e, j, side, atStart and 1 or #net.chunks, atStart)
+			end
+		end
+	end
+end)
+
+t.test("network: a cut within half a metre of an existing piece's end uses its node; one on no piece is reported", function()
+	-- The near track's first piece ends 0.3 m past the merge's switch (x 15).
+	local net = junctionNet({ x = 0, y = 0 }, { x = 1, y = 0 }, 1, true, { { 201, 0, 15.3 }, { 202, 15.3, 700 } })
+	local reused = 0
+	for __, n in ipairs(net.nodes) do
+		if n.entity == 2011 then
+			reused = reused + 1
+			t.near(n.x, 15.3, 1e-9, "at the piece's end")
+			t.ok(n.existing == nil, "not split")
+		end
+	end
+	t.eq(reused, 1, "the piece's own node")
+	local byPiece = {}
+	for __, sp in ipairs(net.chunks[1].splits) do
+		byPiece[sp.piece] = #sp.s
+	end
+	t.ok(byPiece[201] == nil, "the first near piece not split")
+	t.eq(byPiece[202], 1, "the second only at the crossing")
+	t.eq(byPiece[102], 1, "the far piece at its switch")
+	t.ok(net.chunks[1].problem == nil, "no problem")
+	-- No near piece before x 100: the merge's switch (x 15) lies on none.
+	local bad = junctionNet({ x = 0, y = 0 }, { x = 1, y = 0 }, 1, true, { { 201, 100, 700 } })
+	t.ok(bad.chunks[1].problem ~= nil and bad.chunks[1].problem:find("switch") ~= nil,
+		"reported: " .. tostring(bad.chunks[1].problem))
+end)
+
+t.test("network: cutting a chunk keeps its edges' signals on the pieces that hold them, and the chunk's splits", function()
+	local net = junctionNet({ x = 0, y = 0 }, { x = 1, y = 0 }, 1, true, nil, halt())
+	local c = net.chunks[1]
+	-- Cut the track-2 edge with the first signal (15 m out) at its middle.
+	local index, edge
+	for i = c.first, c.last do
+		local x = net.edges[i]
+		if x.track == 2 and x.signals then
+			index, edge = index or i, edge or x
+		end
+	end
+	local sg = edge.signals[1]
+	local hm = { p0 = edge.p0, p1 = edge.p1, t0 = edge.t0, t1 = edge.t1 }
+	local cutAt = 0.5
+	local out = network.cut(net, c.first, c.last, { [index] = { { s = cutAt, node = network.hermiteAt(hm, cutAt) } } })
+	t.eq(out.chunks[1].splits, c.splits, "the chunk's splits carried over")
+	local found = 0
+	for __, x in ipairs(out.edges) do
+		for __, g in ipairs(x.signals or {}) do
+			if x.track == 2 and math.abs(x.s0 + g.param * (x.s1 - x.s0) - (edge.s0 + sg.param * (edge.s1 - edge.s0))) < 1e-6 then
+				found = found + 1
+				t.eq(g.forward, sg.forward, "facing as before")
+			end
+		end
+	end
+	t.eq(found, 1, "the signal kept, at the same place")
+	local whole, paired = 0, 0
+	for __, x in ipairs(out.edges) do
+		whole = whole + (x.whole and 1 or 0)
+		paired = paired + (x.paired and 1 or 0)
+	end
+	t.eq(whole, 3, "the junction pieces still whole")
+	t.eq(paired, 2, "the pair still paired")
+end)
+
 t.test("network: a junction at the leg's start: pieces into the existing track, its cuts, no fan or crossovers", function()
 	local e = exEnd({ x = 1000, y = 500 }, { x = 1, y = 0 }, 1, 10, 0)
 	local st, j = exStation(e, 1, true)
@@ -710,7 +839,7 @@ t.test("network: a junction at the leg's start: pieces into the existing track, 
 	local o = halt()
 	o.blockSpacing = 500
 	local net = network.build({ ok = true, legs = { l }, stations = { st, {} }, platformLength = 160 }, o)
-	local edges, existing, c = checkJunction(net, e, j, 1, 1)
+	local edges, existing, c = checkJunction(net, e, j, 1, 1, true)
 	-- The splits: the near piece at the merge's switch and the crossing, ascending; the far at its switch.
 	t.eq(#c.splits, 2, "two pieces split")
 	local byPiece = {}
@@ -801,7 +930,7 @@ t.test("network: a junction at the leg's end, the station facing the other way, 
 	local l = junctionLeg(e, j, -1, 2500, false)
 	local net = network.build({ ok = true, legs = { l }, stations = { {}, st }, platformLength = 160 },
 		network.defaults())
-	local __, __, c = checkJunction(net, e, j, -1, #net.chunks)
+	local __, __, c = checkJunction(net, e, j, -1, #net.chunks, false)
 	local byPiece = {}
 	for __, sp in ipairs(c.splits) do
 		byPiece[sp.piece] = sp.s
@@ -863,7 +992,7 @@ t.test("network: junctions at both ends of a leg; heights on the stretch's grade
 	local net = network.build({ ok = true, legs = { l }, stations = { st1, st2 }, platformLength = 160 },
 		network.defaults())
 	local edges = byTrack(net, 4)
-	t.eq(#edges, 10, "5 at each end")
+	t.eq(#edges, 12, "6 at each end")
 	local splitCount = 0
 	for __, c in ipairs(net.chunks) do
 		splitCount = splitCount + #(c.splits or {})

@@ -278,9 +278,10 @@ local function stepStreet(b : Build, first : integer, last : integer)
 	local splits : {{integer, number, number}} = {}
 	for i = first, last do
 		local e = net.edges[i]
-		-- Only track on the ground crosses on the level (a bridge's deck over the street crosses it in plan too).
+		-- Only track on the ground crosses on the level (a bridge's deck over the street crosses it in plan too), and
+		-- never a junction's piece, which mustn't be split (its dry run then shows the street in the way).
 		local crossed : {PgraceRailRouterNetwork.Crossing} = {}
-		if e.kind == "ground" then
+		if e.kind == "ground" and not e.whole then
 			crossed = network.crossings({ p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }, h)
 		end
 		for __, c in ipairs(crossed) do

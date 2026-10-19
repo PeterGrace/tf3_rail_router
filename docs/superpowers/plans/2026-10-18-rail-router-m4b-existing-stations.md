@@ -605,15 +605,20 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
   - **Edges.** For each `j.pieces` entry, make one edge from the frame to the world:
     `world(x, y) = e.origin + e.dir × x + left(e.dir) × y`; every junction node takes z = `e.z + e.grade × x`, and
     tangents `e.dir × tx + left(e.dir) × ty` with z `e.grade × tx`. Never split a piece: the game refuses a new piece
-    over existing track unless they share a node (P15). Then a straight edge on our track from each outer piece end
-    (the merge's x1 on our far track, the "cross out" piece's x1 on our near track) to the approach start (approachX),
-    where the leg's track end nodes sit: the leg's own first (or last) piece is our approach, a straight from the
-    approach start out along e.dir (the route's fixed straight, Input.approach and the extension, all beside the
-    stretch) before its search's path: the merge joins our far track, the crossing track our near track. The far
-    track is whichever of the leg's tracks 1/2 lies further from the existing axis at that end. Edges run in whichever
-    direction the leg's chunk needs; reverse a piece by swapping its ends and negating its tangents.
+    over existing track unless they share a node (P15); the pieces carry `whole`, and the build's level-crossing
+    split skips them. Then a straight edge on our track from each outer piece end (the merge's x1 on our far track,
+    the "cross out" piece's x1 on our near track) to the approach start (approachX), where the leg's track end nodes
+    sit: the leg's own first (or last) piece is our approach, a straight from the approach start out along e.dir
+    (the route's fixed straight, Input.approach and the extension, all beside the stretch) before its search's path:
+    the merge joins our far track, the crossing track our near track. Each straight joins the leg's track whose end
+    lies nearest its frame y. The merge's straight is cut where the "cross out" piece ends, and the two straights
+    from there are a parallel pair (`paired`: the builder gives them the pair's distance, as tracks 1 and 2). Edges
+    run along the leg (reversed at its end: ends swapped, tangents negated).
   - **The existing end** becomes a new node carrying `existing = { piece, s }`. Find the piece in
-    `e.pieces[near|far]` whose x-range holds the cut, then compute s by linear interpolation along its chord.
+    `e.pieces[near|far]` whose x-range holds the cut, then find s where the piece's curve is at the cut's x along the
+    axis (bisection). A cut on no piece leaves a plain node and sets the chunk's `problem`.
+  - **Existing nodes** (added after review): `junction.fit` takes each track's node positions (`End.nodes`, from
+    the analyser) and keeps cuts clear of them (see the spec's "Existing nodes").
   - **The crossing.** The "cross in" and "cross out" pieces share one node, the crossing node, which carries the
     crossing's `existing` cut.
   - **Signals** (as built): the leg's first signals sit on our two approach tracks 15 m out from the approach start
@@ -626,10 +631,12 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
   - **As built, also:** a cut node sits on the existing piece (its Hermite point at s), the junction edges' ends on
     it; a cut within 0.5 m (MIN_EDGE) of a piece's end uses that piece's own node (`entity`) and splits nothing.
     Junction edges run along the leg (reversed at its end), with s before 0 or past the leg's length, and come last
-    in their chunk.
+    in their chunk. `network.cut` keeps the chunk's `splits` and `problem`, and each edge's signals (on the piece
+    holding them) and flags, so Task 8 can read them from the cut network.
 - [ ] **Step 3: Test.** Add a test to `tests/network_test.lua` with a one-leg plan whose start station has
   `existing` (built by hand, as the route would). Expect:
-  - 5 junction edges (track 4): the 3 pieces and the 2 straights to the approach start;
+  - 6 junction edges (track 4): the 3 pieces and 3 straights to the approach start (the far one cut where the
+    pair starts);
   - 3 nodes with `existing` set;
   - the "cross in" and "cross out" edges sharing the crossing node, tangent there;
   - the leg's first chunk listing `splits` for 2 pieces (near, with 2 parameters; far, with 1);
@@ -647,6 +654,7 @@ existing.REACH + 50)`, so the snapshot covers the analyser's whole reach.
   `Outcome.junctions`). Use the same pattern as level crossings: a `builder.junctionHits(collisions, splits)` pure
   helper with unit tests in `tests/builder_test.lua`. It returns true when every collision's entity is a split
   piece or one of its nodes.
+  A chunk with `problem` set (a junction cut on no existing piece) fails the check with that text.
 - [ ] **Step 2: Build.** In `build.tl stepChunk`, before the first dry run of a chunk with `splits`, run a state like
   `b.crossings`. For each split, in turn:
   - Read the piece's BASE_EDGE and call `replaceSegment(piece)`.
