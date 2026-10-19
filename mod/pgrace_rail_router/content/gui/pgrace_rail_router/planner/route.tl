@@ -1167,7 +1167,8 @@ local function startResite(job : Job, i : integer)
 	end
 	job.resite = { station = i, dirs = dirs, k = 0, site = station.site, stage = stage, inCost = 0, inTime = 0,
 		others = others,
-		bestCost = math.huge, best = station.site, keep = { path = job.path, simplified = job.simplified,
+		-- The bars stay at infinity when the current site is never weighed (not found again, or a leg of it failed).
+		bestCost = math.huge, baseTime = math.huge, best = station.site, keep = { path = job.path, simplified = job.simplified,
 		fitted = job.fitted, radius = job.searchRadius, cost = job.pathCost } }
 	job.path, job.simplified, job.fitting, job.fitted, job.heights = nil, nil, nil, nil, nil
 end
@@ -1214,7 +1215,7 @@ local function stepResite(job : Job, maxExpansions : integer)
 		if rs.finder == nil then
 			rs.finder = stations.startFind(input.grid, station.town.pos, rs.dirs[rs.k], input.platformLength + 2 * approachOf(input),
 				MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + RESITE_MOVE), rs.others,
-				exitFor(job, i))
+				exitFor(job, i), input.platformLength)
 		end
 		if not stations.stepFind(rs.finder, SITE_WORK_PER_STEP) then
 			return
@@ -1558,7 +1559,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 				table.insert(plan.notes, note)
 			end
 			job.finder = stations.startFind(input.grid, town.pos, stopDir(input.stops, i),
-				input.platformLength + 2 * approachOf(input), MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken, exitFor(job, i))
+				input.platformLength + 2 * approachOf(input), MAX_STATION_RELIEF, MAX_STATION_RADIUS, job.taken, exitFor(job, i), input.platformLength)
 		end
 		if not stations.stepFind(job.finder, SITE_WORK_PER_STEP) then
 			return false
@@ -1648,7 +1649,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			end
 			job.finder = stations.startFind(input.grid, station.town.pos, dir, input.platformLength + 2 * approachOf(input),
 				MAX_STATION_RELIEF, math.min(MAX_STATION_RADIUS, station.site.distance + MAX_TURN_MOVE), job.others,
-				exitFor(job, i))
+				exitFor(job, i), input.platformLength)
 			return false
 		end
 		if stations.stepFind(job.finder, SITE_WORK_PER_STEP) then
