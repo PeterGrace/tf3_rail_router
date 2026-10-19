@@ -23,6 +23,11 @@ global record PgraceRailRouterGrid
 		-- JOINT_CLEARANCE of one is refused (probe P9c: 9.5 m was fine, the build failed at 1.8 and 7 m), so the line
 		-- bridges the road there (route.tl).
 		joints : {integer : {PgraceRailRouterGeo.Pt}}
+		-- Points along the streets every STREET_STEP metres, as flat x, y pairs by the cell they're in (addStreet):
+		-- a road cell says only that a street passes somewhere in its 100 m, so a station's centre line can be in
+		-- clear cells with its main building over a street in the next one (Bangor: "Collision", 13 m off the axis).
+		-- Empty where nobody added them (a route capture has none).
+		streets : {integer : {number}}
 		-- Shore cells (water and land both in or next to them) sampled finer: SHORE_SUB × SHORE_SUB points per cell,
 		-- row by row from the low corner, true where on water (survey.tl; maplib from the map). waterAt uses them.
 		shore : {integer : {boolean}}
@@ -174,6 +179,15 @@ global record PgraceRailRouterGrid
 	addJoint : function(g : Grid, p : PgraceRailRouterGeo.Pt)
 	-- Whether a road joint lies within r of p (r at most a cell).
 	jointNear : function(g : Grid, p : PgraceRailRouterGeo.Pt, r : number) : boolean
+	-- Metres between the points addStreet keeps.
+	STREET_STEP : number
+	-- Keeps points every STREET_STEP metres along a street's Hermite curve, ends included (Grid.streets).
+	addStreet : function(g : Grid, p0 : PgraceRailRouterGeo.Pt, t0 : PgraceRailRouterGeo.Pt, p1 : PgraceRailRouterGeo.Pt,
+		t1 : PgraceRailRouterGeo.Pt)
+	-- Whether a street point lies in the rectangle along dir (a unit vector) from centre − dir · half to
+	-- centre + dir · half, reaching `left` metres to its left and `right` to its right.
+	streetIn : function(g : Grid, centre : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt, half : number,
+		left : number, right : number) : boolean
 	-- Points per cell side in a shore cell's finer sampling.
 	SHORE_SUB : integer
 	-- The cells whose water flag differs from one of their 8 neighbours' (in index order).

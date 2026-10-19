@@ -96,6 +96,9 @@ local SWEEP_SLACK = 30
 -- tried, by cost plus the time they lose, the current site's built legs as built, and no candidate taken that loses
 -- more time): Cheapest byte-identical; Fastest 6% less time lost (423 s to 398 s), estimates 1.3% up, tight curves
 -- 230 to 235; Alliance → Aloha 41 s to 21 s, Elkhart → Fernley 55 s to 43 s, Englewood → Weston 7 s to 13 s.
+-- And again for stations kept clear of the streets themselves (2026-10-19, an in-game "Collision" at Bangor): only
+-- Ames → Bridgeport moved (Bridgeport's first site had a street under it, and re-siting from the new one ends
+-- elsewhere): Cheapest 5.7% longer, 4 more tight curves; Fastest 6% longer, 8 s less lost to tight curves.
 local ROUTES = {
 	{ map = TEST_MAP, from = "Bangor", to = "Imperial Beach", mode = "cheapest", track = "Standard Tracks", quick = true,
 		stopsSeen = "Bangor, Mercer Island, Antelope, Aloha, Imperial Beach",
@@ -110,13 +113,20 @@ local ROUTES = {
 		stops = { "Antelope", "Aloha" }, stopsSeen = "Bangor, Antelope, Aloha, Imperial Beach",
 		base = { length = 12402, estimate = 13346385, tight = 8, bridges = 3, bridgeLength = 745, tunnels = 0, tunnelLength = 0, sweep = 72, timeLost = 3.8 } },
 
+	-- In-game (2026-10-19, on the test map as it had grown), Bangor's station had its centre line in clear cells and
+	-- its main building over two streets in the next cell ("Collision"); planned again on this map, main put it on
+	-- the same spot. Stations now keep their width clear of the streets themselves.
+	{ map = TEST_MAP, from = "Bangor", to = "Imperial Beach", mode = "cheapest", track = "Standard Tracks", quick = true,
+		stops = { "Aloha" }, platform = 320, stopsSeen = "Bangor, Aloha, Imperial Beach",
+		base = { length = 12596, estimate = 4423111, tight = 0, bridges = 2, bridgeLength = 213, tunnels = 0, tunnelLength = 0, sweep = 118, timeLost = 0.0 } },
+
 	{ map = BIG_MAP, from = "Ames", to = "Bridgeport", mode = "cheapest", track = "Standard Tracks",
 		stopsSeen = "Ames, Foster City, Temple City, Miami, Bridgeport",
-		base = { length = 11406, estimate = 3947059, tight = 5, bridges = 5, bridgeLength = 448, tunnels = 0, tunnelLength = 0, sweep = 135, timeLost = 9.5 } },
+		base = { length = 12051, estimate = 4171585, tight = 9, bridges = 5, bridgeLength = 421, tunnels = 0, tunnelLength = 0, sweep = 135, timeLost = 10.4 } },
 	-- Before the fixes: an 8 m and a 48 m curve, and 2 samples on blocked cells (a loop between Temple City and Miami).
 	{ map = BIG_MAP, from = "Ames", to = "Bridgeport", mode = "fastest", track = "High-Speed Tracks",
 		stopsSeen = "Ames, Foster City, Temple City, Miami, Bridgeport",
-		base = { length = 11650, estimate = 15507355, tight = 23, bridges = 9, bridgeLength = 2272, tunnels = 1, tunnelLength = 845, sweep = 127, timeLost = 36.6 } },
+		base = { length = 12375, estimate = 16003521, tight = 19, bridges = 8, bridgeLength = 1940, tunnels = 1, tunnelLength = 845, sweep = 127, timeLost = 28.7 } },
 	{ map = BIG_MAP, from = "Pensacola", to = "Columbus", mode = "cheapest",
 		stopsSeen = "Pensacola, Napa, Novato, Columbus",
 		base = { length = 7223, estimate = 2439302, tight = 5, bridges = 2, bridgeLength = 241, tunnels = 0, tunnelLength = 0, sweep = 124, timeLost = 19.1 } },
@@ -329,6 +339,18 @@ local function check(rt, planFn, name)
 	t.eq(#below, rt.knownBelow or 0, "arcs below " .. r.weights.minBuildRadius .. " m: " .. table.concat(list, "; "))
 	local blocked = lib.blockedSamples(r)
 	t.eq(#blocked, rt.knownBlocked or 0, "samples on blocked cells")
+	-- No station over a street (stations.tl's footprint: the building's side faces the town). A route capture has no
+	-- streets' points, so this checks only routes planned on a map.
+	for __, st in ipairs(plan.stations) do
+		local c, d, town = st.site.centre, st.site.dir, st.town.pos
+		local townLeft = -d.y * (town.x - c.x) + d.x * (town.y - c.y) >= 0
+		local left, right = lib.stations.BUILDING_SIDE, lib.stations.TRACK_SIDE
+		if not townLeft then
+			left, right = right, left
+		end
+		t.ok(not lib.grid.streetIn(r.grid, c, d, r.platform / 2 + lib.stations.STATION_END, left, right),
+			("station %s at (%.0f, %.0f) over a street"):format(tostring(st.town.name), c.x, c.y))
+	end
 	-- The preview's arrows (100 m chords, at least 25 m: shorter ones crash the game).
 	for li, leg in ipairs(plan.legs) do
 		for __, a in ipairs(arrows.split(leg, 100, 25)) do

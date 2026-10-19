@@ -29,7 +29,7 @@ local ROAD_FOLLOW_FACTOR = 1.5
 
 function grid.new(x0 : number, y0 : number, cell : number, nx : integer, ny : integer) : Grid
 	local g : Grid = { x0 = x0, y0 = y0, cell = cell, nx = nx, ny = ny, height = {}, water = {}, blocked = {},
-		road = {}, track = {}, junction = {}, shore = {}, joints = {} }
+		road = {}, track = {}, junction = {}, shore = {}, joints = {}, streets = {} }
 	for i = 1, nx * ny do
 		g.height[i] = 0
 		g.water[i] = false
@@ -77,6 +77,7 @@ end
 
 grid.SHORE_SUB = 4
 grid.JOINT_CLEARANCE = 10.0
+grid.STREET_STEP = 5.0
 
 function grid.addJoint(g : Grid, p : Pt)
 	if not grid.inside(g, p) then
@@ -86,6 +87,59 @@ function grid.addJoint(g : Grid, p : Pt)
 	local i = grid.index(g, ix, iy)
 	g.joints[i] = g.joints[i] or {}
 	table.insert(g.joints[i], { x = p.x, y = p.y })
+end
+
+function grid.addStreet(g : Grid, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
+	-- The tangents' lengths are about the curve's length; take the longest so a bent street is sampled finely enough.
+	local chord = math.sqrt((p1.x - p0.x) ^ 2 + (p1.y - p0.y) ^ 2)
+	local length = math.max(chord, math.sqrt(t0.x * t0.x + t0.y * t0.y), math.sqrt(t1.x * t1.x + t1.y * t1.y))
+	local steps = math.max(1, math.ceil(length / grid.STREET_STEP))
+	for k = 0, steps do
+		local t = k / steps
+		local t2, t3 = t * t, t * t * t
+		local h00, h10, h01, h11 = 2 * t3 - 3 * t2 + 1, t3 - 2 * t2 + t, -2 * t3 + 3 * t2, t3 - t2
+		local p : Pt = { x = h00 * p0.x + h10 * t0.x + h01 * p1.x + h11 * t1.x,
+			y = h00 * p0.y + h10 * t0.y + h01 * p1.y + h11 * t1.y }
+		if grid.inside(g, p) then
+			local ix, iy = grid.cellOf(g, p)
+			local i = grid.index(g, ix, iy)
+			local list = g.streets[i]
+			if list == nil then
+				list = {}
+				g.streets[i] = list
+			end
+			list[#list + 1] = p.x
+			list[#list + 1] = p.y
+		end
+	end
+end
+
+function grid.streetIn(g : Grid, centre : Pt, dir : Pt, half : number, left : number, right : number) : boolean
+	if g.streets == nil then
+		return false
+	end
+	-- The cells the rectangle's bounding box touches.
+	local ex = math.abs(dir.x) * half + math.abs(dir.y) * math.max(left, right)
+	local ey = math.abs(dir.y) * half + math.abs(dir.x) * math.max(left, right)
+	local ax, ay = grid.cellOf(g, { x = centre.x - ex, y = centre.y - ey })
+	local bx, by = grid.cellOf(g, { x = centre.x + ex, y = centre.y + ey })
+	for iy = ay, by do
+		for ix = ax, bx do
+			local list = g.streets[grid.index(g, ix, iy)]
+			if list ~= nil then
+				for k = 1, #list, 2 do
+					local dx, dy = list[k] - centre.x, list[k + 1] - centre.y
+					local u = dx * dir.x + dy * dir.y
+					-- Left of dir is (−dir.y, dir.x).
+					local v = -dx * dir.y + dy * dir.x
+					if u >= -half and u <= half and v <= left and v >= -right then
+						return true
+					end
+				end
+			end
+		end
+	end
+	return false
 end
 
 function grid.jointNear(g : Grid, p : Pt, r : number) : boolean

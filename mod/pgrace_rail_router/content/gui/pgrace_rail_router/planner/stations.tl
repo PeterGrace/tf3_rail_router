@@ -1,7 +1,11 @@
 local geo = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/geo.tl" as PgraceRailRouterGeo
 local grid = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/grid.tl" as PgraceRailRouterGrid
 
-local stations : PgraceRailRouterStations = {}
+local stations : PgraceRailRouterStations = {
+	BUILDING_SIDE = 31.0,
+	TRACK_SIDE = 15.0,
+	STATION_END = 10.0,
+}
 
 local type Pt = PgraceRailRouterGeo.Pt
 local type Grid = PgraceRailRouterGrid.Grid
@@ -63,6 +67,17 @@ local function clear(f : Finder, centre : Pt, dir : Pt) : boolean
 	end
 	f.work = f.work + RUN_WORK
 	if not grid.cellsAlong(g, a, b, f.free) then
+		return false
+	end
+	-- The station's width, against the streets themselves: its main building goes on the side facing the town
+	-- (stationlayout.facing), where a street in the next cell can be a few metres from the centre line.
+	f.work = f.work + RUN_WORK
+	local townLeft = -dir.y * (f.town.x - centre.x) + dir.x * (f.town.y - centre.y) >= 0
+	local left, right = stations.BUILDING_SIDE, stations.TRACK_SIDE
+	if not townLeft then
+		left, right = right, left
+	end
+	if grid.streetIn(g, centre, dir, f.stationHalf, left, right) then
 		return false
 	end
 	f.work = f.work + RUN_WORK
@@ -219,13 +234,18 @@ local function stepFlood(f : Finder, maxWork : integer) : boolean, boolean
 end
 
 function stations.startFind(g : Grid, town : Pt, dir : Pt, runLength : number, maxRelief : number,
-		maxRadius : number, taken ?: {integer : boolean}, exit ?: Exit) : Finder
+		maxRadius : number, taken ?: {integer : boolean}, exit ?: Exit, platformLength ?: number) : Finder
 	local unit = geo.norm(dir)
 	local dirs : {Pt} = {}
 	for __, turn in ipairs(TURNS) do
 		table.insert(dirs, geo.rotate(unit, turn))
 	end
-	local finder : Finder = { g = g, town = town, unit = unit, dirs = dirs, runLength = runLength, maxRelief = maxRelief,
+	local stationHalf = runLength / 2
+	if platformLength ~= nil then
+		stationHalf = math.min(stationHalf, platformLength / 2 + stations.STATION_END)
+	end
+	local finder : Finder = { g = g, town = town, unit = unit, dirs = dirs, runLength = runLength,
+		stationHalf = stationHalf, maxRelief = maxRelief,
 		maxRadius = maxRadius, r = 0, n = ringSpots(g, 0), i = 0, done = false, work = 0, pocketed = 0,
 		free = function(i : integer) : boolean
 			return not (g.blocked[i] or g.water[i] or g.road[i] or g.track[i] or (taken ~= nil and taken[i]))
@@ -358,8 +378,8 @@ function stations.stepFind(f : Finder, maxWork : integer) : boolean
 end
 
 function stations.find(g : Grid, town : Pt, dir : Pt, runLength : number, maxRelief : number, maxRadius : number,
-		taken ?: {integer : boolean}, exit ?: Exit) : Site
-	local f = stations.startFind(g, town, dir, runLength, maxRelief, maxRadius, taken, exit)
+		taken ?: {integer : boolean}, exit ?: Exit, platformLength ?: number) : Site
+	local f = stations.startFind(g, town, dir, runLength, maxRelief, maxRadius, taken, exit, platformLength)
 	while not stations.stepFind(f, 1000000) do
 	end
 	return f.site

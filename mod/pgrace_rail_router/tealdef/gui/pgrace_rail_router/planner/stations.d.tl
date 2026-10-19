@@ -1,6 +1,14 @@
 -- Where a town's station goes: the nearest spot to its centre with room for a straight, flat run, never on a
 -- building, road or existing track (the survey blocks buildings with a buffer). Pure (no api.*).
 global record PgraceRailRouterStations
+	-- How far a run must be clear of streets (Grid.streets) either side of its centre line: on the side facing the
+	-- town, to the main building's front (29 m off a Halt 2+2's axis, and a little room); on the other, past the last
+	-- platform (15 m).
+	BUILDING_SIDE : number
+	TRACK_SIDE : number
+	-- How far the station reaches past its platforms' ends (a 160 m station's box runs 10 m past them).
+	STATION_END : number
+
 	record Site
 		-- Centre of the platforms.
 		centre : PgraceRailRouterGeo.Pt
@@ -60,6 +68,9 @@ global record PgraceRailRouterStations
 		unit : PgraceRailRouterGeo.Pt
 		dirs : {PgraceRailRouterGeo.Pt}
 		runLength : number
+		-- Half the station's own length (its platforms and STATION_END past each end; the run when not given): the
+		-- part of the run that must keep its width clear of streets.
+		stationHalf : number
 		maxRelief : number
 		maxRadius : number
 		-- The ring being searched, its number of spots, and the next spot on it (0-based).
@@ -89,8 +100,12 @@ global record PgraceRailRouterStations
 	-- `maxRelief` metres of height (checked every quarter cell and at both ends). nil if none lies within maxRadius.
 	-- `taken` (optional) marks more cells, by grid index, to treat as blocked (other stations' platforms); the grid
 	-- itself is never changed. With `exit`, a spot whose run is clear but boxed in (see Exit) is passed over too.
+	-- With `platformLength`, the station's own stretch of the run (its platforms, centred, and STATION_END past each
+	-- end) must also keep BUILDING_SIDE clear of streets on the town's side and TRACK_SIDE on the other; without it,
+	-- the whole run.
 	find : function(g : PgraceRailRouterGrid.Grid, town : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt,
-		runLength : number, maxRelief : number, maxRadius : number, taken ?: {integer : boolean}, exit ?: Exit) : Site
+		runLength : number, maxRelief : number, maxRadius : number, taken ?: {integer : boolean}, exit ?: Exit,
+		platformLength ?: number) : Site
 	-- The same search, spread over calls: start it, then stepFind until it returns true; the result is in .site.
 	-- Each stepFind stops once it has done maxWork units of work (finishing the spot it is on): a spot counts 1,
 	-- each run tried at it 1 more, and 4 more each for walking its cells and sampling its heights (about 1 µs a unit
@@ -98,6 +113,7 @@ global record PgraceRailRouterStations
 	-- in the next call). Out to 1.5 km a search passes some 3,000 spots; on a big town's site that took 41 ms in one
 	-- go in-game.
 	startFind : function(g : PgraceRailRouterGrid.Grid, town : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt,
-		runLength : number, maxRelief : number, maxRadius : number, taken ?: {integer : boolean}, exit ?: Exit) : Finder
+		runLength : number, maxRelief : number, maxRadius : number, taken ?: {integer : boolean}, exit ?: Exit,
+		platformLength ?: number) : Finder
 	stepFind : function(f : Finder, maxWork : integer) : boolean
 end

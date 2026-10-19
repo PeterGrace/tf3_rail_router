@@ -373,8 +373,12 @@ local function markEdge(job : Job, entity : Engine.Entity)
 		return true
 	end)
 	if read and p0 ~= nil and p1 ~= nil and t0 ~= nil and t1 ~= nil and not (isZero(p0) and isZero(p1)) then
-		area.markCurve(job.grid, { x = p0.x, y = p0.y }, { x = t0.x, y = t0.y }, { x = p1.x, y = p1.y },
-			{ x = t1.x, y = t1.y }, cells)
+		local a, ta, b, tb : Pt, Pt, Pt, Pt = { x = p0.x, y = p0.y }, { x = t0.x, y = t0.y }, { x = p1.x, y = p1.y },
+			{ x = t1.x, y = t1.y }
+		area.markCurve(job.grid, a, ta, b, tb, cells)
+		if street ~= nil then
+			grid.addStreet(job.grid, a, ta, b, tb)
+		end
 		return
 	end
 	job.curveFallbacks = job.curveFallbacks + 1
@@ -383,7 +387,13 @@ local function markEdge(job : Job, entity : Engine.Entity)
 	if n0 == nil or n1 == nil then
 		return
 	end
-	area.markLine(job.grid, { x = n0.position.x, y = n0.position.y }, { x = n1.position.x, y = n1.position.y }, cells)
+	local a, b : Pt, Pt = { x = n0.position.x, y = n0.position.y }, { x = n1.position.x, y = n1.position.y }
+	area.markLine(job.grid, a, b, cells)
+	if street ~= nil then
+		-- A Hermite curve whose tangents are its chord is that straight line.
+		local chord : Pt = { x = b.x - a.x, y = b.y - a.y }
+		grid.addStreet(job.grid, a, chord, b, chord)
+	end
 end
 
 -- Marks one entity a tile's lookup found (of the given kind), once per survey.
