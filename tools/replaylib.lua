@@ -175,11 +175,12 @@ return function(root)
 		for _, p in ipairs(cells.joints or {}) do
 			grid.addJoint(g, p)
 		end
-		-- The streets' points, as the survey keeps them (every street but tunnels).
+		-- The streets' and track's points, as the survey keeps them (every edge but tunnels).
 		for _, e in ipairs(map.edges) do
-			if e.kind == "s" and e.edgeType ~= "u" then
+			if e.edgeType ~= "u" then
 				local chord = { x = e.p1.x - e.p0.x, y = e.p1.y - e.p0.y }
-				grid.addStreet(g, e.p0, e.t0 or chord, e.p1, e.t1 or chord)
+				local add = e.kind == "s" and grid.addStreet or grid.addTrack
+				add(g, e.p0, e.t0 or chord, e.p1, e.t1 or chord)
 			end
 		end
 		-- Shore cells sampled finer, as the survey does (from the map's 25 m flags).

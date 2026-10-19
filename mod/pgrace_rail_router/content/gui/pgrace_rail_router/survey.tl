@@ -378,6 +378,8 @@ local function markEdge(job : Job, entity : Engine.Entity)
 		area.markCurve(job.grid, a, ta, b, tb, cells)
 		if street ~= nil then
 			grid.addStreet(job.grid, a, ta, b, tb)
+		else
+			grid.addTrack(job.grid, a, ta, b, tb)
 		end
 		return
 	end
@@ -389,10 +391,12 @@ local function markEdge(job : Job, entity : Engine.Entity)
 	end
 	local a, b : Pt, Pt = { x = n0.position.x, y = n0.position.y }, { x = n1.position.x, y = n1.position.y }
 	area.markLine(job.grid, a, b, cells)
+	-- A Hermite curve whose tangents are its chord is that straight line.
+	local chord : Pt = { x = b.x - a.x, y = b.y - a.y }
 	if street ~= nil then
-		-- A Hermite curve whose tangents are its chord is that straight line.
-		local chord : Pt = { x = b.x - a.x, y = b.y - a.y }
 		grid.addStreet(job.grid, a, chord, b, chord)
+	else
+		grid.addTrack(job.grid, a, chord, b, chord)
 	end
 end
 

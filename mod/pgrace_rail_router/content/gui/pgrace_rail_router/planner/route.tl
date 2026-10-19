@@ -132,6 +132,10 @@ local JUNCTION_OFFSET = 10.0
 -- crosses it: our tracks run 2.5 m either side, so about a metre between rails. Our straight beside a stretch is 7.5 m
 -- from its near track.
 local CROSS_NEAR = 6.0
+-- Away from an existing station's index, a sample crosses track where its cell is track, or within this of a track
+-- point (Grid.tracks): a bridge 8.5 m from a line it was crossing at a shallow angle, in a cell not marked track,
+-- dipped to 6.9 m above it (in-game "Collision"; 8 m needed). Our deck reaches about 5 m out, the track's bed 2.5.
+local TRACK_NEAR = 15.0
 -- The track index's points are at most this far apart along a piece, and its buckets this wide (metres).
 local INDEX_SPACING = 2.0
 local INDEX_BUCKET = 12.0
@@ -1021,7 +1025,7 @@ end
 
 -- Samples a fitted leg's ground and starts fitting its heights (profile.start; stepped by route.step). Round an
 -- existing station (within its TrackIndex's reach) a sample crosses track only near the snapshot's pieces; elsewhere
--- where its cell is track.
+-- where its cell is track or it's within TRACK_NEAR of track.
 local function startHeights(input : Input, indexes : {PgraceRailRouterRoute.TrackIndex}, a : Station, b : Station,
 		fitted : PgraceRailRouterSmooth.Result) : LegHeights
 	local g, w = input.grid, input.weights
@@ -1039,7 +1043,7 @@ local function startHeights(input : Input, indexes : {PgraceRailRouterRoute.Trac
 				return near
 			end
 		end
-		return g.track[cell]
+		return g.track[cell] or grid.trackNear(g, p, TRACK_NEAR)
 	end
 	for i, sample in ipairs(samples) do
 		s[i] = sample.s

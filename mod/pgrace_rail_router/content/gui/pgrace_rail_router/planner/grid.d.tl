@@ -28,6 +28,9 @@ global record PgraceRailRouterGrid
 		-- clear cells with its main building over a street in the next one (Bangor: "Collision", 13 m off the axis).
 		-- Empty where nobody added them (a route capture has none).
 		streets : {integer : {number}}
+		-- The same for track but tunnels (addTrack): a bridge crossing a line at a shallow angle passes over it in
+		-- cells not marked track, and dipped there to 6.9 m above it ("Collision", in-game).
+		tracks : {integer : {number}}
 		-- Shore cells (water and land both in or next to them) sampled finer: SHORE_SUB × SHORE_SUB points per cell,
 		-- row by row from the low corner, true where on water (survey.tl; maplib from the map). waterAt uses them.
 		shore : {integer : {boolean}}
@@ -179,11 +182,16 @@ global record PgraceRailRouterGrid
 	addJoint : function(g : Grid, p : PgraceRailRouterGeo.Pt)
 	-- Whether a road joint lies within r of p (r at most a cell).
 	jointNear : function(g : Grid, p : PgraceRailRouterGeo.Pt, r : number) : boolean
-	-- Metres between the points addStreet keeps.
+	-- Metres between the points addStreet and addTrack keep.
 	STREET_STEP : number
 	-- Keeps points every STREET_STEP metres along a street's Hermite curve, ends included (Grid.streets).
 	addStreet : function(g : Grid, p0 : PgraceRailRouterGeo.Pt, t0 : PgraceRailRouterGeo.Pt, p1 : PgraceRailRouterGeo.Pt,
 		t1 : PgraceRailRouterGeo.Pt)
+	-- The same along a track piece (Grid.tracks).
+	addTrack : function(g : Grid, p0 : PgraceRailRouterGeo.Pt, t0 : PgraceRailRouterGeo.Pt, p1 : PgraceRailRouterGeo.Pt,
+		t1 : PgraceRailRouterGeo.Pt)
+	-- Whether a track point lies within r of p (r at most a cell).
+	trackNear : function(g : Grid, p : PgraceRailRouterGeo.Pt, r : number) : boolean
 	-- Whether a street point lies in the rectangle along dir (a unit vector) from centre − dir · half to
 	-- centre + dir · half, reaching `left` metres to its left and `right` to its right.
 	streetIn : function(g : Grid, centre : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt, half : number,

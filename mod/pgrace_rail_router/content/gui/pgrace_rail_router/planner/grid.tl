@@ -29,7 +29,7 @@ local ROAD_FOLLOW_FACTOR = 1.5
 
 function grid.new(x0 : number, y0 : number, cell : number, nx : integer, ny : integer) : Grid
 	local g : Grid = { x0 = x0, y0 = y0, cell = cell, nx = nx, ny = ny, height = {}, water = {}, blocked = {},
-		road = {}, track = {}, junction = {}, shore = {}, joints = {}, streets = {} }
+		road = {}, track = {}, junction = {}, shore = {}, joints = {}, streets = {}, tracks = {} }
 	for i = 1, nx * ny do
 		g.height[i] = 0
 		g.water[i] = false
@@ -89,7 +89,8 @@ function grid.addJoint(g : Grid, p : Pt)
 	table.insert(g.joints[i], { x = p.x, y = p.y })
 end
 
-function grid.addStreet(g : Grid, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
+-- Points every STREET_STEP along a Hermite curve into `lists`, by cell (Grid.streets, Grid.tracks).
+local function addCurve(g : Grid, lists : {integer : {number}}, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
 	-- The tangents' lengths are about the curve's length; take the longest so a bent street is sampled finely enough.
 	local chord = math.sqrt((p1.x - p0.x) ^ 2 + (p1.y - p0.y) ^ 2)
 	local length = math.max(chord, math.sqrt(t0.x * t0.x + t0.y * t0.y), math.sqrt(t1.x * t1.x + t1.y * t1.y))
@@ -103,15 +104,46 @@ function grid.addStreet(g : Grid, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
 		if grid.inside(g, p) then
 			local ix, iy = grid.cellOf(g, p)
 			local i = grid.index(g, ix, iy)
-			local list = g.streets[i]
+			local list = lists[i]
 			if list == nil then
 				list = {}
-				g.streets[i] = list
+				lists[i] = list
 			end
 			list[#list + 1] = p.x
 			list[#list + 1] = p.y
 		end
 	end
+end
+
+function grid.addStreet(g : Grid, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
+	addCurve(g, g.streets, p0, t0, p1, t1)
+end
+
+function grid.addTrack(g : Grid, p0 : Pt, t0 : Pt, p1 : Pt, t1 : Pt)
+	addCurve(g, g.tracks, p0, t0, p1, t1)
+end
+
+function grid.trackNear(g : Grid, p : Pt, r : number) : boolean
+	if g.tracks == nil then
+		return false
+	end
+	local ix, iy = grid.cellOf(g, p)
+	for dy = -1, 1 do
+		for dx = -1, 1 do
+			local jx, jy = ix + dx, iy + dy
+			if jx >= 1 and jx <= g.nx and jy >= 1 and jy <= g.ny then
+				local list = g.tracks[grid.index(g, jx, jy)]
+				if list ~= nil then
+					for k = 1, #list, 2 do
+						if (list[k] - p.x) ^ 2 + (list[k + 1] - p.y) ^ 2 <= r * r then
+							return true
+						end
+					end
+				end
+			end
+		end
+	end
+	return false
 end
 
 function grid.streetIn(g : Grid, centre : Pt, dir : Pt, half : number, left : number, right : number) : boolean
