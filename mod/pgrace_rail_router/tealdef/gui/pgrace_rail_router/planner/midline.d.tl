@@ -19,7 +19,8 @@ global record PgraceRailRouterMidline
 	line : function(origin : PgraceRailRouterGeo.Pt, dir : PgraceRailRouterGeo.Pt, z : number, grade : number,
 		length : number) : Frame
 	-- A frame through `pts` (a polyline, in order, at least two points), resampled every `step` metres along it
-	-- (the last sample at its end); each sample's direction and grade from its neighbours.
+	-- (the last sample at its end); each sample's direction and grade from its neighbours, the end samples' directions
+	-- corrected for curvature (the neighbour's direction reflected about the end chord).
 	fromPoints : function(pts : {PgraceRailRouterNetwork.Pt3}, step : number) : Frame
 	-- The midline's point (height included) and unit direction at x. Between samples: interpolated (the direction
 	-- renormalised). Before 0 or past `length`: extended straight along the end sample's direction and grade.

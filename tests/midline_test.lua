@@ -65,3 +65,55 @@ t.test("midline: straightUntil stops where the midline turns", function()
 	t.ok(until_ > 145 and until_ < 160, "the straight ends at the curve: " .. until_)
 	t.ok(midline.straightUntil(f, 200, 0.005) < 210, "on the curve it turns at once")
 end)
+
+t.test("midline: a duplicate last point on an arc keeps the end direction and grade", function()
+	local pts = arc(220, 200, 3, 0.01)
+	pts[#pts + 1] = { x = pts[#pts].x, y = pts[#pts].y, z = pts[#pts].z }
+	local f = midline.fromPoints(pts, midline.STEP)
+	local a = 200 / 220
+	t.near(f.dirs[#f.dirs].x, math.cos(a), 0.002, "end dir x") t.near(f.dirs[#f.dirs].y, math.sin(a), 0.002, "end dir y")
+	t.near(f.grades[#f.grades], 0.01, 1e-4, "end grade")
+	t.near(f.dirs[1].y, 0, 0.002, "start dir y")
+end)
+
+t.test("midline: end directions from 5 m spaced arc input", function()
+	local pts = {}
+	for s = 0, 200, 5 do
+		local a = s / 220
+		pts[#pts + 1] = { x = 220 * math.sin(a), y = 220 * (1 - math.cos(a)), z = 0 }
+	end
+	local f = midline.fromPoints(pts, midline.STEP)
+	local a = 200 / 220
+	t.near(f.dirs[1].x, 1, 0.002, "start x") t.near(f.dirs[1].y, 0, 0.002, "start y")
+	t.near(f.dirs[#f.dirs].x, math.cos(a), 0.002, "end x") t.near(f.dirs[#f.dirs].y, math.sin(a), 0.002, "end y")
+end)
+
+t.test("midline: project inverts world beyond both ends of a curved frame", function()
+	local f = midline.fromPoints(arc(220, 200, 0, 0), midline.STEP)
+	for __, x in ipairs({ -50, 0, 120, f.length, f.length + 50 }) do
+		for __, y in ipairs({ -7.5, 0, 7.5 }) do
+			local q = midline.world(f, x, y)
+			local px, py = midline.project(f, q)
+			-- Beyond the ends the rays make it exact; between samples it projects on chords, a few cm to 1 dm off.
+			local tol = (x < 0 or x > f.length) and 0.01 or 0.15
+			t.near(px, x, tol, "x at " .. x .. "," .. y) t.near(py, y, tol, "y at " .. x .. "," .. y)
+		end
+	end
+end)
+
+t.test("midline: line round trips stay exact, also with a non-unit dir and past the ends", function()
+	local f = midline.line({ x = 3, y = -4 }, { x = 3, y = 4 }, 0, 0, 100)
+	for __, x in ipairs({ -40, 50, 160 }) do
+		local q = midline.world(f, x, -6)
+		local px, py = midline.project(f, q)
+		t.near(px, x, 1e-9, "x") t.near(py, -6, 1e-9, "y")
+	end
+	t.ok(midline.line({ x = 0, y = 0 }, { x = 1, y = 0 }, 0, 0, 0).length > 0, "zero length guarded")
+end)
+
+t.test("midline: straightUntil from before the start, and past the end", function()
+	local f = midline.fromPoints(arc(220, 200, 0, 0), midline.STEP)
+	local u = midline.straightUntil(f, -30, 0.005)
+	t.ok(u >= 0 and u < 2.5, "turns at once after 0: " .. u)
+	t.near(midline.straightUntil(f, f.length + 10, 0.005), f.length + 10, 1e-9, "past the end")
+end)

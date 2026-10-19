@@ -6,22 +6,26 @@ local type Pt3 = PgraceRailRouterNetwork.Pt3
 
 midline.STEP = 5.0
 
-function midline.line(origin : Pt, dir : Pt, z : number, grade : number, length : number) : Frame
-	return {
-		pts = { { x = origin.x, y = origin.y, z = z },
-			{ x = origin.x + dir.x * length, y = origin.y + dir.y * length, z = z + grade * length } },
-		dirs = { { x = dir.x, y = dir.y }, { x = dir.x, y = dir.y } },
-		grades = { grade, grade },
-		step = length, length = length,
-	}
-end
-
 local function unit(x : number, y : number) : Pt
 	local d = math.sqrt(x * x + y * y)
 	if d < 1e-12 then
 		return { x = 1, y = 0 }
 	end
 	return { x = x / d, y = y / d }
+end
+
+function midline.line(origin : Pt, dir : Pt, z : number, grade : number, length : number) : Frame
+	-- Normalised once, so the samples and everything beyond them agree; a tiny positive length keeps the divisions
+	-- by the step safe.
+	local d = unit(dir.x, dir.y)
+	local len = math.max(length, 1e-9)
+	return {
+		pts = { { x = origin.x, y = origin.y, z = z },
+			{ x = origin.x + d.x * len, y = origin.y + d.y * len, z = z + grade * len } },
+		dirs = { { x = d.x, y = d.y }, { x = d.x, y = d.y } },
+		grades = { grade, grade },
+		step = len, length = len,
+	}
 end
 
 function midline.fromPoints(pts : {Pt3}, step : number) : Frame
@@ -45,21 +49,36 @@ function midline.fromPoints(pts : {Pt3}, step : number) : Frame
 		table.insert(out, { x = last.x, y = last.y, z = last.z })
 		length = run
 	end
+	if #out < 2 then
+		-- A polyline with no length: a unit stub along +x, so the frame still has a direction.
+		table.insert(out, { x = out[1].x + 1, y = out[1].y, z = out[1].z })
+		length = 1
+	end
 	local n = #out
 	local dirs : {Pt} = {}
 	local grades : {number} = {}
-	for i = 1, n do
-		local a, b = out[math.max(1, i - 1)], out[math.min(n, i + 1)]
-		-- An end sample's chord to its one neighbour is half a step off the true tangent on a curve, so the ends
-		-- take the input polyline's first and last segment instead.
-		if i == 1 then
-			a, b = pts[1], pts[2]
-		elseif i == n then
-			a, b = pts[#pts - 1], pts[#pts]
-		end
+	for i = 2, n - 1 do
+		local a, b = out[i - 1], out[i + 1]
 		dirs[i] = unit(b.x - a.x, b.y - a.y)
 		local l = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
 		grades[i] = l > 1e-12 and (b.z - a.z) / l or 0
+	end
+	-- An end sample has one neighbour only, and its chord is half a step off the tangent on a curve. Reflecting the
+	-- neighbour's central direction about the chord gives the end tangent (exact on a circle, the chord on a
+	-- straight). The samples never coincide, so this holds however the input points fall.
+	for __, e in ipairs({ 1, n }) do
+		local a, b = out[e == 1 and 1 or n - 1], out[e == 1 and 2 or n]
+		local c = unit(b.x - a.x, b.y - a.y)
+		local nb = e == 1 and 2 or n - 1
+		if n > 2 then
+			local d2 = dirs[nb]
+			local k = 2 * (c.x * d2.x + c.y * d2.y)
+			dirs[e] = unit(k * c.x - d2.x, k * c.y - d2.y)
+		else
+			dirs[e] = c
+		end
+		local l = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
+		grades[e] = l > 1e-12 and (b.z - a.z) / l or 0
 	end
 	-- Samples are `step` apart but the last, which may be nearer (at x = length; see `segment`).
 	local f : Frame = { pts = out, dirs = dirs, grades = grades, step = step, length = length }
@@ -127,12 +146,7 @@ function midline.project(f : Frame, p : Pt) : number, number
 		local ex, ey = b.x - a.x, b.y - a.y
 		local l2 = ex * ex + ey * ey
 		local u = l2 > 1e-12 and ((p.x - a.x) * ex + (p.y - a.y) * ey) / l2 or 0
-		-- Clamped between samples, except past the midline's two ends, where it runs on straight.
-		if (u < 0 and i > 1) then
-			u = 0
-		elseif u > 1 and i < n - 1 then
-			u = 1
-		end
+		u = math.max(0, math.min(1, u))
 		local qx, qy = a.x + ex * u, a.y + ey * u
 		local d = (p.x - qx) ^ 2 + (p.y - qy) ^ 2
 		if d < bestD then
@@ -142,17 +156,40 @@ function midline.project(f : Frame, p : Pt) : number, number
 			bestY = l > 1e-12 and ((p.y - qy) * ex - (p.x - qx) * ey) / l or 0
 		end
 	end
+	-- Beyond the ends the midline runs on along the end samples' directions (see `at`), which on a curve differ from
+	-- the end chords: a point behind the start or past the end takes those rays.
+	for __, e in ipairs({ 1, n }) do
+		local q, dir = f.pts[e], f.dirs[e]
+		local rx, ry = p.x - q.x, p.y - q.y
+		local d = rx * dir.x + ry * dir.y
+		if (e == 1 and d <= 0) or (e == n and d >= 0) then
+			local off = dir.x * ry - dir.y * rx
+			-- Taken outright: the polyline's chords cut inside the true curve and would win by a hair, with an x off by
+			-- the offset times the chord's angle to the end tangent.
+			bestD = off * off
+			bestX = e == 1 and d or f.length + d
+			bestY = off
+		end
+	end
 	return bestX, bestY
 end
 
 function midline.straightUntil(f : Frame, x0 : number, tol : number) : number
+	if x0 >= f.length then
+		return math.max(x0, f.length)
+	end
 	local __, d0 = midline.at(f, x0)
 	local i = segment(f, math.max(0, x0))
-	local prevX, prevS = x0, 0.0
+	-- Before 0 the midline runs straight on, so nothing turns there.
+	local prevX, prevS = math.max(x0, 0.0), 0.0
 	for k = i + 1, #f.pts do
 		local x = k == #f.pts and f.length or (k - 1) * f.step
 		local d = f.dirs[k]
 		local s = math.abs(d0.x * d.y - d0.y * d.x)
+		-- A turn past 90 degrees has a small sine again, so it counts as turned whatever its sine.
+		if d0.x * d.x + d0.y * d.y <= 0 then
+			s = math.max(s, tol * 2)
+		end
 		if s > tol then
 			-- Between the last sample within it and this one.
 			return prevX + (x - prevX) * (tol - prevS) / (s - prevS)
