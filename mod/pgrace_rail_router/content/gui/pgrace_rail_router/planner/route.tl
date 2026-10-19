@@ -961,7 +961,10 @@ local function simplifyLeg(input : Input, alongFree : {integer : boolean}, a : S
 		clear = function(p : Pt, from : integer, to : integer) : boolean
 			return clear(p, raw[from], raw[to])
 		end, begin = begin }
-	return { pts = pts, guard = guard, own = own }
+	local function bareAt(station : Station, forward : boolean) : boolean
+		return station.existing ~= nil and station.endOf[forward] ~= nil and station.bare[station.endOf[forward]] ~= nil
+	end
+	return { pts = pts, guard = guard, own = own, bareA = bareAt(a, true), bareB = bareAt(b, false) }
 end
 
 -- Fits a leg's curves to its simplified path, a stage per step (see the stages below): nil until the leg is fitted,
@@ -974,6 +977,9 @@ local function stepFit(input : Input, simplified : PgraceRailRouterRoute.Simplif
 	-- is put on it, and fillet merges the two), with the approach behind it, as the search allows for
 	-- (grid.startSearch's rooms).
 	local function fit(freeA : boolean, freeB : boolean) : PgraceRailRouterSmooth.Result
+		-- A bare end keeps its extension: the curve there would cut back into the straight its crossovers (and an island
+		-- end's S-curves, or a fan) need.
+		freeA, freeB = freeA and not simplified.bareA, freeB and not simplified.bareB
 		local fixed : {boolean} = {}
 		fixed[2], fixed[3], fixed[#pts - 2], fixed[#pts - 1] = true, true, true, true
 		local use = pts
@@ -1677,6 +1683,9 @@ local function existingStop(input : Input, i : integer) : Station, string
 		end
 		if mixed ~= nil then
 			return nil, note(("can't be used: some of its tracks at the %s end lead on and some don't")
+				:format(neighbours[forward].name))
+		elseif b ~= nil and b.kind == "staggered" then
+			return nil, note(("can't be used: its tracks at the %s end don't end level with each other")
 				:format(neighbours[forward].name))
 		elseif b ~= nil and b.kind == "other" then
 			local joins = "(Rail Router joins 2 tracks 5 or 10 m apart, or 4 tracks 5 m apart)"

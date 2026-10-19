@@ -83,9 +83,16 @@ hand-placed station without track was turned down for having no double track.
   platform length) wherever the planner places things beside it (approach, room to turn, footprint, the next
   station's spacing). Beyond the bare end, our approach and crossovers as at a station of ours (Input.approach), its
   straight checked clear the same way. An end can be bare and the other a junction.
+  - Nodes more than 1 m apart along the axis (one track a module longer) fall back: "can't be used: its tracks at
+    the Y end don't end level with each other".
+- **Approach by kind:** a bare end's straight is at least what the network needs there (network.bareApproach:
+  crossovers' 100 m, after an island end's 70 m S-curves or a fan), reaches past the station's own box (which the
+  survey blocks like any construction's; those cells along the axis are the station's own there), and its
+  extension is never given up, so no curve cuts back into it. A leg too short anyway is a chunk problem in the
+  network (backstop), so the check shows it rather than build the station's tracks unjoined.
 - **Heights:** the leg's end is at the end nodes' height.
 - **Network:** our two tracks end on the station's end nodes themselves (their entities and exact positions, the
-  inner two of four), with the fan, S-curves, crossovers and one-way signals of a station end of ours.
+  inner two of four; each edge leaving a node along that node's own piece, not the end's mean axis), with the fan, S-curves, crossovers and one-way signals of a station end of ours.
 - **Builder:** nothing is built for the station (no construction, no road); the leg's track joins its nodes by
   entity, as track joins existing nodes anywhere. The plan, check and build say "joins the existing station in X".
 

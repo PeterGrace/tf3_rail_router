@@ -510,6 +510,9 @@ end
 
 -- How far a bare end's nodes may be off the offsets of a layout the line joins (metres).
 local BARE_TOLERANCE = 0.5
+-- How far apart along the axis a bare end's nodes may be (metres): our tracks' ends are snapped onto them, so a track a
+-- module longer than its neighbour (20 m) would make our first edge on it run backwards.
+local BARE_STAGGER = 1.0
 
 -- Which layout a bare end's offsets across its axis (descending: left to right) fit, else "other".
 local function bareKind(v : {number}) : string
@@ -538,9 +541,20 @@ function existing.bareEnd(station : Station, snap : Snapshot, k : integer) : Pgr
 	local len = math.sqrt(station.dir.x * station.dir.x + station.dir.y * station.dir.y)
 	local ox, oy = k * station.dir.x / len, k * station.dir.y / len
 	local at : {integer : PgraceRailRouterNetwork.Pt3} = {}
+	-- Each node's piece's direction there, pointing away from the piece (outward, at a free end node), in plan.
+	local away : {integer : PgraceRailRouterGeo.Pt} = {}
+	local function dirOf(t : PgraceRailRouterNetwork.Pt3, sign : number) : PgraceRailRouterGeo.Pt
+		local d = math.sqrt(t.x * t.x + t.y * t.y)
+		if d < 1e-9 then
+			return nil
+		end
+		return { x = sign * t.x / d, y = sign * t.y / d }
+	end
 	for __, p in ipairs(snap.pieces) do
 		at[p.node0] = at[p.node0] or p.p0
 		at[p.node1] = at[p.node1] or p.p1
+		away[p.node0] = away[p.node0] or dirOf(p.t0, -1)
+		away[p.node1] = away[p.node1] or dirOf(p.t1, 1)
 	end
 	local nodes : {PgraceRailRouterNetwork.Pt3} = {}
 	local held = 0
@@ -571,10 +585,19 @@ function existing.bareEnd(station : Station, snap : Snapshot, k : integer) : Pgr
 		return across(a) > across(b)
 	end)
 	local v : {number} = {}
+	local dirs : {PgraceRailRouterGeo.Pt} = {}
+	local lo, hi = math.huge, -math.huge
 	for i, p in ipairs(nodes) do
 		v[i] = across(p)
+		dirs[i] = away[p.entity]
+		local along = (p.x - mid.x) * ox + (p.y - mid.y) * oy
+		lo, hi = math.min(lo, along), math.max(hi, along)
 	end
-	return { kind = bareKind(v), nodes = nodes, mid = mid, out = { x = ox, y = oy } }, nil
+	local kind = bareKind(v)
+	if kind ~= "other" and hi - lo > BARE_STAGGER then
+		kind = "staggered"
+	end
+	return { kind = kind, nodes = nodes, dirs = dirs, mid = mid, out = { x = ox, y = oy } }, nil
 end
 
 return existing

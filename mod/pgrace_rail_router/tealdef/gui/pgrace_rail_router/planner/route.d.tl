@@ -154,6 +154,10 @@ global record PgraceRailRouterRoute
 		guard : PgraceRailRouterSmooth.Guard
 		-- The leg's bare ends' own cells (route.tl's ownCells), which don't count as blocked; nil: none.
 		own : {integer : boolean}
+		-- Whether the leg leaves (bareA) or arrives at (bareB) an existing station's bare end: that end's extension
+		-- point is never given up, so no curve cuts back into the straight the network needs there.
+		bareA : boolean
+		bareB : boolean
 	end
 
 	-- A leg's curves being fitted (spread over steps, a fillet each): the stage next, the leg as fitted so far, which

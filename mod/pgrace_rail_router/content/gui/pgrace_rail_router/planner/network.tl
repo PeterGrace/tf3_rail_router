@@ -810,15 +810,18 @@ local function across(b : PgraceRailRouterExisting.Bare, p : Pt3) : number
 end
 
 -- The bare end's node whose offset across the axis is nearest `v`, the offset of a place one of our tracks ends at:
--- the station track on that side, nearest it. A copy, with its entity.
-local function bareNode(b : PgraceRailRouterExisting.Bare, v : number) : Pt3
+-- the station track on that side, nearest it. A copy, with its entity; and the direction its own piece leaves it
+-- outward (Bare.dirs, else the end's axis, b.out), which our track joining it must follow: track joined to existing
+-- track 1.8° off its direction was refused.
+local function bareNode(b : PgraceRailRouterExisting.Bare, v : number) : Pt3, Pt
 	local best : Pt3 = nil
-	for __, n in ipairs(b.nodes) do
+	local dir : Pt = nil
+	for i, n in ipairs(b.nodes) do
 		if best == nil or math.abs(across(b, n) - v) < math.abs(across(b, best) - v) then
-			best = n
+			best, dir = n, b.dirs ~= nil and b.dirs[i] or nil
 		end
 	end
-	return { x = best.x, y = best.y, z = best.z, entity = best.entity }
+	return { x = best.x, y = best.y, z = best.z, entity = best.entity }, dir or b.out
 end
 
 -- A tangent turned to lie along `dir` (a unit vector in plan), keeping its length in plan and its rise.
@@ -966,12 +969,12 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				if #list > 0 then
 					local e = atStart and list[1] or list[#list]
 					local n = atStart and e.node0 or e.node1
-					local node = bareNode(b, across(b, net.nodes[n]))
+					local node, dir = bareNode(b, across(b, net.nodes[n]))
 					net.nodes[n] = node
 					if atStart then
-						e.p0, e.t0 = { x = node.x, y = node.y, z = node.z }, alongDir(e.t0, b.out)
+						e.p0, e.t0 = { x = node.x, y = node.y, z = node.z }, alongDir(e.t0, dir)
 					else
-						e.p1, e.t1 = { x = node.x, y = node.y, z = node.z }, alongDir(e.t1, { x = -b.out.x, y = -b.out.y })
+						e.p1, e.t1 = { x = node.x, y = node.y, z = node.z }, alongDir(e.t1, { x = -dir.x, y = -dir.y })
 					end
 				end
 			end
@@ -992,14 +995,14 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 					local e = atStart and list[1] or list[#list]
 					local n = atStart and e.node0 or e.node1
 					local inner = net.nodes[n]
-					local node = bareNode(b, across(b, inner))
+					local node, dir = bareNode(b, across(b, inner))
 					table.insert(net.nodes, node)
 					local station = #net.nodes
 					local l = atStart and e.s0 or total - e.s1
 					local t = atStart and e.t0 or e.t1
 					local d = math.sqrt(t.x ^ 2 + t.y ^ 2)
 					local tTrack : Pt3 = { x = t.x / d * l, y = t.y / d * l, z = t.z / d * l }
-					local way : Pt = atStart and b.out or { x = -b.out.x, y = -b.out.y }
+					local way : Pt = atStart and dir or { x = -dir.x, y = -dir.y }
 					local g = atStart and gradeStart[k] or gradeEnd[k]
 					local tStation : Pt3 = { x = way.x * l, y = way.y * l, z = g * l }
 					local x : Edge
@@ -1074,8 +1077,12 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 				local d = math.sqrt(tan.x ^ 2 + tan.y ^ 2)
 				local nx, ny = -tan.y / d * out * FAN_SPACING, tan.x / d * out * FAN_SPACING
 				table.insert(net.nodes, { x = tip.x + nx, y = tip.y + ny, z = tip.z })
+				-- The local track's direction at its tip (at a bare end, the station's outer track's own, outward).
+				local tipDir : Pt = { x = tan.x / d, y = tan.y / d }
 				if b ~= nil then
-					net.nodes[#net.nodes] = bareNode(b, across(b, net.nodes[#net.nodes]))
+					local node, dir = bareNode(b, across(b, net.nodes[#net.nodes]))
+					net.nodes[#net.nodes] = node
+					tipDir = atStart and dir or { x = -dir.x, y = -dir.y }
 				end
 				local localNode = #net.nodes
 				local lp = net.nodes[localNode]
@@ -1086,15 +1093,16 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 					local gradeTip = tan.z / d
 					local gradeMerge = gradeAt(list, mergeNode)
 					local tx, ty = tan.x / d * merge, tan.y / d * merge
+					local ux, uy = tipDir.x * merge, tipDir.y * merge
 					local e : Edge
 					if atStart then
 						e = { node0 = localNode, node1 = mergeNode, p0 = { x = lp.x, y = lp.y, z = lp.z },
-							p1 = { x = m.x, y = m.y, z = m.z }, t0 = { x = tx, y = ty, z = gradeTip * merge },
+							p1 = { x = m.x, y = m.y, z = m.z }, t0 = { x = ux, y = uy, z = gradeTip * merge },
 							t1 = { x = tx, y = ty, z = gradeMerge * merge }, s0 = 0, s1 = merge }
 					else
 						e = { node0 = mergeNode, node1 = localNode, p0 = { x = m.x, y = m.y, z = m.z },
 							p1 = { x = lp.x, y = lp.y, z = lp.z }, t0 = { x = tx, y = ty, z = gradeMerge * merge },
-							t1 = { x = tx, y = ty, z = gradeTip * merge }, s0 = total - merge, s1 = total }
+							t1 = { x = ux, y = uy, z = gradeTip * merge }, s0 = total - merge, s1 = total }
 					end
 					e.kind, e.track, e.leg = "ground", FAN_TRACK, li
 					-- Leaving the station: the tracks on the right of the way out (track 2 at the start, 1 at the end).
@@ -1174,6 +1182,25 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			junctionEnd, splitsEnd, problemEnd = junctionEdges(net, eEnd, jEnd, sideEnd,
 				{ tracks[1][#tracks[1]].node1, tracks[2][#tracks[2]].node1 }, false, total, li)
 		end
+		-- A bare end left unjoined (the leg too short for an island end's S-curves, or a fan end's fan: the station's
+		-- tracks there would be left unconnected, or its outer tracks) is reported as the chunk's problem, so the check
+		-- shows it and nothing is built. The planner gives a bare end the straight its kind needs, so this is a backstop.
+		local function bareProblem(b : PgraceRailRouterExisting.Bare, station : PgraceRailRouterRoute.Station,
+				island : boolean, merge : number) : string
+			if b == nil then
+				return nil
+			end
+			local where = ("the existing station in %s"):format(station.town ~= nil and station.town.name or "?")
+			if b.kind == "island" and not island then
+				return ("the line at %s is too short (%.0f m) for the curves onto its island platform's tracks"):format(where,
+					total)
+			elseif b.kind == "fan" and merge <= 0 then
+				return ("the line at %s has no room for the fan joining its outer tracks"):format(where)
+			end
+			return nil
+		end
+		problemStart = problemStart or bareProblem(bStart, stations[li], islandStart, mergeStart)
+		problemEnd = problemEnd or bareProblem(bEnd, stations[li + 1], islandEnd, mergeEnd)
 		local added : {boolean} = {}
 		-- Chunk cut points: after chunkLength of centre line, at the next edge end that isn't inside a bridge or tunnel.
 		local left, right = tracks[1], tracks[2]

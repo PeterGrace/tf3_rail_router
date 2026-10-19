@@ -83,12 +83,16 @@ global record PgraceRailRouterExisting
 	-- line joins them directly, as it joins a station of ours. kind, by the nodes' offsets across the axis from their
 	-- midpoint (within 0.5 m): "direct" (2 tracks 5 m apart: our two tracks end on them), "island" (2 tracks 10 m
 	-- apart: each of ours eases out 2.5 m to its own), "fan" (4 tracks at ±2.5 and ±7.5 m: our two end on the inner
-	-- two, and the outer two merge into ours as Halt 2+2's fan does), or "other" (anything else: not joined). nodes:
-	-- the end nodes (each with its entity, at its piece's end, height included), left to right looking outward
-	-- (nodes[1] the leftmost); mid: their mean (height included); out: the unit outward direction (station.dir × k).
+	-- two, and the outer two merge into ours as Halt 2+2's fan does), "staggered" (one of those, but the nodes more
+	-- than 1 m apart along the axis: not joined), or "other" (anything else: not joined). nodes: the end nodes (each
+	-- with its entity, at its piece's end, height included), left to right looking outward (nodes[1] the leftmost);
+	-- dirs: each node's own piece's direction there, pointing outward (unit, in plan; nil where its tangent is zero),
+	-- which our track joining it follows; mid: their mean (height included); out: the unit outward direction
+	-- (station.dir × k).
 	record Bare
 		kind : string
 		nodes : {PgraceRailRouterNetwork.Pt3}
+		dirs : {PgraceRailRouterGeo.Pt}
 		mid : PgraceRailRouterNetwork.Pt3
 		out : PgraceRailRouterGeo.Pt
 	end

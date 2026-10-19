@@ -1501,3 +1501,16 @@ t.test("route: time lost at an existing station counts its own half platform, no
 		t.near(leg.timeLost, expected, 1e-9, "leg " .. k .. " time lost")
 	end
 end)
+
+t.test("route: an existing station whose tracks end 20 m apart along the axis falls back, with a note", function()
+	local station, snap = bareStation(3000, 120, { 2.5, -2.5 }, 0)
+	-- The −y track's piece runs 20 m further at +x (as one a module longer).
+	for __, p in ipairs(snap.pieces) do
+		if p.p0.y == -2.5 then
+			p.p1 = { x = p.p1.x + 20, y = p.p1.y, z = p.p1.z }
+			p.t0, p.t1 = { x = p.p1.x - p.p0.x, y = 0, z = 0 }, { x = p.p1.x - p.p0.x, y = 0, z = 0 }
+		end
+	end
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: its tracks at the C end don't end "
+		.. "level with each other; a new station was planned.")
+end)

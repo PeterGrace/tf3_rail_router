@@ -1299,3 +1299,57 @@ t.test("network: a station with a junction at one end and a bare end at the othe
 		t.ok(x.s0 > 2000, "at the bare end")
 	end
 end)
+
+t.test("network: our tracks join a bare end's nodes along their own pieces' directions, not the end's axis", function()
+	local a = math.rad(0.8)
+	for __, kind in ipairs({ "direct", "island", "fan" }) do
+		for __, o in ipairs({ network.defaults(), halt() }) do
+			local l = leg({ straight(0, 0, 3000, 0) })
+			local bs = bareEnd(kind, 0, 0, 10, { x = 1, y = 0 }, KINDS[kind], 0.03)
+			local be = bareEnd(kind, l.length, 0, 10, { x = -1, y = 0 }, KINDS[kind], 0.03, 800)
+			-- Each node's piece turned by ±0.8° (alternating), outward.
+			for __, b in ipairs({ bs, be }) do
+				b.dirs = {}
+				for i = 1, #b.nodes do
+					local r = (i % 2 == 0 and 1 or -1) * a
+					b.dirs[i] = { x = b.out.x * math.cos(r) - b.out.y * math.sin(r), y = b.out.x * math.sin(r) + b.out.y * math.cos(r) }
+				end
+			end
+			local stations = { bareSt(bs, true), bareSt(be, false) }
+			local net = network.build({ ok = true, legs = { l }, stations = stations, platformLength = 160 }, o)
+			for __, b in ipairs({ bs, be }) do
+				for i, sn in ipairs(b.nodes) do
+					local __, ni = nodeOf(net, sn.entity)
+					t.ok(ni ~= nil, kind .. ": node " .. sn.entity .. " joined")
+					for __, e in ipairs(net.edges) do
+						if e.node0 == ni or e.node1 == ni then
+							-- Leaving the station (node0) along its direction out; arriving (node1) along it inward.
+							local tg = e.node0 == ni and e.t0 or { x = -e.t1.x, y = -e.t1.y }
+							local d = math.sqrt(tg.x ^ 2 + tg.y ^ 2)
+							t.near((tg.x * b.dirs[i].x + tg.y * b.dirs[i].y) / d, 1, 1e-12, kind .. ": node " .. sn.entity
+								.. "'s edge along its piece")
+						end
+					end
+				end
+			end
+		end
+	end
+end)
+
+t.test("network: a bare island or fan end the leg is too short for is a chunk problem", function()
+	for __, case in ipairs({ { "island", 120 }, { "fan", 60 } }) do
+		local net = bareNet(case[1], nil, nil, { straight(0, 0, case[2], 0) })
+		local problem
+		for __, c in ipairs(net.chunks) do
+			problem = problem or c.problem
+		end
+		t.ok(problem ~= nil, case[1] .. ": a problem")
+		t.ok(problem:find("existing station", 1, true) ~= nil, case[1] .. ": " .. tostring(problem))
+	end
+	for __, kind in ipairs({ "direct", "island", "fan" }) do
+		local net = bareNet(kind, kind)
+		for __, c in ipairs(net.chunks) do
+			t.eq(c.problem, nil, kind .. ": no problem on a 3 km leg")
+		end
+	end
+end)

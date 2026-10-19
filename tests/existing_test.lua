@@ -505,3 +505,34 @@ t.test("existing: a bare end's kind follows its tracks' offsets, within 0.5 m", 
 		t.eq(bare.kind, case[2], table.concat(case[1], ", "))
 	end
 end)
+
+t.test("existing: a bare end whose tracks end 20 m apart along the axis is staggered (not joined)", function()
+	local b = builder()
+	b.piece(-80, 2.5, 80, 2.5)
+	b.piece(-80, -2.5, 100, -2.5)
+	local station = { entity = 1, centre = { x = 0, y = 0 }, dir = { x = 1, y = 0 }, half = 85,
+		ends = { b.node(80, 2.5), b.node(100, -2.5), b.node(-80, 2.5), b.node(-80, -2.5) } }
+	local snap = b.snapshot()
+	t.eq(existing.bareEnd(station, snap, 1).kind, "staggered", "+x: staggered")
+	t.eq(existing.bareEnd(station, snap, -1).kind, "direct", "−x: level, direct")
+end)
+
+t.test("existing: a bare end carries each node's own piece's direction there, outward", function()
+	local b = builder()
+	-- The tracks 0.5° off the axis.
+	local rise = 160 * math.tan(math.rad(0.5))
+	b.piece(-80, 2.5, 80, 2.5 + rise)
+	b.piece(-80, -2.5, 80, -2.5 + rise)
+	local station = { entity = 1, centre = { x = 0, y = rise / 2 }, dir = { x = 1, y = 0 }, half = 80,
+		ends = { b.node(80, 2.5 + rise), b.node(80, -2.5 + rise), b.node(-80, 2.5), b.node(-80, -2.5) } }
+	local snap = b.snapshot()
+	local c, s = math.cos(math.rad(0.5)), math.sin(math.rad(0.5))
+	for __, case in ipairs({ { 1, c, s }, { -1, -c, -s } }) do
+		local bare = existing.bareEnd(station, snap, case[1])
+		t.eq(bare.kind, "direct", "kind")
+		for i = 1, 2 do
+			t.near(bare.dirs[i].x, case[2], 1e-12, "end " .. case[1] .. " node " .. i .. " dir x")
+			t.near(bare.dirs[i].y, case[3], 1e-12, "end " .. case[1] .. " node " .. i .. " dir y")
+		end
+	end
+end)
