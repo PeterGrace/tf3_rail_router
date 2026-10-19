@@ -759,7 +759,12 @@ Write these tests, each building a station with the file's existing fan helper a
    stretch", "a piece bulging sideways…", "a change of grade ends the stretch at the kink", "a hump between level
    ends…" now read on (the stretch continues; assert the frame follows the bend or grade instead). Keep "tracks on
    different grades are not a double track" (heights differ by more than 0.3 m).
-7. Rewrite Task 3's line1 test: Aloha's ends each have a stretch through the first curve, at least 600 m long, whose
+7. **"a stretch ending mid-curve"** (at REACH or where the pair check fails on a curve): assert where it ends;
+   past `length` the frame extends straight along the end tangent (callers' footprints use that; it is bounded by
+   REACH and accepted).
+   Note for all curved tests: `midline.world` and `midline.project` agree only to about y·STEP/(2R) on a curve
+   (0.16 m at y = 12.5, R = 190), so round trips on curves need a tolerance of about 0.2 m.
+8. Rewrite Task 3's line1 test: Aloha's ends each have a stretch through the first curve, at least 600 m long, whose
    frame turns by more than 10° somewhere (`midline.straightUntil(frame, 0, 0.005) < frame.length`).
 
 - [ ] **Step 1:** write the arc helper and test 1; run; it fails.
@@ -840,6 +845,23 @@ caps the extension at the stretch's end; cap it also at the straight's end:
 			station.ends[k].length - station.junctions[k].approachX - JUNCTION_STRAIGHT,
 			straightEnd - station.junctions[k].approachX - JUNCTION_STRAIGHT)
 ```
+
+Cap `runRoom` the same way (the leg's run is a straight ray along `out`; past the straight it would leave the
+curving stretch or cut into its footprint), and change its comment from "to the end of its stretch" to "to the end of
+its straight":
+
+```teal
+	local e = station.ends[station.endOf[forward]]
+	local j = station.junctions[station.endOf[forward]]
+	local x = midline.project(e.frame, extension)
+	local stop = math.min(e.length, midline.straightUntil(e.frame, j.approachX, STRAIGHT_TOL))
+	return math.max(0, stop - x)
+```
+
+Also add a network test whose end's `frame` is shifted 100 m along x against its `origin`/`dir`
+(`midline.line(origin + dir·100, …)`): the junction's edges and cuts follow the frame, proving nothing still reads
+`origin`/`dir` for geometry. Fix the stale comments Task 2 left: `route.tl` `addFootprint` ("x along its midline
+from its start, y across"), `network.tl` `pieceAt` ("at x along the frame").
 
 - [ ] **Step 5: Run** the new route test (passes), `just verify`, `just regress`.
 
