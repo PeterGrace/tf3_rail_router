@@ -164,6 +164,17 @@ return function(root)
 		return nil
 	end
 
+	-- The streets' and track's points (Grid.streets, Grid.tracks), as the survey keeps them: every edge but tunnels.
+	function lib.addPoints(g, map)
+		for _, e in ipairs(map.edges) do
+			if e.edgeType ~= "u" then
+				local chord = { x = e.p1.x - e.p0.x, y = e.p1.y - e.p0.y }
+				local add = e.kind == "s" and grid.addStreet or grid.addTrack
+				add(g, e.p0, e.t0 or chord, e.p1, e.t1 or chord)
+			end
+		end
+	end
+
 	-- A grid for the box rasterised from the map.
 	function lib.gridFor(map, box)
 		local cells, stats = maplib.rasterise(map, box.minX, box.minY, box.cell, box.nx, box.ny)
@@ -175,14 +186,7 @@ return function(root)
 		for _, p in ipairs(cells.joints or {}) do
 			grid.addJoint(g, p)
 		end
-		-- The streets' and track's points, as the survey keeps them (every edge but tunnels).
-		for _, e in ipairs(map.edges) do
-			if e.edgeType ~= "u" then
-				local chord = { x = e.p1.x - e.p0.x, y = e.p1.y - e.p0.y }
-				local add = e.kind == "s" and grid.addStreet or grid.addTrack
-				add(g, e.p0, e.t0 or chord, e.p1, e.t1 or chord)
-			end
-		end
+		lib.addPoints(g, map)
 		-- Shore cells sampled finer, as the survey does (from the map's 25 m flags).
 		local n = grid.SHORE_SUB * grid.SHORE_SUB
 		for _, i in ipairs(grid.shoreCells(g)) do
@@ -254,7 +258,8 @@ return function(root)
 	end
 
 	-- Plans from a route capture (tools/capture_file.lua's table). opts: reselect (pick the stops between the
-	-- capture's ends again, as the window would by default), overrides, expansions.
+	-- capture's ends again, as the window would by default), overrides, expansions, map (the streets' and track's
+	-- points from a map of the same save, which captures haven't got).
 	function lib.planCapture(c, opts)
 		opts = opts or {}
 		local g = grid.new(c.x0, c.y0, c.cell, c.nx, c.ny)
@@ -262,6 +267,9 @@ return function(root)
 			g.height[i] = c.height[i] or 0
 			g.blocked[i], g.water[i], g.road[i], g.track[i] = c.blocked[i] or false, c.water[i] or false,
 				c.road[i] or false, c.track[i] or false
+		end
+		if opts.map then
+			lib.addPoints(g, opts.map)
 		end
 		local weights, stops = {}, c.stops
 		for k, v in pairs(c.weights) do

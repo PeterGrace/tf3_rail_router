@@ -72,6 +72,8 @@ local TIME_SLACK = 3.0
 -- The kit's maps (maps/README.md there). A map renamed in the kit is renamed here, and nowhere else.
 local TEST_MAP = "rail-router-test-5x14km.map"
 local BIG_MAP = "big-54-towns-16x16km.map"
+-- The test map with Rail Router's first line (Bangor → Imperial Beach via Aloha, Halt 2+2, 320 m) built on it.
+local TEST_LINE1_MAP = "rail-router-test-5x14km-line1.map"
 -- The player's third save, "PottstownTown" (2254).
 local POTTSTOWN_MAP = "pottstowntown-16x16km.map"
 -- The player's first save, "New Game" (2153).
@@ -119,6 +121,13 @@ local ROUTES = {
 	{ map = TEST_MAP, from = "Bangor", to = "Imperial Beach", mode = "cheapest", track = "Standard Tracks", quick = true,
 		stops = { "Aloha" }, platform = 320, stopsSeen = "Bangor, Aloha, Imperial Beach",
 		base = { length = 12596, estimate = 4423111, tight = 0, bridges = 2, bridgeLength = 213, tunnels = 0, tunnelLength = 0, sweep = 118, timeLost = 0.0 } },
+
+	-- 4b's first in-game test, a second line beside the first: its 447 m bridge over the first line at a shallow
+	-- angle dipped to 6.9 m above it in a cell not marked track ("Collision"); every route now checks its bridges'
+	-- clearance over the maps' track.
+	{ map = TEST_LINE1_MAP, from = "Aloha", to = "Mercer Island", mode = "cheapest", track = "Standard Tracks",
+		quick = true, stops = { "Antelope" }, platform = 320, approach = 225, stopsSeen = "Aloha, Antelope, Mercer Island",
+		base = { length = 8813, estimate = 3175951, tight = 2, bridges = 3, bridgeLength = 611, tunnels = 0, tunnelLength = 0, sweep = 127, timeLost = 1.2 } },
 
 	{ map = BIG_MAP, from = "Ames", to = "Bridgeport", mode = "cheapest", track = "Standard Tracks",
 		stopsSeen = "Ames, Foster City, Temple City, Miami, Bridgeport",
@@ -230,6 +239,11 @@ local CAPTURE_ROUTES = {
 	{ capture = "newgame-16x16km.alliance-aloha-fastest-2154.capture", maxTimeLost = 95, maxTight = 28,
 		stopsSeen = "Alliance, Hemet, Turlock, Owings Mills, Aloha",
 		base = { length = 11459, estimate = 15405686, tight = 27, bridges = 10, bridgeLength = 3758, tunnels = 1, tunnelLength = 300, sweep = 180, timeLost = 90.7 } },
+	-- 4b's first in-game test (2026-10-19), as planned in-game, with the map's streets and track (captured 7 minutes
+	-- later): its 447 m bridge over the first line at a shallow angle dipped to 6.9 m above it ("Collision").
+	{ capture = "rail-router-test-5x14km-line1.aloha-mercer-island.capture", map = TEST_LINE1_MAP,
+		stopsSeen = "Aloha, Antelope, Mercer Island",
+		base = { length = 9329, estimate = 3246139, tight = 2, bridges = 4, bridgeLength = 810, tunnels = 0, tunnelLength = 0, sweep = 119, timeLost = 2.4 } },
 }
 
 -- The in-game route captures beside the maps, and how far the maps are from them (tools/compare_capture.lua's
@@ -248,6 +262,9 @@ local CAPTURES = {
 		maxHeight = 5.58 },
 	{ map = NEWGAME2_MAP, capture = "newgame2-16x16km.cornelius-perth-amboy.capture", water = 10, meanHeight = 0.14,
 		maxHeight = 3.55 },
+	-- The 46 blocked cells are the bottom row, on the map's edge: off the map in-game, valid points in the map.
+	{ map = TEST_LINE1_MAP, capture = "rail-router-test-5x14km-line1.aloha-mercer-island.capture", water = 5,
+		blocked = 46, meanHeight = 0.02, maxHeight = 2.81 },
 }
 
 local probe = io.open(mapsDir .. "/" .. TEST_MAP, "r")
@@ -283,6 +300,49 @@ local function noWorse(label, now, base, share, slack)
 	t.ok(base ~= nil, label .. ": no baseline recorded")
 	local limit = base * (1 + share) + (slack or 0)
 	t.ok(now <= limit + 1e-6, ("%s %.0f, baseline %.0f (at most %.0f)"):format(label, now, base, limit))
+end
+
+-- Per map, its track's points (every 2 m, with heights) bucketed by 50 m square.
+local trackPoints = {}
+local function trackClearance(map, plan)
+	local index = trackPoints[map]
+	if index == nil then
+		index = {}
+		for __, e in ipairs(map.edges) do
+			if e.kind == "t" and e.edgeType ~= "u" and e.t0 ~= nil and e.t1 ~= nil then
+				local len = math.sqrt((e.p1.x - e.p0.x) ^ 2 + (e.p1.y - e.p0.y) ^ 2)
+				local n = math.max(2, math.ceil(len / 2))
+				for k = 0, n do
+					local u = k / n
+					local u2, u3 = u * u, u * u * u
+					local a, b, c, d = 2 * u3 - 3 * u2 + 1, u3 - 2 * u2 + u, -2 * u3 + 3 * u2, u3 - u2
+					local x = a * e.p0.x + b * e.t0.x + c * e.p1.x + d * e.t1.x
+					local y = a * e.p0.y + b * e.t0.y + c * e.p1.y + d * e.t1.y
+					local key = math.floor(x / 50) .. "," .. math.floor(y / 50)
+					index[key] = index[key] or {}
+					table.insert(index[key], { x, y, e.p0.z + (e.p1.z - e.p0.z) * u })
+				end
+			end
+		end
+		trackPoints[map] = index
+	end
+	local near = 15.0
+	local least, at = math.huge, nil
+	for __, leg in ipairs(plan.legs) do
+		for i, smp in ipairs(leg.samples) do
+			local bx, by = math.floor(smp.p.x / 50), math.floor(smp.p.y / 50)
+			for kx = bx - 1, bx + 1 do
+				for ky = by - 1, by + 1 do
+					for __, q in ipairs(index[kx .. "," .. ky] or {}) do
+						if (q[1] - smp.p.x) ^ 2 + (q[2] - smp.p.y) ^ 2 <= near * near and leg.z[i] - q[3] < least then
+							least, at = leg.z[i] - q[3], smp.p
+						end
+					end
+				end
+			end
+		end
+	end
+	return least, at
 end
 
 local better = {}
@@ -339,6 +399,13 @@ local function check(rt, planFn, name)
 	t.eq(#below, rt.knownBelow or 0, "arcs below " .. r.weights.minBuildRadius .. " m: " .. table.concat(list, "; "))
 	local blocked = lib.blockedSamples(r)
 	t.eq(#blocked, rt.knownBlocked or 0, "samples on blocked cells")
+	-- Bridges clear the maps' track: every sample within TRACK_NEAR of a track point is BRIDGE_ABOVE over it, less a
+	-- little for the track's own height between its ends (taken as a straight line).
+	if rt.map ~= nil then
+		local least, at = trackClearance(loadMap(rt.map), plan)
+		t.ok(least >= r.weights.bridgeAbove - 0.5, ("least clearance over track %.1f m at (%.0f, %.0f)"):format(least,
+			at and at.x or 0, at and at.y or 0))
+	end
 	-- No station over a street (stations.tl's footprint: the building's side faces the town). A route capture has no
 	-- streets' points, so this checks only routes planned on a map.
 	for __, st in ipairs(plan.stations) do
@@ -465,8 +532,9 @@ if full then
 	for _, rt in ipairs(CAPTURE_ROUTES) do
 		t.test("regression: " .. rt.capture, function()
 			local c = lib.capture.load(mapsDir .. "/" .. rt.capture)
+			local map = rt.map and loadMap(rt.map) or nil
 			check(rt, function()
-				return lib.planCapture(c)
+				return lib.planCapture(c, { map = map })
 			end, rt.capture)
 		end)
 	end
@@ -495,7 +563,7 @@ if full then
 					end
 				end
 			end
-			t.eq(differ.blocked, 0, c.capture .. " blocked")
+			t.eq(differ.blocked, c.blocked or 0, c.capture .. " blocked")
 			t.eq(differ.road, c.road or 0, c.capture .. " road")
 			t.eq(differ.track, 0, c.capture .. " track")
 			t.ok(differ.water <= c.water, c.capture .. " water " .. differ.water)
