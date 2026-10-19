@@ -7,6 +7,7 @@ local speed = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/sp
 local existing = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/existing.tl" as PgraceRailRouterExisting
 local junction = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/junction.tl" as PgraceRailRouterJunction
 local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/area.tl" as PgraceRailRouterArea
+local midline = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/midline.tl" as PgraceRailRouterMidline
 
 local route : PgraceRailRouterRoute = {}
 
@@ -340,11 +341,12 @@ end
 local function junctionEnds(input : Input, station : Station, forward : boolean) : Pt, Pt, Pt, number, number
 	local k = station.endOf[forward]
 	local e, j = station.ends[k], station.junctions[k]
-	local left : Pt = { x = -e.dir.y, y = e.dir.x }
 	local x, a = j.approachX, JUNCTION_STRAIGHT
-	local platformEnd = geo.add(geo.add(e.origin, geo.scale(e.dir, x)), geo.scale(left, JUNCTION_OFFSET * station.sides[k]))
-	local approach = geo.add(platformEnd, geo.scale(e.dir, a))
-	return platformEnd, approach, e.dir, e.z + e.grade * x, e.z + e.grade * (x + a)
+	local p = midline.world(e.frame, x, JUNCTION_OFFSET * station.sides[k])
+	local __, out = midline.at(e.frame, x)
+	local platformEnd : Pt = { x = p.x, y = p.y }
+	local approach = geo.add(platformEnd, geo.scale(out, a))
+	return platformEnd, approach, out, p.z, p.z + midline.grade(e.frame, x) * a
 end
 
 -- The track's height where a leg leaves (forward = true) or arrives at a station: its own height, or at an existing
@@ -440,7 +442,8 @@ local function runRoom(station : Station, forward : boolean, extension : Pt) : n
 		return math.huge
 	end
 	local e = station.ends[station.endOf[forward]]
-	return math.max(0, e.length - geo.dot(geo.sub(extension, e.origin), e.dir))
+	local x = midline.project(e.frame, extension)
+	return math.max(0, e.length - x)
 end
 
 -- Where a leg's search starts or ends at a station (its extension point), and its room to turn: how far the
@@ -486,13 +489,13 @@ local function addFootprint(input : Input, station : Station, cells : {integer :
 			axis(c, b.out, -half, half + approachAtEnd(input, station, k))
 		end
 		for k, e in pairs(station.ends) do
-			local left : Pt = { x = -e.dir.y, y = e.dir.x }
 			-- In the stretch's frame (x from its start, across from its midline): from back at the station's centre out
 			-- to where our straight may reach (its approach, room to turn at the full radius, and run, and a cell more).
-			local x = -geo.dot(geo.sub(e.origin, c), e.dir)
+			local back = midline.project(e.frame, c)
+			local x = back
 			local reach = station.junctions[k].approachX + JUNCTION_STRAIGHT + extensionLength(input, nil) + MAX_END_RUN
 				+ g.cell
-			local far = math.min(reach, existing.REACH - geo.dot(geo.sub(e.origin, c), e.dir) + station.existing.half)
+			local far = math.min(reach, existing.REACH + back + station.existing.half)
 			reach = math.min(e.length, reach)
 			local side = station.sides[k]
 			while x <= math.max(reach, far) + 1e-6 do
@@ -500,7 +503,8 @@ local function addFootprint(input : Input, station : Station, cells : {integer :
 				-- open, so a leg in line with the station may still come in along it (spaced turns can't jog one cell aside).
 				local y = x <= reach + 1e-6 and 2.5 or -(2.5 + g.cell / 2)
 				while y >= -(2.5 + g.cell) - 1e-6 do
-					local p = geo.add(geo.add(e.origin, geo.scale(e.dir, x)), geo.scale(left, y * side))
+					local q = midline.world(e.frame, x, y * side)
+					local p : Pt = { x = q.x, y = q.y }
 					if grid.inside(g, p) then
 						local ix, iy = grid.cellOf(g, p)
 						cells[grid.index(g, ix, iy)] = true
@@ -537,13 +541,13 @@ end
 local function alongFreeCells(input : Input, plan : Plan) : {integer : boolean}
 	local g = input.grid
 	local cells : {integer : boolean} = {}
-	local function band(o : Pt, dir : Pt, x0 : number, x1 : number)
-		local left : Pt = { x = -dir.y, y = dir.x }
+	local function band(f : PgraceRailRouterMidline.Frame, x0 : number, x1 : number)
 		local x = x0
 		while x <= x1 + 1e-6 do
 			local y = -12.0
 			while y <= 12.0 + 1e-6 do
-				local p = geo.add(geo.add(o, geo.scale(dir, x)), geo.scale(left, y))
+				local q = midline.world(f, x, y)
+				local p : Pt = { x = q.x, y = q.y }
 				if grid.inside(g, p) then
 					local ix, iy = grid.cellOf(g, p)
 					cells[grid.index(g, ix, iy)] = true
@@ -557,10 +561,10 @@ local function alongFreeCells(input : Input, plan : Plan) : {integer : boolean}
 		local st = station.existing
 		if st ~= nil then
 			local dir = geo.norm(st.dir)
-			band(st.centre, dir, -st.half, st.half)
+			band(midline.line(st.centre, dir, 0, 0, 2 * st.half), -st.half, st.half)
 			for __, e in pairs(station.ends) do
 				-- Half a cell short of the stretch's end, so a cell overhanging it, where the line runs on, isn't free.
-				band(e.origin, e.dir, -geo.dot(geo.sub(e.origin, st.centre), e.dir), e.length)
+				band(e.frame, midline.project(e.frame, st.centre), e.length)
 			end
 		end
 	end

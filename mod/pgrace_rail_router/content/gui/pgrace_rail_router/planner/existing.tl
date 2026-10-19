@@ -1,3 +1,4 @@
+local midline = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/midline.tl" as PgraceRailRouterMidline
 local junction = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/junction.tl" as PgraceRailRouterJunction
 
 local existing : PgraceRailRouterExisting = {}
@@ -460,6 +461,7 @@ local function readEnd(st : Stretch, side : number, ox : number, oy : number, ex
 	table.sort(e.signals.far)
 	table.sort(e.nodes.near)
 	table.sort(e.nodes.far)
+	e.frame = midline.line(e.origin, e.dir, e.z, e.grade, e.length)
 	return e, nil
 end
 

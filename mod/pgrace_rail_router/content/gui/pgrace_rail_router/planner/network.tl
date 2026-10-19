@@ -1,4 +1,5 @@
 local geo = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/geo.tl" as PgraceRailRouterGeo
+local midline = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/midline.tl" as PgraceRailRouterMidline
 
 local network : PgraceRailRouterNetwork = {}
 
@@ -622,7 +623,7 @@ local function junctionOf(station : PgraceRailRouterRoute.Station, forward : boo
 end
 
 -- A junction's edges (track 4) at the leg's start (atStart) or end, into net.nodes: each junction piece taken from the
--- frame (x along e.dir from e.origin, y to its left) to the world, one edge never split (`whole`), then a straight on
+-- stretch's frame (e.frame) to the world, one edge never split (`whole`), then a straight on
 -- our track from each piece's outer end to the leg's track end beside it (`ends`: the two tracks' end nodes). Where
 -- our two tracks run side by side (from the outermost piece end on), the straights are a parallel pair (`paired`), so
 -- the far track's straight is cut there. At the leg's start they run outward, at its end inward (pieces reversed:
@@ -633,19 +634,21 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 		j : PgraceRailRouterJunction.Layout, side : number, ends : {integer}, atStart : boolean, total : number,
 		li : integer)
 		: {Edge}, {PgraceRailRouterNetwork.Split}, string
-	local left : Pt = { x = -e.dir.y, y = e.dir.x }
+	local f = e.frame
 	local function world(x : number, y : number) : Pt3
-		return { x = e.origin.x + e.dir.x * x + left.x * y, y = e.origin.y + e.dir.y * x + left.y * y,
-			z = e.z + e.grade * x }
+		return midline.world(f, x, y)
 	end
-	local function vec(tx : number, ty : number) : Pt3
-		return { x = e.dir.x * tx + left.x * ty, y = e.dir.y * tx + left.y * ty, z = e.grade * tx }
+	-- A frame vector (tx along, ty across) at frame x, in the world.
+	local function vec(x : number, tx : number, ty : number) : Pt3
+		return midline.vector(f, x, tx, ty)
 	end
 	local function frameY(p : Pt3) : number
-		return (p.x - e.origin.x) * left.x + (p.y - e.origin.y) * left.y
+		local __, y = midline.project(f, { x = p.x, y = p.y })
+		return y
 	end
 	local function frameX(p : Pt3) : number
-		return (p.x - e.origin.x) * e.dir.x + (p.y - e.origin.y) * e.dir.y
+		local x = midline.project(f, { x = p.x, y = p.y })
+		return x
 	end
 	-- The piece on `track` whose x range holds x, and its parameter where its curve is at x along the axis (bisected,
 	-- so the node sits exactly there, whichever way the piece was laid).
@@ -763,14 +766,14 @@ local function junctionEdges(net : PgraceRailRouterNetwork.Network, e : PgraceRa
 				local from, x = b, pc.x1
 				if pairX - x > MIN_EDGE then
 					local mid = newNode(world(pairX, pc.y1))
-					add(from, mid, x, pairX, vec(pairX - x, 0), vec(pairX - x, 0))
+					add(from, mid, x, pairX, vec(x, pairX - x, 0), vec(pairX, pairX - x, 0))
 					from, x = mid, pairX
 				end
 				local d = j.approachX - x
-				add(from, n, x, j.approachX, vec(d, 0), vec(d, 0)).paired = true
+				add(from, n, x, j.approachX, vec(x, d, 0), vec(j.approachX, d, 0)).paired = true
 			end
 		end
-		add(a, b, pc.x0, pc.x1, vec(pc.tx0, pc.ty0), vec(pc.tx1, pc.ty1)).whole = true
+		add(a, b, pc.x0, pc.x1, vec(pc.x0, pc.tx0, pc.ty0), vec(pc.x1, pc.tx1, pc.ty1)).whole = true
 	end
 	return edges, splits, problem
 end

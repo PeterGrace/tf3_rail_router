@@ -536,3 +536,15 @@ t.test("existing: a bare end carries each node's own piece's direction there, ou
 		end
 	end
 end)
+
+t.test("existing: a usable end carries its frame, a line along the stretch", function()
+	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
+	local b, station = plain()
+	local r = existing.analyse(station, b.snapshot(), { [1] = 1, [-1] = 1 }, R)
+	local e = r.ends[1]
+	t.ok(e ~= nil and e.frame ~= nil, "a frame")
+	local p = midline.world(e.frame, 50, 0)
+	t.near(p.x, e.origin.x + e.dir.x * 50, 1e-9, "x along the stretch") t.near(p.y, e.origin.y + e.dir.y * 50, 1e-9, "y")
+	t.near(p.z, e.z + e.grade * 50, 1e-9, "z on its grade")
+	t.near(e.frame.length, e.length, 1e-9, "as long as the stretch")
+end)

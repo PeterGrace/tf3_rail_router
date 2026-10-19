@@ -1,5 +1,6 @@
 local t = ...
 local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 
 -- A leg along x from (0, 0): pieces as given, flat at height z unless heights are given as {s, z} pairs, spans as
 -- {kind, s0, s1}. Samples every 25 m, as route.tl makes them.
@@ -595,6 +596,7 @@ end
 local function exEnd(origin, dir, side, z, grade, near)
 	local e = { origin = origin, dir = dir, z = z, grade = grade, length = 700, pieces = { near = {}, far = {} },
 		signals = { near = {}, far = {} } }
+	e.frame = midline.line(origin, dir, z, grade, 700)
 	for __, p in ipairs(near or { { 101, 0, 700 } }) do
 		table.insert(e.pieces.near, exPiece(e, p[1], p[2], p[3], 2.5 * side))
 	end
@@ -988,6 +990,7 @@ t.test("network: junctions at both ends of a leg; heights on the stretch's grade
 	local st2, j2 = exStation(e2, -1, false)
 	e2.origin = { x = ax + j2.approachX, y = 0 }
 	e2.z = 20 + 0.01 * j1.approachX
+	e2.frame = midline.line(e2.origin, e2.dir, e2.z, 0, e2.length)
 	e2.pieces = exEnd(e2.origin, e2.dir, -1, e2.z, 0).pieces
 	local net = network.build({ ok = true, legs = { l }, stations = { st1, st2 }, platformLength = 160 },
 		network.defaults())

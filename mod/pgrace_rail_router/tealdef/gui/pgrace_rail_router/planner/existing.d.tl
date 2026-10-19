@@ -54,6 +54,9 @@ global record PgraceRailRouterExisting
 		pieces : {string : {Piece}}
 		signals : {string : {number}}
 		nodes : {string : {number}}
+		-- The stretch's frame (milestone 4c): x along its midline from its start, y to the left. Every use of the
+		-- stretch's geometry goes through it; on a straight stretch it is midline.line(origin, dir, z, grade, length).
+		frame : PgraceRailRouterMidline.Frame
 	end
 
 	-- Both ends: [1] the end at +dir, [-1] the one at −dir; nil where not usable, and why in `why` ("no double
