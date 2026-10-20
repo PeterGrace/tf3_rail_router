@@ -3,8 +3,10 @@ local junction : PgraceRailRouterJunction = {}
 local type Layout = PgraceRailRouterJunction.Layout
 local type Piece = PgraceRailRouterJunction.Piece
 
--- Every cut stays this far from existing signals and from the stretch's start (metres): the clearance our own
--- signals keep from edge ends (a signal 3 m from a node collided with track joined there).
+-- Every cut stays this far from the stretch's start, and the junction's whole span this far from existing signals
+-- (metres): the clearance our own signals keep from edge ends (a signal 3 m from a node collided with track joined
+-- there). A signal stands beside its track, so one between the cuts lies under a junction piece leaving or meeting
+-- that track: Aloha's cross-in piece, with a block signal 19 m before its crossing, was refused at build time.
 local CLEAR = 15.0
 local GAP = 20.0
 local APPROACH = 30.0
@@ -28,9 +30,10 @@ function junction.needed(radius : number) : number
 	return junction.sCurve(10, radius) + 2 * junction.crossRun(radius) + GAP + APPROACH + 2 * CLEAR
 end
 
-local function clear(x : number, signals : {number}) : boolean
-	for __, s in ipairs(signals) do
-		if math.abs(x - s) < CLEAR then
+-- No signal within CLEAR of the span x0..x1.
+local function clear(x0 : number, x1 : number, signals : {number}) : boolean
+	for __, s in ipairs(signals or {}) do
+		if s > x0 - CLEAR and s < x1 + CLEAR then
 			return false
 		end
 	end
@@ -111,8 +114,9 @@ function junction.fit(length : number, radius : number, side : number, signals :
 			local c0 = try + l + GAP
 			local crossing = c0 + c
 			local ms, cs = switchAt(try, near), switchAt(c0, far)
-			if ms ~= nil and cs ~= nil and crossingClear(crossing, near) and clear(ms, signals.near)
-					and clear(crossing, signals.near) and clear(cs, signals.far) then
+			-- Signals on either track clear of everything from the merge's switch to the cross-out piece's end.
+			if ms ~= nil and cs ~= nil and crossingClear(crossing, near) and clear(ms, c0 + 2 * c, signals.near)
+					and clear(ms, c0 + 2 * c, signals.far) then
 				local layout : Layout = {
 					approachX = c0 + 2 * c + APPROACH,
 					pieces = {

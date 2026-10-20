@@ -38,8 +38,9 @@ global record PgraceRailRouterJunction
 	crossAngle : function(radius : number) : number
 	-- The x length of each crossing arc at radius r: r sin(crossAngle(r)).
 	crossRun : function(radius : number) : number
-	-- The junction nearest the stretch's start that fits, keeping every cut CLEAR (15 m) from the existing signals
-	-- (x positions along the stretch, per track) and from the stretch's start: nil if none fits within `length`.
+	-- The junction nearest the stretch's start that fits, keeping every cut CLEAR (15 m) from the stretch's start, and
+	-- the existing signals (x positions along the stretch, per track; both tracks') CLEAR from its whole span, the
+	-- merge's switch to the cross-out piece's end: nil if none fits within `length`.
 	-- `nodes` (nil: none): each track's existing nodes (its pieces' ends) as x along the stretch. A switch cut keeps
 	-- every node 20 m outward of it and 3 m behind it away (the game refuses a switch whose main track on the branch's
 	-- side is 16.6 m or shorter), but one within 0.5 m, which becomes the switch (the cut and its piece's end move

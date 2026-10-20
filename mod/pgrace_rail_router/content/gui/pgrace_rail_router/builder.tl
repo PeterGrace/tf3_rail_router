@@ -596,7 +596,8 @@ function builder.diagnose(net : Network, first : integer, last : integer, settin
 				if not ok and logged < 12 then
 					logged = logged + 1
 					debugPrint(LOG_PREFIX .. ("diagnose edge %d (%s, track %d, s %.1f-%.1f): %s; %s -> %s, t0 (%.2f %.2f %.3f) t1 (%.2f %.2f %.3f)")
-						:format(i, e.kind, e.track, e.s0, e.s1, table.concat(messages, "; "), fmt(e.p0), fmt(e.p1), e.t0.x, e.t0.y,
+						:format(i, e.kind, e.track, e.s0, e.s1, table.concat(messages, "; "), fmt(net.nodes[e.node0]),
+						fmt(net.nodes[e.node1]), e.t0.x, e.t0.y,
 						e.t0.z, e.t1.x, e.t1.y, e.t1.z))
 				end
 			end

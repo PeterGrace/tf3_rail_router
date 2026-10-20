@@ -46,7 +46,8 @@ Running directions (signals, right-hand by default, left-hand not usable) are un
 
 ## Fitting
 
-`junction.fit` keeps its placements and rules: every cut 15 m clear of signals and of the stretch's start, switch
+`junction.fit` keeps its placements and rules: every cut 15 m clear of the stretch's start (and, since the second
+in-game test, the whole junction 15 m clear of signals), switch
 cuts clear of nodes (20 m outward, 3 m behind, or on one within 0.5 m), the crossing node clear of nodes (3 m, or on
 one), placements tried every 5 m and at nodes. What's new is the mapping and two checks per placement:
 
@@ -162,6 +163,19 @@ connected.
   the builder skip it.
 - **Offline:** `replaylib.planOnMap` takes `links = { [leg] = metres }` (captures hold no train paths); no regression
   route uses it yet.
+
+## Second in-game test (2026-10-20)
+
+The player built Bangor → Aloha via Antelope, then planned Mercer Island → Aloha via Antelope. Two faults:
+
+- **Antelope had no south fan pieces** (network `stretches()` dropped a fan's merge cut 0.24 m from a sample), so its
+  south end read as mixed track and the planner built a new station. Fixed; a scan of 140 station ends on the
+  regression maps finds none without a fan, and every regression route now also builds with Halt 2+2's fans.
+- **Aloha's cross-in piece was refused at build time** ("Construction Not Possible", no collisions), alone too, after
+  both existing pieces were split. Line 1's block signals stood about 19 m inside its span (far switch at x 265,
+  crossing at 303, signals at 285), clear of every cut, which was all `junction.fit` checked. Now both tracks' signals
+  must lie 15 m clear of the junction's whole span, the merge's switch to the cross-out piece's end. Not proven
+  (captures hold no signals), but it was the only piece refused and the only one over a signal.
 
 ## Testing
 

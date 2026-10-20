@@ -79,6 +79,27 @@ t.test("junction: moves out past existing signals, and fails when it can't fit",
 	t.ok(junction.fit(junction.needed(R) - 1, R, 1, { near = {}, far = {} }) == nil, "1 m less is too short")
 end)
 
+t.test("junction: no existing signal anywhere along the junction, on either track", function()
+	-- With nothing in the way the junction spans 15 (the merge's switch) to the cross-out piece's end.
+	local free = junction.fit(600, R, 1, { near = {}, far = {} })
+	local span1 = 0
+	for __, p in ipairs(free.pieces) do
+		span1 = math.max(span1, p.x0, p.x1)
+	end
+	-- A far-track signal between the far switch and the crossing (Aloha: 19 m before it), and a near-track one between
+	-- the merge and the crossing: neither is near a cut, and both move the junction out past them.
+	for __, case in ipairs({ { near = {}, far = { span1 - 40 } }, { near = { 60 }, far = {} } }) do
+		local s = (case.near[1] or case.far[1])
+		local j = junction.fit(600, R, 1, case)
+		t.ok(j ~= nil, "fits further out")
+		local lo, hi = math.huge, -math.huge
+		for __, p in ipairs(j.pieces) do
+			lo, hi = math.min(lo, p.x0, p.x1), math.max(hi, p.x0, p.x1)
+		end
+		t.ok(s <= lo - 15 or s >= hi + 15, ("signal at %.1f 15 m clear of the junction %.1f-%.1f"):format(s, lo, hi))
+	end
+end)
+
 -- With no nodes in the way the merge's switch is at 15, the far switch at 145 and the crossing at 145 + C.
 local function cutsOf(j)
 	local by = {}
