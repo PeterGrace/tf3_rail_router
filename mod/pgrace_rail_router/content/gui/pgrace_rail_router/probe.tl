@@ -2204,6 +2204,53 @@ local function p17Junction(copy : P17Copy, settings : Settings, side : number, d
 	end
 	local net : PgraceRailRouterNetwork.Network = { nodes = nodes, edges = edges, chunks = {} }
 	local proposal = dryRunAll(net, "junction")
+	-- PROBE (remove before release): the merge alone (its S-curve, a dead end), at its planned length and shorter,
+	-- with how close it passes each existing node of its main track: is it the joint past the switch it's refused for?
+	if proposal == nil then
+		pcall(function() : boolean
+			local mc : PgraceRailRouterJunction.Piece = nil
+			for __, pc in ipairs(j.pieces) do
+				if pc.role == "merge" then
+					mc = pc
+				end
+			end
+			local a = cutAt(mc.x0, mc.y0)
+			local track = copy.cuts[1].track
+			local joints : {Pt3} = {}
+			for __, pc in ipairs(list) do
+				if pc.track == track then
+					table.insert(joints, pc.h.p0)
+					table.insert(joints, pc.h.p1)
+				end
+			end
+			for __, len in ipairs({ mc.x1 - mc.x0, 90, 70, 55 }) do
+				local x1 = mc.x0 + len
+				local sub : {Pt3} = { nodes[a], world(x1, mc.y1) }
+				local e : PgraceRailRouterNetwork.Edge = { node0 = 1, node1 = 2, p0 = sub[1], p1 = sub[2],
+					t0 = vec(mc.x0, len, 0), t1 = vec(x1, len, 0), kind = "ground", track = 4, leg = 1, s0 = 0, s1 = len,
+					whole = true }
+				local h : Hermite = { p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }
+				local near : {string} = {}
+				for __, q in ipairs(joints) do
+					local dq = math.sqrt((q.x - sub[1].x) ^ 2 + (q.y - sub[1].y) ^ 2)
+					if dq > 0.5 and dq < len + 5 then
+						local u = network.nearestParam(h, { x = q.x, y = q.y })
+						local r = network.hermiteAt(h, u)
+						table.insert(near, ("node %.1f m out: %.2f m beside"):format(dq,
+							math.sqrt((r.x - q.x) ^ 2 + (r.y - q.y) ^ 2)))
+					end
+				end
+				local pr = builder.chunkProposal({ nodes = sub, edges = { e }, chunks = {} }, 1, 1, settings)
+				local okP, costP, messagesP = false, 0, { "no proposal" }
+				if pr ~= nil then
+					okP, costP, messagesP = builder.dryRun(pr)
+				end
+				log("P17", ("merge alone, %.0f m (tightest radius %s): %s, %d; its track's nodes: %s"):format(len, fmtR(h),
+					okP and "clean" or table.concat(messagesP, "; "), costP, #near > 0 and table.concat(near, ", ") or "none"))
+			end
+			return true
+		end)
+	end
 	if proposal == nil then
 		-- The same with each switch's tangent turned onto the existing track's direction there.
 		local snapped : {PgraceRailRouterNetwork.Edge} = {}
