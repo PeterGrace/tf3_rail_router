@@ -181,7 +181,7 @@ The player built Bangor → Aloha via Antelope, then planned Mercer Island → A
   (merge switch about 330 m out from the platforms), built first time; trains ran through it both ways. Map:
   `maps/rail-router-test-5x14km-junction.map`.
 
-## What P17 found (so far, 2026-10-20)
+## What P17 found (2026-10-20)
 
 - **Cuts on curves build:** both switches and the crossing node were split into 17.5° arc pieces of a 220 m curve
   (the general Hermite split), each within 0.001 m of the curve, and the game took every split and its lane repair.
@@ -191,6 +191,15 @@ The player built Bangor → Aloha via Antelope, then planned Mercer Island → A
   switch 1.32 m beside it; the same merge 90 m long (1.97 m) and shorter were clean, and the cross-in passed a joint
   1.60 m beside it. This holds on straights too (it may be what refused Aloha's cross-in in the first test).
   `junction.fit` now keeps every piece 2 m from every node and cut of both tracks but its own ends.
+- **Whole junctions on the curve build, from either side:** with that rule, `junction.fit` at radius 300 put all three
+  cuts on arc pieces (merge switch x 130, far switch 260, crossing 314.5, 0.03 m or less off the built curve), and
+  both junctions dry-ran clean and built (outside about 98,600, inside about 92,900, standard catenary, flat).
+- **Branch radii on a 220 m curve with 300 m turnouts:** outside, merge 102.5 m and cross out 110 m (the pieces turning
+  against the curve); inside, merge 113 m and cross in 123 m. None came near the game's limit (45 m), and all pass the
+  spec's 100 m floor, so neither side has to be ruled out on the planner's tightest curve; the 100 m check stays,
+  for tighter turnouts or curves.
+- **Mapping is enough:** the frame-mapped tangents met the existing track within 0.01° at the switches; the variant
+  with snapped tangents was never needed.
 
 ## Testing
 
