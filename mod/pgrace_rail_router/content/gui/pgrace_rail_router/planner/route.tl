@@ -1958,8 +1958,8 @@ end
 -- A linked leg (Leg.linked): nothing to build, its length the existing path's.
 local function linkedLeg(input : Input, i : integer) : Leg
 	return { pieces = {}, samples = {}, z = {}, spans = {}, length = input.links[i], minRadius = math.huge, maxGrade = 0,
-		tightCurves = 0, steepEnds = false, blockedSamples = 0, searchExpansions = 0, searchCost = 0, guarded = 0,
-		timeLost = 0, linked = true }
+		tightCurves = 0, steepEnds = false, blockedSamples = 0, searchRadius = 0, searchExpansions = 0, searchCost = 0,
+		guarded = 0, timeLost = 0, linked = true }
 end
 
 -- On to the next leg once one is in plan.legs: true once the last is (the plan is done).

@@ -975,11 +975,12 @@ function survey.trackLink(stationA : integer, stationB : integer) : number
 				end
 			end
 		end
-		debugPrint(LOG_PREFIX .. ("link %d -> %d: %d entries (first %s %s, read by %s), %d pieces, %.0f m, %d unread, %d us")
+		debugPrint(LOG_PREFIX .. ("link %d -> %d: %d entries (first %s %s, read by %s), %d pieces, %.0f m, %d unread, %d us%s")
 			:format(stationA, stationB, #entries, type(entries[1]), tostring(entries[1]), tostring(how), pieces, length,
-			unread, math.floor(clock:getTime()))) -- PROBE (remove before release)
-		-- Nothing readable is no link: a path whose pieces can't be measured can't be weighed.
-		if pieces == 0 then
+			unread, math.floor(clock:getTime()), unread > 0 and "; not linked: some entries unread" or "")) -- PROBE (remove before release)
+		-- Nothing readable is no link: a path whose pieces can't be measured can't be weighed. Nor, until the probe has
+		-- confirmed the path's shape, is a path with any entry unread: measured short, it could pass the detour check.
+		if pieces == 0 or unread > 0 then
 			return nil
 		end
 		return length

@@ -124,7 +124,7 @@ global record PgraceRailRouterRoute
 		timeLost : number
 		-- A linked leg (Input.links): existing track already runs between its two existing stations, so nothing is
 		-- built for it. It has no pieces, samples, heights or spans; its length is the existing path's (counted in
-		-- the line's length, not in the estimate), minRadius math.huge, and the other figures 0.
+		-- the line's length, not in the estimate), minRadius math.huge, and the other figures (searchRadius too) 0.
 		linked : boolean
 	end
 

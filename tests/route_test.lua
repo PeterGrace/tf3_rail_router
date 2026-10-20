@@ -1801,3 +1801,24 @@ t.test("route: a link to a station that can't be used is dropped, and the leg bu
 	t.ok(plan.stations[1].junctions[1] ~= nil, "a junction at A's end facing B")
 	t.eq(#plan.notes, 1, "B's note only: " .. tostring(plan.notes[2]))
 end)
+
+t.test("route: a built first leg, then a linked second: B is joined at its end facing A only", function()
+	local b = { existingStation(4500, { [1] = 1000, [-1] = 1000 }) }
+	local c = { existingStation(7500, { [1] = 1000, [-1] = 1000 }) }
+	local plan = runLinked({ town(1, "A", 1500, -300), town(2, "B", 4500, 0), town(3, "C", 7500, 0) },
+		{ [2] = b, [3] = c }, { [2] = 3200 })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(#plan.legs, 2, "two legs")
+	t.ok(not plan.legs[1].linked and #plan.legs[1].pieces > 0, "the first leg is planned")
+	t.ok(plan.legs[2].linked, "the second leg is linked")
+	t.eq(#plan.legs[2].pieces, 0, "no pieces")
+	local sb, sc = plan.stations[2], plan.stations[3]
+	t.ok(sb.existing == b[1] and sc.existing == c[1], "both existing stations used")
+	t.eq(sb.endOf[false], -1, "B's −x end for A")
+	t.eq(sb.endOf[true], nil, "B's end facing C unused")
+	t.ok(sb.junctions[-1] ~= nil, "a junction at B's end facing A")
+	t.eq(sb.junctions[1], nil, "no junction at B's end facing C")
+	t.eq(next(sc.junctions), nil, "no junction at C")
+	t.eq(#plan.notes, 1, "one note")
+	t.eq(plan.notes[1], "Uses the existing line between B and C (3.2 km).", "note")
+end)

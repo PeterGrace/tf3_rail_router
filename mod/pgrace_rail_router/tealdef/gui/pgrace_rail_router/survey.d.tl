@@ -92,7 +92,7 @@ global record PgraceRailRouterSurvey
 	-- Linked legs (added after 4c stage 1's in-game test): the length (metres) of the train path the game's
 	-- pathfinder finds from any terminal of one station construction to any of the other's (findPathNodeToNode,
 	-- TransportMode.TRAIN: it follows the track's geometry, so a train never reverses on it, and ignores one-way
-	-- signals), summing its track pieces' chords, each piece once. nil where there's no path, or it can't be read
-	-- (logged once). Logs each query (the path's size and how its entries read).
+	-- signals), summing its track pieces' chords, each piece once. nil where there's no path, or any of it can't be
+	-- read (an exception logged once). Logs each query (the path's size and how its entries read).
 	trackLink : function(stationA : integer, stationB : integer) : number
 end
