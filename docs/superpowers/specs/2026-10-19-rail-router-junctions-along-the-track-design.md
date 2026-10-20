@@ -102,6 +102,31 @@ Each stage ends with an in-game test.
    piece, at our split; does the crossing work on a curve; how tight a branch passes.
 3. **A: placements on curves.** In-game, a line joining a station whose only room is on a curve.
 
+## As built: stage 1 (2026-10-19)
+
+- **Reading:** a stretch starts as in 4b (two straight ground pieces across the station's axis past its fan), then
+  each track is walked through plain nodes whatever their shape. At a facing switch the walk follows the branch that
+  isn't a crossover leg (exactly one must be); anything else (a branch, a dead end, a node with four pieces) stops it.
+  The two walks are paired every 2 m (gap 4.5–5.5 m, heights within 0.3 m, square across, both on the ground, no
+  other track within 12 m across, except pieces joined to ours at a switch, and bridges or tunnels more than 6 m above
+  or below). Past a crossover, a bridge or tunnel, or a drift, the reading carries on to the next stretch.
+- **Placement:** every stretch long enough, nearest first, is tried; the junction must lie on straight midline from
+  its first cut to 50 m past its approach start (direction within 0.5%). Our straight past the approach (the leg's
+  run and room to turn) runs on while it stays at least the start's distance less 0.5 m from the existing track and
+  within a grid cell of it: it stops where the line curves towards our side, and runs on where it curves away (the
+  plan's stricter cap at the straight's end turned one test plan from 0 to 4 tight curves).
+- **Footprint:** when the junction is on a later stretch, the track out to it (earlier stretches, and straight gaps
+  between them) is banded too (`Station.before`).
+- **Offline, line1 map (Aloha, Rail Router's own Halt 2+2):** its 4 tracks merge to 2 about 207–266 m from the
+  centre, then crossovers at about 255–382 m cut the double track short (29 m and 66 m stretches); from 382 m each
+  end reads one stretch of about 1276 m through its curve. Junctions: the −1 end's approach starts 347 m from the
+  platform end, the +1 end's 397 m, both on the straight past the curve. Regression route Antelope → Imperial Beach
+  via Aloha joins both ends; the network builds with no chunk problems.
+- **Cost:** reading a station's two ends takes 3–8 ms on the desktop (about 4× in-game, once per plan) and allocates
+  about 1.1 MB in that step (accepted: a one-off hitch).
+- **Captures have no signals,** so offline runs assume right-hand running and no signal clearances; in-game reads
+  the station's one-way signals.
+
 ## Testing
 
 - **Unit:** the midline from synthetic pieces (straight, arc, straight then arc, an S-bend); mapping frame points and
