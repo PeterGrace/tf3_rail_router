@@ -201,6 +201,30 @@ The player built Bangor → Aloha via Antelope, then planned Mercer Island → A
 - **Mapping is enough:** the frame-mapped tangents met the existing track within 0.01° at the switches; the variant
   with snapped tangents was never needed.
 
+## As built: stage 3 (2026-10-20)
+
+- **Placements on curves** (`planner/placement.tl`, `placement.accept` as `junction.fit`'s accept): our straight past
+  the approach start must have its 50 m beside the track (`rayRoom`, checked first: on a curve's inside the track
+  comes back across a straight laid off it within about 46 m), and no mapped piece may be tighter than 100 m unless
+  it is no tighter than the same piece on straight track (the merge S-curve of 150 m turnouts is 94 m as one cubic
+  even on a straight). The spec's separate 2 m clearance from the existing tracks' lines is left out: P17's mapped
+  pieces matched the built curve within 0.03 m, and `junction.fit`'s 2 m node rule covers the joints.
+- **Two places per end:** one fit per stretch finds both the nearest placement anywhere and the nearest on straight
+  midline (a straight placement counts as "anywhere" too). Placements often straddle a curve's end (first cut on the
+  curve, approach past it). Each place's approach straight is checked for buildings when the station is read; places
+  that fail are dropped.
+- **The choice:** each combination of the leg's ends' places (at most 4) runs the leg's whole search, radius tries,
+  fillet and heights; combinations are compared first by arcs below the build minimum, then steep ends, then blocked
+  samples, then **Cheapest: the leg's estimate** (as the spec says; weighing by search cost instead picked a place
+  whose leg ran 14 m beside another line and bridged it 7.3 m clear, under the 7.5 m floor, since crossing clearance
+  is measured from the grid's coarse ground: a follow-up), **Fastest: the time platform to platform**, shared existing
+  track included, ties within 0.5 s by estimate. A combination with no path is skipped. Notes "Joins the existing line
+  N m out from X's platforms." come from the places finally used.
+- **Offline (kit maps):** on line1, Bangor's north end and Aloha's south end have curve places; on the junction map,
+  Mercer Island's north end. Regression routes: Mercer Island → Imperial Beach, Fastest (junction map; joins on the
+  curve's outside, first cut 125 m along, approach 327 m), and Bangor → Antelope, Cheapest (line1; 2 tight curves, the
+  first an 86 m turn back 49 m past the approach: both of Bangor's places point away from Antelope).
+
 ## Testing
 
 - **Unit:** the midline from synthetic pieces (straight, arc, straight then arc, an S-bend); mapping frame points and
