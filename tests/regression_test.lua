@@ -74,6 +74,8 @@ local TEST_MAP = "rail-router-test-5x14km.map"
 local BIG_MAP = "big-54-towns-16x16km.map"
 -- The test map with Rail Router's first line (Bangor → Imperial Beach via Aloha, Halt 2+2, 320 m) built on it.
 local TEST_LINE1_MAP = "rail-router-test-5x14km-line1.map"
+-- The test map restarted with two Rail Router lines, the second joined into the first at a junction south of Antelope.
+local TEST_JUNCTION_MAP = "rail-router-test-5x14km-junction.map"
 -- The player's third save, "PottstownTown" (2254).
 local POTTSTOWN_MAP = "pottstowntown-16x16km.map"
 -- The player's first save, "New Game" (2153).
@@ -139,6 +141,23 @@ local ROUTES = {
 		quick = true, stops = { "Aloha" }, existing = { "Aloha" }, stopsSeen = "Antelope, Aloha, Imperial Beach",
 		maxAllocKB = 1600,
 		base = { length = 8473, estimate = 3131523, tight = 3, bridges = 5, bridgeLength = 683, tunnels = 0, tunnelLength = 0, sweep = 95, timeLost = 2.5 } },
+
+	-- 4c stage 3: junctions on a curve. Mercer Island's north end on the junction map: line 2's track curves 52° right
+	-- over its first 200 m past the fan; Fastest takes the place straddling the curve's end on its outside (first cut
+	-- 125 m out, where the track still turns), not the one on the straight past it (180 m). Its tight curve is the leg's
+	-- turn north towards Imperial Beach about 700 m on, for either place. Both routes' sites step reads the station's
+	-- ends (existing.analyse), 880–990 KB, over STEP_ALLOC_KB, as at Aloha below.
+	{ map = TEST_JUNCTION_MAP, from = "Mercer Island", to = "Imperial Beach", mode = "fastest", track = "Standard Tracks",
+		quick = true, stops = {}, existing = { "Mercer Island" }, curvedAt = "Mercer Island",
+		stopsSeen = "Mercer Island, Imperial Beach", maxAllocKB = 1100,
+		base = { length = 10920, estimate = 3981042, tight = 1, bridges = 2, bridgeLength = 373, tunnels = 0, tunnelLength = 0, sweep = 69, timeLost = 0.0 } },
+	-- Bangor's north end on the line1 map: the line curves 34° left over its first 200 m; Cheapest takes the place on
+	-- the curve's outside (first cut 110 m out) over the one past it (165 m). Both head north-west there, away from
+	-- Antelope: the leg's first turn back, 49 m past the approach start, is an 86 m curve (one of its 2 tight ones).
+	{ map = TEST_LINE1_MAP, from = "Bangor", to = "Antelope", mode = "cheapest", track = "Standard Tracks",
+		quick = true, stops = {}, existing = { "Bangor" }, curvedAt = "Bangor", stopsSeen = "Bangor, Antelope",
+		maxAllocKB = 1100,
+		base = { length = 3519, estimate = 1209325, tight = 2, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 135, timeLost = 9.9 } },
 
 	{ map = BIG_MAP, from = "Ames", to = "Bridgeport", mode = "cheapest", track = "Standard Tracks",
 		stopsSeen = "Ames, Foster City, Temple City, Miami, Bridgeport",
@@ -289,6 +308,7 @@ probe:close()
 local lib = dofile(t.root .. "/tools/replaylib.lua")(t.root)
 local arrows = t.requireTl("gui/pgrace_rail_router/planner/arrows.tl")
 local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 local maps = {}
 local function loadMap(name)
 	if maps[name] == nil then
@@ -464,6 +484,24 @@ local function check(rt, planFn, name)
 	end
 	t.ok(plan.ok, "plans: " .. tostring(plan.failure) .. " " .. table.concat(plan.failureTowns or {}, ", "))
 	-- The existing stations the route joins (rt.existing, by name) are joined, not replaced by a station of ours.
+	-- A route recorded with its junction on a curve (rt.curvedAt, a town): that station's end in use has places, and
+	-- the junction in use doesn't lie wholly on straight midline (milestone 4c stage 3).
+	if rt.curvedAt ~= nil then
+		local curved = false
+		for __, st in ipairs(plan.stations) do
+			if st.town.name == rt.curvedAt then
+				for k, j in pairs(st.junctions or {}) do
+					t.ok(st.places ~= nil and st.places[k] ~= nil, rt.curvedAt .. ": places at end " .. k)
+					local first = math.huge
+					for __, c in ipairs(j.cuts) do
+						first = math.min(first, c.x)
+					end
+					curved = curved or midline.straightUntil(st.ends[k].frame, first, 0.005) < j.approachX + 50
+				end
+			end
+		end
+		t.ok(curved, rt.curvedAt .. "'s junction in use on a curve")
+	end
 	for __, name in ipairs(rt.existing or {}) do
 		for __, st in ipairs(plan.stations) do
 			if st.town.name == name then
