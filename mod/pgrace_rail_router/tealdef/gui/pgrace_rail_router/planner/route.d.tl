@@ -35,6 +35,15 @@ global record PgraceRailRouterRoute
 		links : {integer : number}
 	end
 
+	-- One place a junction end may use (milestone 4c stage 3): the stretch it's on, the junction fitted there, the
+	-- frames of the stretches before it (as Station.before), and whether it lies on curved midline.
+	record Place
+		stretch : PgraceRailRouterExisting.End
+		junction : PgraceRailRouterJunction.Layout
+		before : {PgraceRailRouterMidline.Frame}
+		curved : boolean
+	end
+
 	record Station
 		town : PgraceRailRouterCorridor.Town
 		-- Faces along the scouted line through it: from 600 m (or the full radius's minimum straight, if longer)
@@ -48,8 +57,7 @@ global record PgraceRailRouterRoute
 		-- An existing station the line joins instead of a station of ours (nil: ours). Its site is its own centre
 		-- (distance from the town's centre as for ours), facing the way the line runs through it. On each end it
 		-- uses (by end, ±1, as existing.Result's) the line joins it either at a junction, where track leads on: the
-		-- stretch it's on (ends: the nearest of the end's stretches with room for it on a straight part, milestone 4c)
-		-- and the junction fitted to it (junctions); or, at a bare end (bare: nothing attached,
+		-- stretch it's on (ends: the place in use, see places) and the junction fitted to it (junctions); or, at a bare end (bare: nothing attached,
 		-- see existing.bareEnd), on its free track end nodes directly, as at a station of ours: the leg's end is then
 		-- its platform end (centre + out × existing.half, at bare.mid's height), with Input.approach and room to turn
 		-- beyond it along the axis. The two ends may differ. sides: the side of outward our line comes from (+1
@@ -76,6 +84,9 @@ global record PgraceRailRouterRoute
 		-- nearest first (empty where it's on the first): the track the station's footprint and free cells follow out to
 		-- it (route.tl's leadIn).
 		before : {integer : {PgraceRailRouterMidline.Frame}}
+		-- Per junction end, its places, nearest first (one or two; see route.tl's existingStop): ends, junctions
+		-- and before hold the one in use.
+		places : {integer : {Place}}
 	end
 
 	-- From one station's platform end to the next one's (at an existing station's junction, its approach start, 10 m

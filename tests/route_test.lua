@@ -1080,10 +1080,11 @@ end)
 
 -- A station as existingStation's with only its +x end leading on: 150 m straight past the platform end, then both
 -- tracks turning `deg` degrees left (default 40) on concentric arcs (midline radius 300 m, four pieces each, tangents
--- by the game's 4R·tan(θ/4) rule), then straight on: 600 m in 100 m pieces, or with `xover`, 200 m, a crossover pair
--- (left track at 200 m to the right one at 245 m, and back from 265 m to 310 m, as Halt 2+2's), and 600 m more.
+-- by the game's 4R·tan(θ/4) rule), then straight on: 600 m in 100 m pieces, or with `xover`, `a` m (xover's value
+-- if a number, else 200), a crossover pair (left track at a to the right one at a + 45 m, and back from a + 65 m to
+-- a + 110 m, as Halt 2+2's), and 600 m more. `radius` is the curve's midline radius (default 300).
 -- Returns the station, its snapshot and x (along the midline from the platform end) where the curve ends.
-local function curvedStation(cx, deg, xover)
+local function curvedStation(cx, deg, xover, radius)
 	local station, snap = existingStation(cx, {})
 	local pieces, ids, nextNode = snap.pieces, {}, 1000
 	local function node(x, y)
@@ -1105,12 +1106,22 @@ local function curvedStation(cx, deg, xover)
 			p0 = { x = p0.x, y = p0.y, z = 0 }, p1 = { x = p1.x, y = p1.y, z = 0 }, t0 = t0, t1 = t1, kind = "ground",
 			signals = {} }
 	end
-	local R, th = 300, math.rad(deg or 40)
+	local R, th = radius or 300, math.rad(deg or 40)
 	-- Each track's breaks along the tail (metres from the curve's end).
 	local breaks = { [2.5] = { 0, 100, 200, 300, 400, 500, 600 }, [-2.5] = { 0, 100, 200, 300, 400, 500, 600 } }
+	local a = type(xover) == "number" and xover or 200
 	if xover then
-		breaks[2.5] = { 0, 100, 200, 310, 410, 510, 610, 710, 810, 910 }
-		breaks[-2.5] = { 0, 100, 200, 245, 265, 310, 410, 510, 610, 710, 810, 910 }
+		local left, right = {}, {}
+		for x = 0, a - 1e-9, 100 do
+			left[#left + 1], right[#right + 1] = x, x
+		end
+		left[#left + 1], right[#right + 1] = a, a
+		right[#right + 1] = a + 45
+		right[#right + 1] = a + 65
+		for x = a + 110, a + 710, 100 do
+			left[#left + 1], right[#right + 1] = x, x
+		end
+		breaks[2.5], breaks[-2.5] = left, right
 	end
 	local tailAt = {}
 	for __, y in ipairs({ 2.5, -2.5 }) do
@@ -1133,8 +1144,8 @@ local function curvedStation(cx, deg, xover)
 		end
 	end
 	if xover then
-		add(tailAt[2.5](200), tailAt[-2.5](245))
-		add(tailAt[-2.5](265), tailAt[2.5](310))
+		add(tailAt[2.5](a), tailAt[-2.5](a + 45))
+		add(tailAt[-2.5](a + 65), tailAt[2.5](a + 110))
 	end
 	local degree = {}
 	for __, p in ipairs(pieces) do
@@ -1153,8 +1164,12 @@ t.test("route: a junction goes on the straight past an existing line's first cur
 	t.eq(#plan.notes, 0, "no notes: " .. tostring(plan.notes[1]))
 	local b = plan.stations[1]
 	t.ok(b.existing == station, "B uses the existing station")
-	local e, j = b.ends[1], b.junctions[1]
-	t.ok(e ~= nil and j ~= nil, "a junction at the +x end")
+	t.ok(b.ends[1] ~= nil and b.junctions[1] ~= nil, "a junction at the +x end")
+	-- Its place on straight midline (since stage 3 the second: a junction may also straddle the curve, nearer).
+	local places = b.places[1]
+	local straight = places[#places]
+	t.ok(not straight.curved, "a place on the straight")
+	local e, j = straight.stretch, straight.junction
 	local first = math.huge
 	for __, c in ipairs(j.cuts) do
 		first = math.min(first, c.x)
@@ -1162,7 +1177,8 @@ t.test("route: a junction goes on the straight past an existing line's first cur
 	t.ok(first > curveEnd, ("the first cut (%.1f m) is past the curve (%.1f m)"):format(first, curveEnd))
 	t.ok(midline.straightUntil(e.frame, first, 0.005) >= j.approachX + 50 - 1e-6,
 		"straight from the first cut to past our straight beyond the approach")
-	-- The leg leaves along the far straight.
+	-- The leg leaves from the place in use.
+	e, j = b.ends[1], b.junctions[1]
 	local p = legStart(plan.legs[1])
 	local q = midline.world(e.frame, j.approachX, -10)
 	t.near(p.x, q.x, 1e-6, "the leg starts at the approach (x)")
@@ -1171,10 +1187,13 @@ end)
 
 t.test("route: past an earlier stretch, the footprint and free cells follow the track, not the stretch's frame run back",
 		function()
-	-- Stretch 1: 150 m straight, a 60° curve and 200 m straight, too little straight for the junction; then a crossover
-	-- pair; then stretch 2, 600 m straight, which takes it. Stretch 2's frame run back from its start leaves the track at
-	-- the curve, and passes well to the right of it. C to the left (our side +1, the band's far side to the right).
-	local station, snap = curvedStation(3000, 60, true)
+	-- Stretch 1: 150 m straight, a 60° curve and 30 m straight, no room for the junction: on our side, the curve's
+	-- inside, our straight past the approach would cut across the curve (placement.accept), so the approach can't come
+	-- before the curve's end, and 30 m leaves no room for our straight past it (with 200 m, stage 3's junction straddling
+	-- the curve's end took stretch 1). Then a crossover pair; then stretch 2, 600 m straight, which takes it. Stretch 2's
+	-- frame run back from its start leaves the track at the curve, and passes well to the right of it. C to the left (our
+	-- side +1, the band's far side to the right).
+	local station, snap = curvedStation(3000, 60, 30)
 	local input = { grid = grid.new(-1000, -1500, 100, 81, 51), stops = { town(2, "B", 3000, 0), town(3, "C", 3300, 2500) },
 		weights = W, platformLength = 160, existingStations = { [1] = station }, snapshots = { [1] = snap }, radius = JR }
 	local job = route.start(input)
@@ -1254,6 +1273,37 @@ t.test("route: past an earlier stretch, the footprint and free cells follow the 
 	t.ok(phantom > 0, "the frame run back leaves the track far enough to tell")
 end)
 
+t.test("route: an end whose curve has room keeps two places, the nearer on the curve (milestone 4c stage 3)", function()
+	-- 90°: the curve is 471 m long, and the junction nearest the platforms straddles it (from the straight before it
+	-- into it, on the curve's outside); the straight tail has room too.
+	local station, snap, curveEnd = curvedStation(3000, 90)
+	local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 3600, -1500) }, 1, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[1]
+	local places = b.places[1]
+	t.eq(#places, 2, "two places")
+	t.ok(places[1].curved, "the first on the curve")
+	t.ok(not places[2].curved, "the second on the straight")
+	t.ok(places[1].junction.approachX + #places[1].before * 1e6 < places[2].junction.approachX + #places[2].before * 1e6,
+		"nearest first")
+	local first = math.huge
+	for __, c in ipairs(places[1].junction.cuts) do
+		first = math.min(first, c.x)
+	end
+	t.ok(first < curveEnd, "its first cut before the curve's end")
+end)
+
+t.test("route: where the nearest place is on the straight, there's one place", function()
+	-- Straight track past the platforms. (Behind a curve, however short or tight, the nearest place straddles the
+	-- curve: the 150 m straight past curvedStation's platforms is too short for a junction, so its first cut comes
+	-- before the curve and its approach after it.)
+	local station, snap = existingStation(3000, { [1] = 1000 })
+	local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 6000, 300) }, 1, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(#plan.stations[1].places[1], 1, "one place")
+	t.ok(not plan.stations[1].places[1][1].curved, "on the straight")
+end)
+
 t.test("route: a leg meets a raised, graded existing stretch at its height", function()
 	-- The +x end's track 5 m up at the platform end, rising 1% outward.
 	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 }, { z = { [1] = 5 }, grade = { [1] = 0.01 } })
@@ -1286,8 +1336,8 @@ end
 t.test("route: an existing station with no room for a junction falls back to a new station, with a note", function()
 	-- Only 200 m of double track beyond the +x end: short of a 300 m radius junction.
 	local station, snap = existingStation(3000, { [1] = 200, [-1] = 1000 })
-	fellBack(runExisting(AXC, 2, station, snap), "The station in B has no room for a junction at its C end (needs 349 m "
-		.. "of straight double track within 1.5 km; the longest straight is 200 m); a new station was planned.")
+	fellBack(runExisting(AXC, 2, station, snap), "The station in B has no room for a junction at its C end within 1.5 km; "
+		.. "a new station was planned.")
 end)
 
 t.test("route: a middle stop whose legs would use the same end of an existing station falls back", function()

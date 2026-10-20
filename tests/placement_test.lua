@@ -71,11 +71,42 @@ t.test("placement: accept takes a junction on a 220 m curve from the outside, it
 	end
 end)
 
-t.test("placement: a branch tighter than the floor is refused", function()
-	local f = track(100, 220, 70, 300)
+t.test("placement: a branch the curve bends tighter than the floor is refused", function()
+	local f = track(100, 220, 70, 600)
 	local strict = { minRadius = 1000, straight = 50, offset = 10, slack = 0.5, cell = 100 }
-	local j = junction.fit(f.length - 50, 300, -1, { near = {}, far = {} }, nil, placement.accept(f, -1, strict))
-	-- Only a placement wholly on the straight tail (its S-curves 300 m-ish there, but the fit's turnouts at 300 m
-	-- are still under 1000 m): none.
-	t.ok(j == nil, "no placement with every piece 1000 m or wider")
+	-- The fit's 300 m turnouts are under 1000 m wherever they go, but on straight track that's their own radius, not
+	-- the curve's doing. On the outside the curve widens them: a placement on it. On the inside it bends them
+	-- tighter: only one wholly on the straight tail (the arc ends at 100 + 268.8).
+	for __, case in ipairs({ { side = -1, onCurve = true }, { side = 1, onCurve = false } }) do
+		local j = junction.fit(f.length - 50, 300, case.side, { near = {}, far = {} }, nil,
+			placement.accept(f, case.side, strict))
+		t.ok(j ~= nil, "side " .. case.side .. ": fits")
+		local first = math.huge
+		for __, c in ipairs(j.cuts) do
+			first = math.min(first, c.x)
+		end
+		t.eq(first < 100 + 268.8, case.onCurve, ("side %d: the first cut (%.1f) on the curve"):format(case.side, first))
+	end
+end)
+
+t.test("placement: 150 m turnouts' merge (94 m as one Hermite) passes on straight track, and isn't bent tighter",
+		function()
+	-- Standard track's 150 m turnouts: the merge S-curve, 10 m across over 75 m, is 94 m at its ends as one cubic.
+	local straight = midline.line({ x = 0, y = 0 }, { x = 1, y = 0 }, 0, 0, 1000)
+	local j = junction.fit(straight.length - 50, 150, 1, { near = {}, far = {} }, nil, placement.accept(straight, 1, O))
+	t.ok(j ~= nil, "fits on straight track")
+	t.near(j.cuts[1].x, 15, 1e-6, "at the first place tried")
+	local own = math.huge
+	for __, p in ipairs(j.pieces) do
+		own = math.min(own, placement.tightest(placement.mapPiece(straight, p)))
+	end
+	t.ok(own < 100, ("its tightest piece (%.0f m) is under the floor"):format(own))
+	-- On the inside of a 220 m curve the curve bends the pieces tighter still: whatever fits keeps them no tighter.
+	local f = track(100, 220, 70, 300)
+	local inside = junction.fit(f.length - 50, 150, 1, { near = {}, far = {} }, nil, placement.accept(f, 1, O))
+	t.ok(inside ~= nil, "fits")
+	for __, p in ipairs(inside.pieces) do
+		local r = placement.tightest(placement.mapPiece(f, p))
+		t.ok(r >= own * 0.99, ("%s: %.0f m, no tighter than on straight track"):format(p.role, r))
+	end
 end)

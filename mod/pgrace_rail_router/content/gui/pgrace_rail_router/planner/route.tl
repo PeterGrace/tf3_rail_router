@@ -22,6 +22,7 @@ local type Summary = PgraceRailRouterRoute.Summary
 local type Plan = PgraceRailRouterRoute.Plan
 local type Job = PgraceRailRouterRoute.Job
 local type LegHeights = PgraceRailRouterRoute.LegHeights
+local type Place = PgraceRailRouterRoute.Place
 
 -- Straight track before and after each platform, so trains run in line with it (metres): Input.approach, else this.
 local APPROACH = 100.0
@@ -352,6 +353,10 @@ end
 -- jogged aside and back, in curves tighter than their radius.) Beyond a cell off, the ray is no longer beside the
 -- track at all, and the search may as well turn there.
 local RAY_SLACK = 0.5
+
+-- The tightest a junction piece laid along a curve may be (spec "Fitting"): about 50 km/h at 2 m/s². P17's branches
+-- on a 220 m curve with 300 m turnouts came to 102–123 m.
+local MIN_BRANCH_RADIUS = 100.0
 
 -- How far our straight at end k's junction may run (metres along the ray from its approach start; see RAY_SLACK),
 -- kept in station.rays: see placement.rayRoom (offset JUNCTION_OFFSET, slack RAY_SLACK, a grid cell). One pass over the
@@ -1748,8 +1753,9 @@ end
 -- end facing the previous stop, the leg out the end facing the next (different ends, in the middle of the line). Each
 -- end is read from the station's snapshot: a bare end (existing.bareEnd) must have 2 or 4 tracks as Rail Router joins
 -- them, and room for our approach beyond it; any other must be usable (existing.analyse, told which side of it the
--- neighbour lies on) and fit a junction (junction.fit) on a straight part of one of its stretches, the nearest that
--- has room (onStraight). nil, and a note saying why, where it can't be used. Pure Lua
+-- neighbour lies on) and fit a junction (junction.fit) on one of its stretches: its places (Station.places) are the
+-- nearest placement anywhere, curves included (placement.accept), and, where different, the nearest wholly on
+-- straight midline (onStraight); the first is used. nil, and a note saying why, where it can't be used. Pure Lua
 -- over the snapshot (a few hundred pieces at most), reading both ends' tracks out to existing.REACH: 5–7 ms on the
 -- desktop for a 268-piece Halt 2+2, once per stop.
 -- A linked leg's side (`linked`, by leg index) is left out, as at the line's end: no end is read or joined there.
@@ -1794,6 +1800,7 @@ local function existingStop(input : Input, i : integer, linked : {integer : bool
 	local junctions : {integer : PgraceRailRouterJunction.Layout} = {}
 	local bare : {integer : PgraceRailRouterExisting.Bare} = {}
 	local before : {integer : {PgraceRailRouterMidline.Frame}} = {}
+	local places : {integer : {Place}} = {}
 	local z, n = 0.0, 0
 	for __, forward in ipairs({ false, true }) do
 		local k = endOf[forward]
@@ -1833,26 +1840,54 @@ local function existingStop(input : Input, i : integer, linked : {integer : bool
 				return nil, note(("can't be used: there's no straight double track (two tracks 5 m apart) past its %s end")
 					:format(neighbours[forward].name))
 			end
-			-- The nearest stretch with room for a junction on a straight part of it (milestone 4c stage 1), and the
-			-- frames of those before it.
-			local e, j : PgraceRailRouterExisting.End, PgraceRailRouterJunction.Layout = nil, nil
+			-- The nearest placement anywhere on the end's stretches (curves included: placement.accept; a placement on
+			-- straight midline always counts), and the nearest wholly on straight midline (onStraight), each with the
+			-- frames of the stretches before it. One fit per stretch finds both: placements are tried nearest first, and
+			-- the fit goes on past the first placement anywhere to the first on straight midline. (Two fits, one for
+			-- each, made Aloha's sites step 2 ms slower on the line1 map.)
+			local opts : PgraceRailRouterPlacement.Options = { minRadius = MIN_BRANCH_RADIUS, straight = JUNCTION_STRAIGHT,
+				offset = JUNCTION_OFFSET, slack = RAY_SLACK, cell = input.grid.cell }
+			local any, straight : Place, Place = nil, nil
 			local passed : {PgraceRailRouterMidline.Frame} = {}
+			local function copy() : {PgraceRailRouterMidline.Frame}
+				local c : {PgraceRailRouterMidline.Frame} = {}
+				for m, fr in ipairs(passed) do
+					c[m] = fr
+				end
+				return c
+			end
 			for __, s in ipairs(result.stretches[k] or {}) do
-				j = junction.fit(s.length - JUNCTION_STRAIGHT, input.radius, sides[k], s.signals, s.nodes, onStraight(s))
-				if j ~= nil then
-					e = s
+				local isStraight = onStraight(s)
+				local anywhere = placement.accept(s.frame, sides[k], opts)
+				local before = copy()
+				junction.fit(s.length - JUNCTION_STRAIGHT, input.radius, sides[k], s.signals, s.nodes,
+					function(j : PgraceRailRouterJunction.Layout) : boolean
+						local flat = isStraight(j)
+						if any == nil and (flat or anywhere(j)) then
+							any = { stretch = s, junction = j, before = before, curved = not flat }
+						end
+						if flat then
+							straight = { stretch = s, junction = j, before = before, curved = false }
+						end
+						return flat
+					end)
+				if straight ~= nil then
 					break
 				end
 				table.insert(passed, s.frame)
 			end
-			if j == nil then
-				return nil, note(("has no room for a junction at its %s end (needs %d m of straight double track within "
-					.. "%g km; the longest straight is %d m)"):format(neighbours[forward].name,
-					math.floor(junction.needed(input.radius) + JUNCTION_STRAIGHT + 0.5), existing.REACH / 1000,
-					math.floor((result.longestStraight[k] or 0) + 0.5)))
+			if any == nil then
+				return nil, note(("has no room for a junction at its %s end within %g km"):format(neighbours[forward].name,
+					existing.REACH / 1000))
 			end
-			ends[k], junctions[k], before[k] = e, j, passed
-			z, n = z + e.z, n + 1
+			local list : {Place} = { any }
+			if straight ~= nil and (straight.stretch ~= any.stretch
+					or math.abs(straight.junction.approachX - any.junction.approachX) > 1e-6) then
+				table.insert(list, straight)
+			end
+			places[k] = list
+			ends[k], junctions[k], before[k] = any.stretch, any.junction, any.before
+			z, n = z + any.stretch.z, n + 1
 		end
 	end
 	-- The site faces the way the line runs through the station: out of the end the leg out uses, or into the one the
@@ -1870,7 +1905,8 @@ local function existingStop(input : Input, i : integer, linked : {integer : bool
 	local site : PgraceRailRouterStations.Site = { centre = { x = st.centre.x, y = st.centre.y },
 		dir = geo.scale(dir, facing), distance = geo.dist(town.pos, st.centre) }
 	local station : Station = { town = town, site = site, z = z / n, existing = st, ends = ends, junctions = junctions,
-		bare = bare, sides = sides, endOf = endOf, before = before }
+		bare = bare, sides = sides, endOf = endOf, before = before,
+		places = places }
 	-- Our straight from each junction's approach start, or each bare end's approach, must be clear of buildings and
 	-- inside the grid.
 	for __, forward in ipairs({ false, true }) do

@@ -891,7 +891,8 @@ t.test("existing: stationFromEnds: two groups of ends give the centre, direction
 	t.ok(none == nil and why ~= nil, "fewer than two ends")
 end)
 
-t.test("existing: planOnMap with Aloha's station: it joins the station on the straight past its first curve", function()
+t.test("existing: planOnMap with Aloha's station: it joins the station, with a place on the straight past its first curve",
+		function()
 	local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 	local maps = findMapsDir()
 	local mapFile = maps and (maps .. "/rail-router-test-5x14km-line1.map")
@@ -905,17 +906,21 @@ t.test("existing: planOnMap with Aloha's station: it joins the station on the st
 	local map = lib.maplib.load(mapFile)
 	local r = lib.planOnMap(map, { from = "Aloha", to = "Mercer Island", stops = {}, existing = { "Aloha" } })
 	t.ok(r.plan.ok, "the plan is made")
-	-- Its ends now read through the first curve (milestone 4c), so the station is joined rather than replaced, at a
-	-- junction on the straight past that curve (4c stage 1): the stretch turns before the junction's first cut (67 m
-	-- out from its start at the −1 end), and runs straight from it to past our straight beyond the approach.
+	-- Its ends now read through the first curve (milestone 4c), so the station is joined rather than replaced. Its
+	-- place on straight midline (4c stage 1) is on the straight past that curve: the stretch turns before the
+	-- junction's first cut (67 m out from its start at the −1 end), and runs straight from it to past our straight
+	-- beyond the approach. Since stage 3 a nearer place, straddling the curve, comes first.
 	for __, note in ipairs(r.plan.notes) do
 		t.ok(not note:find("Aloha", 1, true), "no note about Aloha's station: " .. note)
 	end
 	local aloha = r.plan.stations[1]
 	t.ok(aloha.existing ~= nil, "Aloha's station is the existing one")
 	local k = aloha.endOf[true]
-	local e, j = aloha.ends[k], aloha.junctions[k]
-	t.ok(j ~= nil, "joined at a junction")
+	t.ok(aloha.junctions[k] ~= nil, "joined at a junction")
+	local places = aloha.places[k]
+	t.eq(#places, 2, "two places")
+	t.ok(places[1].curved and not places[2].curved, "the nearer on the curve, then the one on the straight")
+	local e, j = places[2].stretch, places[2].junction
 	local first = math.huge
 	for __, c in ipairs(j.cuts) do
 		first = math.min(first, c.x)

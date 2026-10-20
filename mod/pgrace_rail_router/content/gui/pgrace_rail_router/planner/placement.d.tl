@@ -2,7 +2,7 @@
 -- judged there (milestone 4c stage 3). Pure.
 global record PgraceRailRouterPlacement
 	record Options
-		-- The tightest radius a mapped junction piece may have (metres).
+		-- The tightest radius a mapped junction piece may have (metres), unless it's tighter on straight track.
 		minRadius : number
 		-- How far our straight past the approach start must run beside the track (route.tl's JUNCTION_STRAIGHT).
 		straight : number
@@ -27,7 +27,8 @@ global record PgraceRailRouterPlacement
 	rayRoom : function(f : PgraceRailRouterMidline.Frame, approachX : number, side : number, offset : number,
 		slack : number, cell : number) : number
 	-- junction.fit's accept for placements anywhere on the stretch, curves included: every mapped piece no tighter
-	-- than minRadius, and our straight past the approach start with rayRoom ≥ straight.
+	-- than minRadius, or where the piece itself is (unmapped, in the straight frame), no tighter than that (less 1%),
+	-- and our straight past the approach start with rayRoom ≥ straight.
 	accept : function(f : PgraceRailRouterMidline.Frame, side : number, o : Options)
 		: function(PgraceRailRouterJunction.Layout) : boolean
 end

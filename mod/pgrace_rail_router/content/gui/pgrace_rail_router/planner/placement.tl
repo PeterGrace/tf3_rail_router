@@ -51,11 +51,31 @@ function placement.rayRoom(f : Frame, approachX : number, side : number, offset 
 	return d
 end
 
+-- How much tighter than on straight track a piece under minRadius may come out (a share of its own radius): mapping
+-- onto midline that's straight within existing.STRAIGHT_TOL turns its tangents a little.
+local OWN_TOL = 0.01
+
 function placement.accept(f : Frame, side : number, o : PgraceRailRouterPlacement.Options) : function(Layout) : boolean
+	-- Each role's piece as it was last on straight track: its length along x and its tightest radius there. A fit's
+	-- placements differ in x only (a merge snapped to a node in length too), so it's mostly read again.
+	local ownLength : {string : number} = {}
+	local ownRadius : {string : number} = {}
 	return function(j : Layout) : boolean
 		for __, p in ipairs(j.pieces) do
-			if placement.tightest(placement.mapPiece(f, p)) < o.minRadius then
-				return false
+			local r = placement.tightest(placement.mapPiece(f, p))
+			if r < o.minRadius then
+				-- Under the floor: only as tight as the piece is on straight track (Standard track's 150 m turnouts'
+				-- merge is 94 m as one cubic), the curve not bending it tighter.
+				local dx = p.x1 - p.x0
+				if ownLength[p.role] == nil or math.abs(ownLength[p.role] - dx) > 1e-9 then
+					ownLength[p.role] = dx
+					ownRadius[p.role] = placement.tightest({ p0 = { x = 0, y = p.y0, z = 0 },
+						p1 = { x = dx, y = p.y1, z = 0 }, t0 = { x = p.tx0, y = p.ty0, z = 0 },
+						t1 = { x = p.tx1, y = p.ty1, z = 0 } })
+				end
+				if r < ownRadius[p.role] * (1 - OWN_TOL) then
+					return false
+				end
 			end
 		end
 		return placement.rayRoom(f, j.approachX, side, o.offset, o.slack, o.cell) >= o.straight - 1e-6
