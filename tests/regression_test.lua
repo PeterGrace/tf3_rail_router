@@ -297,6 +297,40 @@ local function loadMap(name)
 	return maps[name]
 end
 
+-- The network as the window builds it with Halt 2+2 (window.script.tl settingsFor): a fan's two edges at each end of
+-- every station of ours that a leg leaves or reaches, and no chunk problems. A curve's sample just before a fan's
+-- merge once took the merge's place as a cut, and the fan was silently left out (Antelope's south end in-game).
+-- `speed`: the track's top speed (m/s), which picks the turnout as the window's turnoutRadius does.
+local function haltFans(plan, speed)
+	local radius = speed < 30 and 150 or (speed < 60 and 300 or 600)
+	local halt = network.defaults()
+	halt.fan = network.turnoutLength(radius)
+	halt.bareFan = halt.fan
+	halt.blockSpacing = 500
+	local net = network.build(plan, halt)
+	local fans = {}
+	for __, e in ipairs(net.edges) do
+		if e.track == 3 then
+			local key = e.leg .. (e.s0 == 0 and "s" or "e")
+			fans[key] = (fans[key] or 0) + 1
+		end
+	end
+	local stations = plan.stations or {}
+	for li, leg in ipairs(plan.legs) do
+		if not leg.linked and leg.length > 2 * (network.fanLength(halt.fan) + 1) then
+			for __, k in ipairs({ "s", "e" }) do
+				local st = stations[k == "s" and li or li + 1]
+				if st == nil or st.existing == nil then
+					t.eq(fans[li .. k] or 0, 2, ("Halt 2+2: leg %d's %s: fan edges"):format(li, k == "s" and "start" or "end"))
+				end
+			end
+		end
+	end
+	for k, c in ipairs(net.chunks) do
+		t.ok(c.problem == nil, ("Halt 2+2: chunk %d: %s"):format(k, tostring(c.problem)))
+	end
+end
+
 local function routeName(rt)
 	local name = rt.from .. " → " .. rt.to .. ", " .. rt.mode
 	if rt.stops and #rt.stops > 0 then
@@ -557,6 +591,8 @@ local function check(rt, planFn, name)
 	for k, c in ipairs(net.chunks) do
 		t.ok(c.problem == nil, ("chunk %d: %s"):format(k, tostring(c.problem)))
 	end
+	-- A capture records no track type; its weights' top speed (at most the track's) stands in for it.
+	haltFans(plan, r.track ~= nil and r.track.speed or r.weights.topSpeed)
 	local b = rt.base
 	noWorse("widest sweep of a leg (a loop or a hook?)", sweep, b.sweep, 0, SWEEP_SLACK)
 	noWorse("length", s.length, b.length, TOLERANCE.length)
@@ -589,6 +625,21 @@ for _, rt in ipairs(ROUTES) do
 		end)
 	end
 end
+
+-- Planned as the window plans for Halt 2+2 (its platform, and the straight its fan and crossovers need at each end,
+-- approachFor): the in-game route whose fan at Antelope's south end was left out, and the one other route where a
+-- sample beside a merge did the same (leg 4's end). The routes above are planned without an approach.
+t.test("regression: Halt 2+2 fans on routes planned with the window's approach", function()
+	local track = "Standard Tracks"
+	local approach = network.fanLength(network.turnoutLength(300)) + 100
+	for __, rt in ipairs({ { from = "Bangor", to = "Aloha", stops = { "Antelope" }, platform = 320 },
+			{ from = "Bangor", to = "Imperial Beach" } }) do
+		local r = lib.planOnMap(loadMap(TEST_MAP), { from = rt.from, to = rt.to, mode = "cheapest", track = track,
+			stops = rt.stops, platform = rt.platform, approach = approach })
+		t.ok(r.plan.ok, rt.from .. " to " .. rt.to .. ": plans")
+		haltFans(r.plan, r.track.speed)
+	end
+end)
 
 -- The route captures planned as they are (lib.planCapture), on the save as it was then.
 if full then

@@ -361,11 +361,14 @@ local function stretches(leg : Leg, starts : {number}, total : number, options :
 		end
 		return true
 	end
-	-- Where edges must break: where one piece meets the next, the spans' ends, and the crossovers' ends (extra), each
-	-- with the samples either side of it, so no edge runs from it over a change of grade at a sample.
+	-- Where edges must break: where one piece meets the next, the spans' ends, and the extra cuts (the crossovers' ends,
+	-- the fans' merges, an island end's ease), each with the samples either side of it, so no edge runs from it over a
+	-- change of grade at a sample. The extra cuts are fixed: the crossovers and fans look for a node exactly there.
 	local cuts : {number} = {}
+	local fixed : {number : boolean} = {}
 	for __, c in ipairs(extra or {}) do
 		table.insert(cuts, c)
+		fixed[c] = true
 		local before, after : number, number = nil, nil
 		for __, sample in ipairs(leg.samples) do
 			if sample.s < c and (before == nil or sample.s > before) then
@@ -391,11 +394,20 @@ local function stretches(leg : Leg, starts : {number}, total : number, options :
 	table.sort(cuts)
 	-- The cuts kept: one within MIN_EDGE of the last kept (or of the leg's end) is dropped. That also drops the second
 	-- copy where one span ends and the next starts. A dropped span end moves the span's end to the kept break; a
-	-- dropped piece end lets an edge run that far into the next piece, close enough to its own curve.
+	-- dropped piece end lets an edge run that far into the next piece, close enough to its own curve. A fixed cut
+	-- takes the place of a kept one that isn't fixed instead: a sample 0.24 m before a fan's merge, kept first, left
+	-- the merge with no node, so the fan was never made and the station's outer tracks dead-ended.
 	local breaks : {number} = { 0.0 }
+	local keptFixed = false
 	for __, c in ipairs(cuts) do
-		if c > breaks[#breaks] + MIN_EDGE and c < total - MIN_EDGE and free(c) then
-			table.insert(breaks, c)
+		if c < total - MIN_EDGE and free(c) then
+			if c > breaks[#breaks] + MIN_EDGE then
+				table.insert(breaks, c)
+				keptFixed = fixed[c] == true
+			elseif fixed[c] and not keptFixed and #breaks > 1 and c > breaks[#breaks - 1] + MIN_EDGE then
+				breaks[#breaks] = c
+				keptFixed = true
+			end
 		end
 	end
 	table.insert(breaks, total)
@@ -1034,6 +1046,9 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			-- every switch whose crossover piece was 16 m or shorter was refused, 18 m and longer passed), so a crossover
 			-- isn't cut at the samples inside it, and follows the profile less closely than the tracks.
 			local crossovers : {Edge} = {}
+			-- The ends (true: the leg's start) where a crossover or fan found no node to join, reported as the chunk's
+			-- problem below rather than left out of the network: a missing fan dead-ends the station's outer tracks.
+			local lost : {boolean : string} = {}
 			local function gradeAt(list : {Edge}, n : integer) : number
 				local e = edgeFrom(list, n)
 				if e == nil then
@@ -1055,6 +1070,9 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 					table.insert(crossovers, { node0 = na, node1 = nb, p0 = { x = a.x, y = a.y, z = a.z },
 						p1 = { x = b.x, y = b.y, z = b.z }, t0 = t0, t1 = t1, kind = "ground", track = 0, leg = li,
 						s0 = p[2], s1 = p[4] })
+				else
+					local atStart = p[2] < total / 2
+					lost[atStart] = lost[atStart] or ("a crossover %.0f m along the leg has no node at its ends"):format(p[2])
 				end
 			end
 			-- The fans: at the leg's start (the station behind it) the left local runs into track 1 and the right into
@@ -1085,19 +1103,24 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 					local tan = atStart and edge.t0 or edge.t1
 					local d = math.sqrt(tan.x ^ 2 + tan.y ^ 2)
 					local nx, ny = -tan.y / d * out * FAN_SPACING, tan.x / d * out * FAN_SPACING
-					table.insert(net.nodes, { x = tip.x + nx, y = tip.y + ny, z = tip.z })
+					-- The local track's end node, added to the network only with its fan edge (a node of no edge is a track
+					-- end left unjoined).
+					local lp : Pt3 = { x = tip.x + nx, y = tip.y + ny, z = tip.z }
 					-- The local track's direction at its tip (at a bare end, the station's outer track's own, outward).
 					local tipDir : Pt = { x = tan.x / d, y = tan.y / d }
 					if b ~= nil then
-						local node, dir = bareNode(b, across(b, net.nodes[#net.nodes]))
-						net.nodes[#net.nodes] = node
+						local node, dir = bareNode(b, across(b, lp))
+						lp = node
 						tipDir = atStart and dir or { x = -dir.x, y = -dir.y }
 					end
-					local localNode = #net.nodes
-					local lp = net.nodes[localNode]
 					local mergeNode = nodeAtS(list, atStart and merge or total - merge)
 					local along = mergeNode ~= nil and (atStart and edgeFrom(list, mergeNode) or edgeFrom(list, list[#list].node0)) or nil
-					if mergeNode ~= nil and along ~= nil then
+					if mergeNode == nil or along == nil then
+						lost[atStart] = lost[atStart] or ("a Halt 2+2 fan has no node at its merge, %.0f m from the platforms")
+							:format(merge)
+					else
+						table.insert(net.nodes, lp)
+						local localNode = #net.nodes
 						local m = net.nodes[mergeNode]
 						local gradeTip = tan.z / d
 						local gradeMerge = gradeAt(list, mergeNode)
@@ -1210,6 +1233,15 @@ function network.build(plan : PgraceRailRouterRoute.Plan, options : Options) : P
 			end
 			problemStart = problemStart or bareProblem(bStart, stations[li], islandStart, mergeStart)
 			problemEnd = problemEnd or bareProblem(bEnd, stations[li + 1], islandEnd, mergeEnd)
+			local function lostProblem(atStart : boolean, station : PgraceRailRouterRoute.Station) : string
+				if lost[atStart] == nil then
+					return nil
+				end
+				return ("the line at %s: %s"):format(station ~= nil and station.town ~= nil and station.town.name or "?",
+					lost[atStart])
+			end
+			problemStart = problemStart or lostProblem(true, stations[li])
+			problemEnd = problemEnd or lostProblem(false, stations[li + 1])
 			local added : {boolean} = {}
 			-- Chunk cut points: after chunkLength of centre line, at the next edge end that isn't inside a bridge or tunnel.
 			local left, right = tracks[1], tracks[2]

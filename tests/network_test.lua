@@ -517,6 +517,50 @@ t.test("network: Halt 2+2 fans run each local track into the line's track on its
 	t.eq(crossovers, 4, "a pair at each end")
 end)
 
+-- A leg with an extra sample at each s in `extra` (route.tl samples curves more finely than every 25 m).
+local function withSamples(l, extra)
+	for __, s in ipairs(extra) do
+		local k = 1
+		while k <= #l.samples and l.samples[k].s < s do
+			k = k + 1
+		end
+		table.insert(l.samples, k, { p = { x = s, y = 0 }, s = s })
+		table.insert(l.z, k, l.z[k] or l.z[#l.z])
+	end
+	return l
+end
+
+-- In-game (Bangor to Aloha via Antelope): a sample 0.24 m before the end's merge was kept as a cut and the merge
+-- dropped, so the fan found no node there and was left out, and the station's outer tracks dead-ended.
+t.test("network: a Halt 2+2 fan's merge stays a node with a sample just beside it, at either end", function()
+	local merge = 20 + 75
+	for __, at in ipairs({ 3000 - merge - 0.24, 3000 - merge + 0.24, merge - 0.24, merge + 0.24 }) do
+		local label = ("a sample at %.2f"):format(at)
+		local net = network.build(plan({ withSamples(leg({ straight(0, 0, 3000, 0) }), { at }) }), halt())
+		local uses = {}
+		for __, e in ipairs(net.edges) do
+			uses[e.node0] = (uses[e.node0] or 0) + 1
+			uses[e.node1] = (uses[e.node1] or 0) + 1
+		end
+		local fans = {}
+		for __, e in ipairs(net.edges) do
+			if e.track == 3 then
+				table.insert(fans, e)
+			end
+		end
+		t.eq(#fans, 4, label .. ": two fans at each end")
+		for __, e in ipairs(fans) do
+			t.eq(uses[e.s0 == 0 and e.node1 or e.node0], 3, label .. ": a switch at the merge")
+		end
+		for n = 1, #net.nodes do
+			t.ok(uses[n] ~= nil, label .. ": every node on an edge")
+		end
+		for k, c in ipairs(net.chunks) do
+			t.ok(c.problem == nil, ("%s: chunk %d: %s"):format(label, k, tostring(c.problem)))
+		end
+	end
+end)
+
 t.test("network: Halt 2+2 crossovers at every station end, after the fans, so a train can turn back anywhere", function()
 	local net = network.build(plan({ leg({ straight(0, 0, 3000, 0) }), leg({ straight(0, 0, 3000, 0) }) }), halt())
 	local byLeg = { {}, {} }
