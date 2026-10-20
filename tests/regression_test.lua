@@ -471,7 +471,9 @@ local function check(rt, planFn, name)
 			end
 		end
 		for __, note in ipairs(plan.notes) do
-			t.ok(not note:find(name, 1, true), "no note about " .. name .. "'s station: " .. note)
+			-- (Where a leg joins its line is told, milestone 4c stage 3: not a station that couldn't be used.)
+			t.ok(not note:find(name, 1, true) or note:find("Joins the existing line", 1, true) ~= nil,
+				"no note about " .. name .. "'s station: " .. note)
 		end
 	end
 	local s = plan.summary

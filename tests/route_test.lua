@@ -1161,7 +1161,9 @@ t.test("route: a junction goes on the straight past an existing line's first cur
 	-- C lies right of the station's +x end and right of the far straight (heading 40° left of +x).
 	local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 6000, -300) }, 1, station, snap)
 	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
-	t.eq(#plan.notes, 0, "no notes: " .. tostring(plan.notes[1]))
+	for __, n in ipairs(plan.notes) do
+		t.ok(n:find("Joins the existing line", 1, true) ~= nil, "only a note where it joins: " .. n)
+	end
 	local b = plan.stations[1]
 	t.ok(b.existing == station, "B uses the existing station")
 	t.ok(b.ends[1] ~= nil and b.junctions[1] ~= nil, "a junction at the +x end")
@@ -1302,6 +1304,97 @@ t.test("route: where the nearest place is on the straight, there's one place", f
 	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
 	t.eq(#plan.stations[1].places[1], 1, "one place")
 	t.ok(not plan.stations[1].places[1][1].curved, "on the straight")
+end)
+
+t.test("route: Cheapest takes the place whose leg costs less (milestone 4c stage 3)", function()
+	-- 90° curve: places straddling the curve (approach about 290 m out) and on the straight tail (about 900 m, heading
+	-- +y). C beyond the curve's outside, south-east: the leg from the curve place turns off towards it; from the tail it
+	-- must turn back.
+	local station, snap = curvedStation(3000, 90)
+	local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 3600, -1500) }, 1, station, snap)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[1]
+	t.eq(#b.places[1], 2, "two places weighed")
+	t.ok(b.junctions[1] == b.places[1][1].junction, "the curve place taken")
+	t.ok(b.ends[1] == b.places[1][1].stretch, "its stretch")
+	local found = false
+	for __, n in ipairs(plan.notes) do
+		found = found or n:find("Joins the existing line", 1, true) ~= nil
+	end
+	t.ok(found, "a note says where it joins")
+	-- The leg leaves from the place taken.
+	local p = legStart(plan.legs[1])
+	local q = midline.world(b.ends[1].frame, b.junctions[1].approachX, 10 * b.sides[1])
+	t.near(p.x, q.x, 1e-6, "the leg starts at its approach (x)")
+	t.near(p.y, q.y, 1e-6, "the leg starts at its approach (y)")
+end)
+
+t.test("route: the leg's place is the straight one when the town lies beyond it", function()
+	-- 30° curve (ending 307 m out), C far out ahead of the tail, on the curve's inside: there the curve place can't
+	-- come much before the curve's end (our straight would cut across it), so both places lead off along the tail (the
+	-- curve place's approach about 330 m out, the straight's about 590 m), and the straight one, further out along the
+	-- existing line, leaves less to build. (On a 90° curve's inside no leg finds a way out from either place, as in
+	-- stage 1.)
+	local station, snap = curvedStation(3000, 30)
+	local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 6000, 1500) }, 1, station, snap,
+		{ grid = grid.new(-1000, -1500, 100, 81, 71) })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[1]
+	t.eq(#b.places[1], 2, "two places weighed")
+	t.ok(b.places[1][1].curved, "the first on the curve")
+	t.ok(b.junctions[1] == b.places[1][2].junction, "the straight place taken")
+	t.ok(b.ends[1] == b.places[1][2].stretch, "its stretch")
+end)
+
+t.test("route: with time priced, the place is chosen by time, shared track included", function()
+	local station, snap = curvedStation(3000, 90)
+	local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 3600, -1500) }, 1, station, snap,
+		{ weights = withWeights({ timeCost = 1, topSpeed = 40, lateralAccel = 1 }) })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[1]
+	t.eq(#b.places[1], 2, "two places weighed")
+	-- From the tail the leg turns back on itself: slower, and 600 m more of the existing line to run first.
+	t.ok(b.junctions[1] == b.places[1][1].junction, "the curve place taken")
+end)
+
+t.test("route: weighing a leg's places, progress never goes back, and leaves room for the second", function()
+	local station, snap = curvedStation(3000, 90)
+	local input = { grid = flatGrid(), stops = { town(2, "B", 3000, 0), town(3, "C", 3600, -1500) }, weights = W,
+		platformLength = 160, existingStations = { [1] = station }, snapshots = { [1] = snap }, radius = JR }
+	local job = route.start(input)
+	local last, steps, atSecond = 0, 0, nil
+	while not route.step(job, 500) do
+		steps = steps + 1
+		assert(steps < 100000, "runaway")
+		local p = route.progress(job)
+		t.ok(p >= last - 1e-9, "progress never goes back")
+		last = p
+		if atSecond == nil and job.placing ~= nil and job.placing.index == 2 then
+			atSecond = p
+		end
+	end
+	t.ok(atSecond ~= nil, "the second place weighed")
+	-- One leg, two places: the second starts no further than about half way through the leg's share.
+	t.ok(atSecond < 0.9, ("progress at the second place %.2f"):format(atSecond))
+	t.ok(route.plan(job).ok, "ok")
+end)
+
+t.test("route: a place whose straight isn't clear is dropped", function()
+	local station, snap = curvedStation(3000, 90)
+	local stops = { town(2, "B", 3000, 0), town(3, "C", 3600, -1500) }
+	local first = runExisting(stops, 1, station, snap).stations[1].places[1][1]
+	-- A building on the curve place's straight, 30 m past its approach start.
+	local g = flatGrid()
+	local __, out = midline.at(first.stretch.frame, first.junction.approachX)
+	local p = midline.world(first.stretch.frame, first.junction.approachX, -10)
+	local ix, iy = grid.cellOf(g, { x = p.x + out.x * 30, y = p.y + out.y * 30 })
+	g.blocked[grid.index(g, ix, iy)] = true
+	local plan = runExisting(stops, 1, station, snap, { grid = g })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local b = plan.stations[1]
+	t.ok(b.existing == station, "still joined")
+	t.eq(#b.places[1], 1, "one place left")
+	t.ok(not b.places[1][1].curved, "the straight one")
 end)
 
 t.test("route: a leg meets a raised, graded existing stretch at its height", function()

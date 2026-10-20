@@ -290,6 +290,21 @@ global record PgraceRailRouterRoute
 		note : string
 	end
 
+	-- A leg's ends' places being weighed (milestone 4c stage 3; see route.tl's weighPlace). Internal: each combination
+	-- (the leaving station's place index, the arriving one's), the one being tried, and the best so far (its score,
+	-- its estimate, and its leg, built); the states expanded over the combinations so far; and whether the best is
+	-- chosen (put back in place).
+	record Placing
+		combos : {{integer}}
+		index : integer
+		best : integer
+		bestScore : number
+		bestEstimate : number
+		leg : Leg
+		expansions : integer
+		chosen : boolean
+	end
+
 	-- Work in progress. The fields are internal.
 	record Job
 		input : Input
@@ -335,6 +350,8 @@ global record PgraceRailRouterRoute
 		-- A station being re-sited (nil: none), and the stations that have been (each at most once).
 		resite : Resite
 		resited : {integer : boolean}
+		-- The leg's places being weighed (milestone 4c stage 3; nil when its ends have one combination).
+		placing : Placing
 		simplified : Simplified
 		fitting : Fitting
 		fitted : PgraceRailRouterSmooth.Result

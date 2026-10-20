@@ -911,7 +911,9 @@ t.test("existing: planOnMap with Aloha's station: it joins the station, with a p
 	-- junction's first cut (67 m out from its start at the −1 end), and runs straight from it to past our straight
 	-- beyond the approach. Since stage 3 a nearer place, straddling the curve, comes first.
 	for __, note in ipairs(r.plan.notes) do
-		t.ok(not note:find("Aloha", 1, true), "no note about Aloha's station: " .. note)
+		-- (Where it joins the line is told: "Joins the existing line ...", stage 3.)
+		t.ok(not note:find("Aloha", 1, true) or note:find("Joins the existing line", 1, true) ~= nil,
+			"no note about Aloha's station: " .. note)
 	end
 	local aloha = r.plan.stations[1]
 	t.ok(aloha.existing ~= nil, "Aloha's station is the existing one")

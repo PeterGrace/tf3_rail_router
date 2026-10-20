@@ -1499,7 +1499,8 @@ local function stepResite(job : Job, maxExpansions : integer)
 				job.footprint, job.footprintVersion = footprints(input, plan, 0, nil), job.footprintVersion + 1
 				-- The leg is searched again (from its first radius) to the new site; and where the station is the one the
 				-- leg leaves from, the leg before it, already built, is built again first.
-				job.radii = nil
+				-- Its places (milestone 4c stage 3) are weighed again too, from the first, with the new site.
+				job.radii, job.placing = nil, nil
 				if i == job.legIndex and i > 1 then
 					table.remove(plan.legs)
 					job.legIndex = job.legIndex - 1
@@ -1918,10 +1919,21 @@ local function existingStop(input : Input, i : integer, linked : {integer : bool
 					neighbours[forward].name, math.floor(approachAtEnd(input, station, k) + 0.5)))
 			end
 		elseif k ~= nil then
-			local platformEnd, approach = junctionEnds(input, station, forward)
-			if not straightClear(input, platformEnd, approach, nil, {}) then
+			-- Each of the end's places (milestone 4c stage 3) whose straight isn't clear is dropped; the first left is
+			-- in use.
+			local kept : {Place} = {}
+			for __, place in ipairs(places[k]) do
+				ends[k], junctions[k], before[k] = place.stretch, place.junction, place.before
+				local platformEnd, approach = junctionEnds(input, station, forward)
+				if straightClear(input, platformEnd, approach, nil, {}) then
+					table.insert(kept, place)
+				end
+			end
+			if #kept == 0 then
 				return nil, room
 			end
+			places[k] = kept
+			ends[k], junctions[k], before[k] = kept[1].stretch, kept[1].junction, kept[1].before
 		end
 	end
 	return station, nil
@@ -1983,9 +1995,169 @@ local function linkedLeg(input : Input, i : integer) : Leg
 		guarded = 0, timeLost = 0, linked = true }
 end
 
+-- The end a leg leaving (forward = true) or arriving at an existing station uses; nil at a station of ours.
+local function endAt(station : Station, forward : boolean) : integer
+	return station.endOf ~= nil and station.endOf[forward] or nil
+end
+
+-- The number of places a leg's end has (milestone 4c stage 3): a junction end's places, else 1 (a station of ours, a
+-- bare end, or no end: k nil).
+local function placeCount(station : Station, k : integer) : integer
+	if k == nil or station.places == nil or station.places[k] == nil then
+		return 1
+	end
+	return #station.places[k]
+end
+
+-- Puts place `idx` of station's end k in use: its stretch, junction and the frames before it, and the end's ray to be
+-- measured again. The footprints and free cells that follow the station's track are redone by the caller
+-- (placesChanged), once for both ends.
+local function setPlace(station : Station, k : integer, idx : integer)
+	local place = station.places[k][idx]
+	station.ends[k], station.junctions[k], station.before[k] = place.stretch, place.junction, place.before
+	if station.rays ~= nil then
+		station.rays[k] = nil
+	end
+end
+
+-- The stations' footprints and the free cells along existing track, redone after a place has changed.
+local function placesChanged(job : Job)
+	local input, plan = job.input, job.result
+	job.footprint, job.footprintVersion = footprints(input, plan, 0, nil), job.footprintVersion + 1
+	job.alongFree = alongFreeCells(input, plan)
+end
+
+-- Puts combination `index` of the leg's places in use (a leaving a, b arriving).
+local function usePlaces(job : Job, a : Station, b : Station, index : integer)
+	local c = job.placing.combos[index]
+	if placeCount(a, endAt(a, true)) > 1 then
+		setPlace(a, endAt(a, true), c[1])
+	end
+	if placeCount(b, endAt(b, false)) > 1 then
+		setPlace(b, endAt(b, false), c[2])
+	end
+	placesChanged(job)
+end
+
+-- The existing track a train runs from an existing station's platform end to its junction's approach start at end k
+-- (metres): along the track from the station's centre (leadIn), less its half.
+local function sharedLength(station : Station, k : integer) : number
+	local spans, x = leadIn(station, k)
+	local d = station.junctions[k].approachX - x
+	for __, sp in ipairs(spans) do
+		d = d + sp.x1 - sp.x0
+	end
+	return math.max(0, d - station.existing.half)
+end
+
+-- Where a leg joins an existing station's line, for the plan's notes (whole metres out from its platforms).
+local function placeNote(job : Job, station : Station, k : integer)
+	local note = ("Joins the existing line %d m out from %s's platforms."):format(
+		math.floor(sharedLength(station, k) + 0.5), station.town.name)
+	for __, n in ipairs(job.result.notes) do
+		if n == note then
+			return
+		end
+	end
+	table.insert(job.result.notes, note)
+end
+
+-- At a leg's start, where its ends have more than one combination of places, lists them (the leaving station's
+-- index outer) and puts the first in use.
+local function startPlacing(job : Job, a : Station, b : Station)
+	local na, nb = placeCount(a, endAt(a, true)), placeCount(b, endAt(b, false))
+	if na * nb <= 1 then
+		return
+	end
+	local combos : {{integer}} = {}
+	for ia = 1, na do
+		for ib = 1, nb do
+			table.insert(combos, { ia, ib })
+		end
+	end
+	job.placing = { combos = combos, index = 1, expansions = 0, chosen = false }
+	usePlaces(job, a, b, 1)
+end
+
+-- A leg's estimate, as the plan's (summarise): its spans' lengths at the track's price, bridges and tunnels at theirs.
+local function legEstimate(input : Input, leg : Leg) : number
+	local e = 0.0
+	for __, span in ipairs(leg.spans) do
+		local factor = 1.0
+		if span.kind == "bridge" then
+			factor = BRIDGE_PRICE
+		elseif span.kind == "tunnel" then
+			factor = TUNNEL_PRICE
+		end
+		e = e + (span.s1 - span.s0) * input.weights.costPerMetre * factor
+	end
+	return e
+end
+
+-- After the leg's combination of places has been tried (leg: the leg built from it, heights fitted; nil if its search
+-- found no path): weighs it against the best so far, then puts the next combination in use (true: the leg is searched
+-- again from it), or, after the last, the best back in place (false: placing.leg is the leg to take, nil if none
+-- found a path). Weighed as the spec's "Planner: choosing the place" says: Cheapest by the leg's estimate (what the
+-- plan's estimate counts: track, bridges and tunnels at their prices). The search cost doesn't see the bridge the
+-- profile puts where a leg passes within TRACK_NEAR of other track: on the line1 map it chose Aloha's curve place for
+-- a leg that then ran 14 m beside another line, 7.3 m above it. Fastest by the time from platform end to platform end,
+-- the existing track to each junction included at top speed; ties (within 0.5 s) by estimate.
+local function weighPlace(job : Job, a : Station, b : Station, leg : Leg) : boolean
+	local input, pl = job.input, job.placing
+	local w = input.weights
+	if leg ~= nil then
+		pl.expansions = pl.expansions + leg.searchExpansions
+		local estimate = legEstimate(input, leg)
+		local score = estimate
+		local priced = timePriced(w)
+		if priced then
+			local shared = 0.0
+			if placeCount(a, endAt(a, true)) > 1 then
+				shared = shared + sharedLength(a, endAt(a, true))
+			end
+			if placeCount(b, endAt(b, false)) > 1 then
+				shared = shared + sharedLength(b, endAt(b, false))
+			end
+			score = (leg.length + shared) / w.topSpeed + leg.timeLost
+		end
+		local better = pl.best == nil
+		if not better and priced then
+			better = score < pl.bestScore - 0.5 or (math.abs(score - pl.bestScore) <= 0.5 and estimate < pl.bestEstimate)
+		elseif not better then
+			better = score < pl.bestScore
+		end
+		if better then
+			pl.best, pl.bestScore, pl.bestEstimate, pl.leg = pl.index, score, estimate, leg
+		end
+	else
+		pl.expansions = pl.expansions + (job.searchExpansions or 0)
+	end
+	job.path, job.simplified, job.fitted, job.heights, job.searchRadius, job.pathCost = nil, nil, nil, nil, nil, nil
+	job.radii, job.fallback, job.best, job.bestTotal, job.searchExpansions = nil, nil, nil, nil, 0
+	if pl.index < #pl.combos then
+		pl.index = pl.index + 1
+		usePlaces(job, a, b, pl.index)
+		return true
+	end
+	pl.chosen = true
+	if pl.best == nil then
+		return false
+	end
+	usePlaces(job, a, b, pl.best)
+	pl.leg.searchExpansions = pl.expansions
+	if placeCount(a, endAt(a, true)) > 1 then
+		placeNote(job, a, endAt(a, true))
+	end
+	if placeCount(b, endAt(b, false)) > 1 then
+		placeNote(job, b, endAt(b, false))
+	end
+	return false
+end
+
 -- On to the next leg once one is in plan.legs: true once the last is (the plan is done).
 local function nextLeg(job : Job) : boolean
 	local plan = job.result
+	job.placing = nil
 	job.legIndex = job.legIndex + 1
 	if job.legIndex > #plan.stations - 1 then
 		plan.summary = summarise(job.input, plan)
@@ -2239,12 +2411,22 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		local leg = finishLeg(input, job.heights, a, b)
 		job.simplified, job.fitted, job.heights = nil, nil, nil
 		leg.searchRadius, leg.searchExpansions, leg.searchCost = job.searchRadius, job.searchExpansions, job.pathCost
+		-- Weighing the leg's places: this combination's leg is built; the next is tried, or the best taken.
+		if job.placing ~= nil and not job.placing.chosen then
+			if weighPlace(job, a, b, leg) then
+				return false
+			end
+			leg = job.placing.leg
+		end
 		table.insert(plan.legs, leg)
 		job.path = nil
 		job.searchRadius, job.searchExpansions = nil, 0
 		return nextLeg(job)
 	end
 	if job.search == nil then
+		if job.placing == nil and job.radii == nil then
+			startPlacing(job, a, b)
+		end
 		if job.radii == nil then
 			job.radii, job.tryIndex, job.searchExpansions = searchRadii(input.weights), 1, 0
 		end
@@ -2299,6 +2481,14 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			job.path, job.searchRadius, job.pathCost = path, job.radii[job.tryIndex], search.cost[0]
 		elseif job.tryIndex == 1 then
 			job.radii = nil
+			if job.placing ~= nil and not job.placing.chosen then
+				if weighPlace(job, a, b, nil) then
+					return false
+				elseif job.placing.leg ~= nil then
+					table.insert(plan.legs, job.placing.leg)
+					return nextLeg(job)
+				end
+			end
 			if search.enclosed then
 				return fail(job, "no_exit", { a.town.name })
 			end
@@ -2316,6 +2506,14 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		if path == nil then
 			-- The fallback radius turns most freely: no wider one finds a way either.
 			job.radii = nil
+			if job.placing ~= nil and not job.placing.chosen then
+				if weighPlace(job, a, b, nil) then
+					return false
+				elseif job.placing.leg ~= nil then
+					table.insert(plan.legs, job.placing.leg)
+					return nextLeg(job)
+				end
+			end
 			if search.enclosed then
 				-- Walled in inside the area (past what the site check looks at): a wider area can't help.
 				return fail(job, "no_exit", { a.town.name })
@@ -2386,6 +2584,12 @@ function route.progress(job : Job) : number
 			done = done + LEG_WEIGHT * SEARCH_SHARE
 		else
 			done = done + LEG_WEIGHT * SEARCH_SHARE * tried / tries
+		end
+		-- Weighing its places (milestone 4c stage 3), each combination has an equal share of the leg.
+		local pl = job.placing
+		if pl ~= nil and not pl.chosen then
+			local base = scouting + LEG_WEIGHT * (job.legIndex - 1)
+			done = base + (pl.index - 1 + (done - base) / LEG_WEIGHT) * LEG_WEIGHT / #pl.combos
 		end
 	end
 	-- Re-siting a station builds legs again (the one before it too, where it is the one the leg leaves from): the
