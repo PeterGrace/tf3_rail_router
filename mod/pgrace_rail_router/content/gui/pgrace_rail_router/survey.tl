@@ -953,7 +953,11 @@ function survey.trackLink(stationA : integer, stationB : integer) : number
 		-- readable track piece (BASE_EDGE with both nodes) is unread: in-game (Antelope to Aloha, 114 entries) 6 were,
 		-- most likely the stations' own transport network inside their constructions, at the path's two ends.
 		local piece : {integer : boolean} = {}
-		local length, pieces = 0.0, 0
+		-- Entries that are a track node rather than a piece: the path passes through a switch's node (its own transport
+		-- network joins the pieces there; in-game, Antelope to Aloha, the 6 entries that weren't pieces were in two
+		-- clusters of three, one by each station's fan and crossovers). They add no length.
+		local node : {integer : boolean} = {}
+		local length, pieces, nodes = 0.0, 0, 0
 		local how : string = nil
 		-- Whether each entry (by index) read as a piece, and what the unread ones are, for the log.
 		local readable : {boolean} = {}
@@ -963,7 +967,7 @@ function survey.trackLink(stationA : integer, stationB : integer) : number
 		local function components(e : integer) : string
 			local out = ""
 			for __, c in ipairs({ { "C", api.type.ComponentType.CONSTRUCTION }, { "E", api.type.ComponentType.BASE_EDGE },
-					{ "T", api.type.ComponentType.TRANSPORT_NETWORK } }) do
+					{ "N", api.type.ComponentType.BASE_NODE }, { "T", api.type.ComponentType.TRANSPORT_NETWORK } }) do
 				local okC, has = pcall(function() : boolean
 					return api.engine.getComponent(e, c[2] as Engine.ComponentType) ~= nil
 				end)
@@ -991,9 +995,17 @@ function survey.trackLink(stationA : integer, stationB : integer) : number
 					piece[e] = true
 					length = length + math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2 + (b.z - a.z) ^ 2)
 					pieces = pieces + 1
+				elseif edge == nil then
+					local okN, isNode = pcall(function() : boolean
+						return api.engine.getComponent(e, api.type.ComponentType.BASE_NODE) ~= nil
+					end)
+					if okN and isNode as boolean then
+						node[e] = true
+						nodes = nodes + 1
+					end
 				end
 			end
-			readable[k] = e ~= nil and piece[e]
+			readable[k] = e ~= nil and (piece[e] or node[e] == true)
 			if not readable[k] then
 				table.insert(unread, ("%d:%s/%s"):format(k, tostring(e), e ~= nil and components(e) or "-"))
 			end
@@ -1013,8 +1025,8 @@ function survey.trackLink(stationA : integer, stationB : integer) : number
 				inside = inside + 1
 			end
 		end
-		debugPrint(LOG_PREFIX .. ("link %d -> %d: %d entries (first %s %s, read by %s), %d pieces (entries %s to %s), %.0f m, %d unread [%s], %d us%s")
-			:format(stationA, stationB, #entries, type(entries[1]), tostring(entries[1]), tostring(how), pieces,
+		debugPrint(LOG_PREFIX .. ("link %d -> %d: %d entries (first %s %s, read by %s), %d pieces and %d nodes (entries %s to %s), %.0f m, %d unread [%s], %d us%s")
+			:format(stationA, stationB, #entries, type(entries[1]), tostring(entries[1]), tostring(how), pieces, nodes,
 			tostring(first), tostring(last), length, #unread, table.concat(unread, " "), math.floor(clock:getTime()),
 			inside > 0 and "; not linked: unread entries between pieces" or "")) -- PROBE (remove before release)
 		-- Nothing readable is no link: a path whose pieces can't be measured can't be weighed.

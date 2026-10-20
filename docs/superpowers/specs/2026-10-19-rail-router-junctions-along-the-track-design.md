@@ -147,7 +147,7 @@ connected.
   Doctor). The path's length is the sum of its pieces' chords, each piece once; no path, or none readable, is no link.
   The entries are read defensively (`.edgeId`, `[1]`, the entry itself); in-game they were pairs, read by `[1]`
   (Antelope → Aloha: 114 entries, 97 pieces, 5625 m against about 4420 m between the centres). Entries that aren't
-  track pieces (6 there, most likely the stations' own network inside their constructions) are accepted only before
+  track pieces (6 there, node entries (switches by each station), which add no length inside their constructions) are accepted only before
   the first piece and after the last; one between pieces is no link. A probe line logs each query, with each unread
   entry's index, entity and components, to confirm that.
 - **Planning (`route.tl`, pure):** the 1.5× check is the planner's (`Input.links` carries the raw length). Before any
