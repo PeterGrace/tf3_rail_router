@@ -34,4 +34,11 @@ global record PgraceRailRouterProbe
 	-- crosses them, and that track built through the two nodes (a diamond at each, as the game's own tool makes one),
 	-- dry-run with track spacing 0 and 5, built if clean.
 	trackCrossing : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
+	-- P17 (test map only), P15 on a curve, three stages, one click each: 1 builds a double track east of the camera
+	-- (100 m east, a 220 m left arc through 70° in 4 pieces, 150 m on, a one-way signal on each track 120 m into the
+	-- last straight); 2 fits a junction (radius 300) from the curve's outside in a frame read from the built track,
+	-- with all three cuts inside the arc's pieces, splits the tracks there and builds it; 3 builds a copy of the
+	-- track 300 m further east and the same junction from the inside. Logs every cut, piece (tightest radius), dry run
+	-- and build.
+	curveJunction : function(settings : PgraceRailRouterBuilder.Settings) : {function()}
 end
