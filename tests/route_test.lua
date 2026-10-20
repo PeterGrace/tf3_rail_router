@@ -1079,10 +1079,11 @@ t.test("route: an existing station as the first stop is left at the end facing t
 end)
 
 -- A station as existingStation's with only its +x end leading on: 150 m straight past the platform end, then both
--- tracks turning 40° left on concentric arcs (midline radius 300 m, four pieces each, tangents by the game's
--- 4R·tan(θ/4) rule), then 600 m straight on in 100 m pieces. Returns the station, its snapshot and x (along the
--- midline from the platform end) where the curve ends.
-local function curvedStation(cx)
+-- tracks turning `deg` degrees left (default 40) on concentric arcs (midline radius 300 m, four pieces each, tangents
+-- by the game's 4R·tan(θ/4) rule), then straight on: 600 m in 100 m pieces, or with `xover`, 200 m, a crossover pair
+-- (left track at 200 m to the right one at 245 m, and back from 265 m to 310 m, as Halt 2+2's), and 600 m more.
+-- Returns the station, its snapshot and x (along the midline from the platform end) where the curve ends.
+local function curvedStation(cx, deg, xover)
 	local station, snap = existingStation(cx, {})
 	local pieces, ids, nextNode = snap.pieces, {}, 1000
 	local function node(x, y)
@@ -1098,14 +1099,23 @@ local function curvedStation(cx)
 		ids[("%.6f,%.6f"):format(p.p1.x, p.p1.y)] = p.node1
 	end
 	local function add(p0, p1, t0, t1)
+		t0 = t0 or { x = p1.x - p0.x, y = p1.y - p0.y, z = 0 }
+		t1 = t1 or t0
 		pieces[#pieces + 1] = { entity = 100 + #pieces, node0 = node(p0.x, p0.y), node1 = node(p1.x, p1.y),
 			p0 = { x = p0.x, y = p0.y, z = 0 }, p1 = { x = p1.x, y = p1.y, z = 0 }, t0 = t0, t1 = t1, kind = "ground",
 			signals = {} }
 	end
-	local R, th = 300, math.rad(40)
+	local R, th = 300, math.rad(deg or 40)
+	-- Each track's breaks along the tail (metres from the curve's end).
+	local breaks = { [2.5] = { 0, 100, 200, 300, 400, 500, 600 }, [-2.5] = { 0, 100, 200, 300, 400, 500, 600 } }
+	if xover then
+		breaks[2.5] = { 0, 100, 200, 310, 410, 510, 610, 710, 810, 910 }
+		breaks[-2.5] = { 0, 100, 200, 245, 265, 310, 410, 510, 610, 710, 810, 910 }
+	end
+	local tailAt = {}
 	for __, y in ipairs({ 2.5, -2.5 }) do
 		local x0 = cx + 80
-		add({ x = x0, y = y }, { x = x0 + 150, y = y }, { x = 150, y = 0, z = 0 }, { x = 150, y = 0, z = 0 })
+		add({ x = x0, y = y }, { x = x0 + 150, y = y })
 		local ccx, ccy, r = x0 + 150, R, R - y
 		local function pt(a) return { x = ccx + r * math.cos(a), y = ccy + r * math.sin(a) } end
 		local a0 = -math.pi / 2
@@ -1116,11 +1126,15 @@ local function curvedStation(cx)
 				{ x = -math.sin(s1) * l, y = math.cos(s1) * l, z = 0 })
 		end
 		local p, d = pt(a0 + th), { x = math.cos(th), y = math.sin(th) }
-		for i = 1, 6 do
-			local a = { x = p.x + d.x * 100 * (i - 1), y = p.y + d.y * 100 * (i - 1) }
-			local b = { x = p.x + d.x * 100 * i, y = p.y + d.y * 100 * i }
-			add(a, b, { x = d.x * 100, y = d.y * 100, z = 0 }, { x = d.x * 100, y = d.y * 100, z = 0 })
+		tailAt[y] = function(s) return { x = p.x + d.x * s, y = p.y + d.y * s } end
+		local b = breaks[y]
+		for i = 2, #b do
+			add(tailAt[y](b[i - 1]), tailAt[y](b[i]))
 		end
+	end
+	if xover then
+		add(tailAt[2.5](200), tailAt[-2.5](245))
+		add(tailAt[-2.5](265), tailAt[2.5](310))
 	end
 	local degree = {}
 	for __, p in ipairs(pieces) do
@@ -1153,6 +1167,91 @@ t.test("route: a junction goes on the straight past an existing line's first cur
 	local q = midline.world(e.frame, j.approachX, -10)
 	t.near(p.x, q.x, 1e-6, "the leg starts at the approach (x)")
 	t.near(p.y, q.y, 1e-6, "the leg starts at the approach (y)")
+end)
+
+t.test("route: past an earlier stretch, the footprint and free cells follow the track, not the stretch's frame run back",
+		function()
+	-- Stretch 1: 150 m straight, a 60° curve and 200 m straight, too little straight for the junction; then a crossover
+	-- pair; then stretch 2, 600 m straight, which takes it. Stretch 2's frame run back from its start leaves the track at
+	-- the curve, and passes well to the right of it. C to the left (our side +1, the band's far side to the right).
+	local station, snap = curvedStation(3000, 60, true)
+	local input = { grid = grid.new(-1000, -1500, 100, 81, 51), stops = { town(2, "B", 3000, 0), town(3, "C", 3300, 2500) },
+		weights = W, platformLength = 160, existingStations = { [1] = station }, snapshots = { [1] = snap }, radius = JR }
+	local job = route.start(input)
+	local steps = 0
+	while not route.step(job, 500) do
+		steps = steps + 1
+		assert(steps < 100000, "runaway")
+	end
+	local plan = route.plan(job)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(#plan.notes, 0, "no notes: " .. tostring(plan.notes[1]))
+	local b = plan.stations[1]
+	t.ok(b.existing == station, "B uses the existing station")
+	t.eq(b.sides[1], 1, "our side: left")
+	t.eq(#b.before[1], 1, "the junction on the second stretch")
+	local e = b.ends[1]
+	-- The track's points, every 5 m, and the stretch's midline from its start on (out past its end, where the far side
+	-- stays kept off).
+	local g = input.grid
+	local ref = {}
+	for __, p in ipairs(snap.pieces) do
+		local l = math.sqrt((p.p1.x - p.p0.x) ^ 2 + (p.p1.y - p.p0.y) ^ 2)
+		for u = 0, 1, 5 / l do
+			local h1, h2, h3, h4 = 2 * u ^ 3 - 3 * u ^ 2 + 1, u ^ 3 - 2 * u ^ 2 + u, -2 * u ^ 3 + 3 * u ^ 2, u ^ 3 - u ^ 2
+			ref[#ref + 1] = { x = h1 * p.p0.x + h2 * p.t0.x + h3 * p.p1.x + h4 * p.t1.x,
+				y = h1 * p.p0.y + h2 * p.t0.y + h3 * p.p1.y + h4 * p.t1.y }
+		end
+	end
+	local track = #ref
+	for x = 0, e.length + 1500, 5 do
+		ref[#ref + 1] = midline.world(e.frame, x, 0)
+	end
+	local function nearest(p, n)
+		local best = math.huge
+		for i = 1, n do
+			best = math.min(best, math.sqrt((ref[i].x - p.x) ^ 2 + (ref[i].y - p.y) ^ 2))
+		end
+		return best
+	end
+	local function centre(i)
+		local ix, iy = (i - 1) % g.nx, (i - 1) // g.nx
+		return { x = g.x0 + (ix + 0.5) * g.cell, y = g.y0 + (iy + 0.5) * g.cell }
+	end
+	-- Every cell of the footprint near B within 2 cells of the track (the band runs a cell beyond the far track, and a
+	-- cell's centre lies up to 0.7 cells from its edge), and every free cell within 1.5 (the band is 12 m wide).
+	for name, set in pairs({ footprint = { job.footprint, 2 }, alongFree = { job.alongFree, 1.5 } }) do
+		local n = 0
+		for i in pairs(set[1]) do
+			local c = centre(i)
+			if math.sqrt((c.x - 3000) ^ 2 + c.y ^ 2) < 2000 then
+				n = n + 1
+				local d = nearest(c, #ref)
+				t.ok(d <= set[2] * g.cell, ("%s cell at (%.0f, %.0f): %.0f m from the track"):format(name, c.x, c.y, d))
+			end
+		end
+		t.ok(n > 10, name .. ": cells near B")
+	end
+	-- The stretch's frame run back from its start, banded as the stretch is (the footprint from our side across to a
+	-- cell beyond the far track, the free cells 12 m either side): cells of those bands farther from the track than
+	-- the limits above (there are some) are in neither.
+	local back = midline.project(e.frame, station.centre)
+	local phantom = 0
+	for x = back, 0, 5 do
+		for name, band in pairs({ footprint = { job.footprint, 2, -2.5, 2.5 + g.cell }, alongFree = { job.alongFree, 1.5,
+				-12, 12 } }) do
+			for y = band[3], band[4], 5 do
+				local q = midline.world(e.frame, x, -y)
+				local ix, iy = grid.cellOf(g, q)
+				local i = grid.index(g, ix, iy)
+				if nearest(centre(i), track) > band[2] * g.cell then
+					phantom = phantom + 1
+					t.ok(not band[1][i], ("%s: a cell on the frame run back, at (%.0f, %.0f)"):format(name, q.x, q.y))
+				end
+			end
+		end
+	end
+	t.ok(phantom > 0, "the frame run back leaves the track far enough to tell")
 end)
 
 t.test("route: a leg meets a raised, graded existing stretch at its height", function()
@@ -1344,11 +1443,11 @@ t.test("route: our straight past a junction stops where the existing line swings
 	local b = plan.stations[2]
 	t.ok(b.existing == station, "existing")
 	t.eq(b.sides[1], 1, "our side of the +x end: +y")
-	-- The ray (y = +10) comes within 9 m of the midline 10 m into the swing (it closes 1 m in 10).
-	t.near(b.rays[1], 1000 - JX + 10, midline.STEP, "the +x end's ray stops in the swing")
+	-- The ray (y = +10) comes within 9.5 m of the midline 5 m into the swing (it closes 1 m in 10).
+	t.near(b.rays[1], 1000 - JX + 5, midline.STEP, "the +x end's ray stops in the swing")
 	t.ok(b.rays[-1] > 1000 - JX + 100, "the −x end's ray runs on past the swing, away from it")
 	local leg = plan.legs[2]
-	t.ok(leg.pieces[1].kind == "straight" and leg.pieces[1].b.x <= 3080 + 1000 + 10 + 1e-6,
+	t.ok(leg.pieces[1].kind == "straight" and leg.pieces[1].b.x <= 3080 + 1000 + 5 + 1e-6,
 		("the leg out leaves its straight by the swing (at x = %.0f)"):format(leg.pieces[1].b.x))
 end)
 

@@ -63,6 +63,10 @@ global record PgraceRailRouterRoute
 		-- Per junction end, how far our straight past the junction may run along its ray (route.tl's rayRoom).
 		-- Internal, filled in as needed.
 		rays : {integer : number}
+		-- Per junction end, the frames of the end's stretches nearer the station than the one the junction is on (ends),
+		-- nearest first (empty where it's on the first): the track the station's footprint and free cells follow out to
+		-- it (route.tl's leadIn).
+		before : {integer : {PgraceRailRouterMidline.Frame}}
 	end
 
 	-- From one station's platform end to the next one's (at an existing station's junction, its approach start, 10 m

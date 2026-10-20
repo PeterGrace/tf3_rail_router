@@ -133,7 +133,8 @@ local ROUTES = {
 	-- junctions go on the straight past it (first cuts 397 and 347 m out from the platform ends). Recorded for 4c
 	-- stage 1 (2026-10-19). Known heavy: the sites step reading Aloha's ends (existing.analyse walks and pairs both
 	-- tracks out to 1.5 km at each end) allocates about 1.1 MB of the step's 1.45 MB, over STEP_ALLOC_KB; once per
-	-- plan, 7 ms on the desktop.
+	-- plan, 7 ms on the desktop. Its 3 tight curves aren't the junctions': an S-jog 205–356 m before Aloha's −1
+	-- approach and a 130 m curve at Antelope's end (grid and search effects).
 	{ map = TEST_LINE1_MAP, from = "Antelope", to = "Imperial Beach", mode = "cheapest", track = "Standard Tracks",
 		quick = true, stops = { "Aloha" }, existing = { "Aloha" }, stopsSeen = "Antelope, Aloha, Imperial Beach",
 		maxAllocKB = 1600,
@@ -337,46 +338,55 @@ local function trackClearance(map, plan)
 		trackPoints[map] = index
 	end
 	local near = 15.0
-	-- The least height over the track points within `near` of sample i of a leg (nil: none near).
+	-- The least height over the track points within `near` of sample i of a leg (nil: none near), and how far the
+	-- nearest track point is (in plan).
 	local function over(leg, i)
-		local smp, low = leg.samples[i], nil
+		local smp, low, closest = leg.samples[i], nil, math.huge
 		local bx, by = math.floor(smp.p.x / 50), math.floor(smp.p.y / 50)
 		for kx = bx - 1, bx + 1 do
 			for ky = by - 1, by + 1 do
 				for __, q in ipairs(index[kx .. "," .. ky] or {}) do
-					if (q[1] - smp.p.x) ^ 2 + (q[2] - smp.p.y) ^ 2 <= near * near then
+					local d2 = (q[1] - smp.p.x) ^ 2 + (q[2] - smp.p.y) ^ 2
+					if d2 <= near * near then
 						low = math.min(low or math.huge, leg.z[i] - q[3])
+						closest = math.min(closest, math.sqrt(d2))
 					end
 				end
 			end
 		end
-		return low
+		return low, closest
 	end
 	-- A leg at an existing station's junction starts (or ends) beside its track on purpose, on the ground 10 m off its
-	-- midline: from that end, samples are left out until the first one clear of the track.
+	-- midline (7.5 m from the near track): from that end, samples are left out until the first one clear of the track,
+	-- but only beside it, not over it: one within CROSS_NEAR of a track point still counts.
+	local CROSS_NEAR = 6.0
 	local function atJunction(st, forward)
 		return st ~= nil and st.existing ~= nil and st.junctions ~= nil and st.endOf ~= nil
 			and st.junctions[st.endOf[forward]] ~= nil
 	end
 	local least, at = math.huge, nil
 	for li, leg in ipairs(plan.legs) do
+		local function count(i, skipping)
+			local low, closest = over(leg, i)
+			if low ~= nil and (not skipping or closest < CROSS_NEAR) and low < least then
+				least, at = low, leg.samples[i].p
+			end
+			return low ~= nil
+		end
 		local n = #leg.samples
 		local first, last = 1, n
 		if atJunction(plan.stations[li], true) then
-			while first <= n and over(leg, first) ~= nil do
+			while first <= n and count(first, true) do
 				first = first + 1
 			end
 		end
 		if atJunction(plan.stations[li + 1], false) then
-			while last >= first and over(leg, last) ~= nil do
+			while last >= first and count(last, true) do
 				last = last - 1
 			end
 		end
 		for i = first, last do
-			local low = over(leg, i)
-			if low ~= nil and low < least then
-				least, at = low, leg.samples[i].p
-			end
+			count(i, false)
 		end
 	end
 	return least, at
