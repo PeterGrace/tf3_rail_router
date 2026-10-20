@@ -80,11 +80,12 @@ return function(root)
 		expansions = expansions or lib.STEP_EXPANSIONS
 		local start = clock()
 		-- joins (optional): existing stations to join, as the window passes them: bareApproach, existingStations,
-		-- snapshots (by stop index) and radius.
+		-- snapshots (by stop index), radius, and links (by leg: the existing track's length between two consecutive
+		-- stops' stations, as survey.trackLink measures it in-game).
 		joins = joins or {}
 		local job = route.start({ grid = g, stops = stops, weights = weights, platformLength = platform, approach = approach,
 			bareApproach = joins.bareApproach, existingStations = joins.existingStations, snapshots = joins.snapshots,
-			radius = joins.radius })
+			radius = joins.radius, links = joins.links })
 		local paths = {}
 		local slowest, worst = {}, 0
 		local alloc = { total = 0, max = 0, maxKind = nil, worst = 0, worstKind = nil }
@@ -306,7 +307,8 @@ return function(root)
 	-- mode ("cheapest" default, or "fastest"), track (label or name; default the mode's for the map's year), stops
 	-- (a list of town names or ids between from and to: replaces corridor.select's choice; {} for none), platform
 	-- (default 160), overrides ({key = value} weights), expansions (per step), existing (a list of town names or ids
-	-- whose existing rail station the line joins, as ticked in the window; they must be among the planned stops).
+	-- whose existing rail station the line joins, as ticked in the window; they must be among the planned stops), links
+	-- ({[leg index] = metres}: existing track between those stops' stations, see runPlan).
 	-- Errors on unknown towns or tracks, or an existing town that isn't a stop. A stop whose station can't be read
 	-- is planned without it, as in the window, and r.existing[stop index] says why.
 	function lib.planOnMap(map, opts)
@@ -359,6 +361,11 @@ return function(root)
 				end
 			end
 			assert(found, "existing: " .. tostring(key) .. " is not among the planned stops")
+		end
+		-- opts.links (optional): existing track between consecutive stops' stations, by leg, as the window's
+		-- survey.trackLink would measure it (a capture holds no train paths), passed through as Input.links.
+		if joins and opts.links then
+			joins.links = opts.links
 		end
 		if joins then
 			local radius = track.speed < 30 and 150 or (track.speed < 60 and 300 or 600)

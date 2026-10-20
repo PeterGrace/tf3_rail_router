@@ -874,4 +874,119 @@ function survey.trackSnapshot(centre : Pt, radius : number) : Snapshot
 	return snap
 end
 
+-- Linked legs (added after 4c stage 1's in-game test) -----------------------------------------------------------
+
+-- The STATION component's terminals (api.type's Station record, which this file's Station alias shadows).
+local record StationTerminals
+	terminals : {Terminal}
+end
+
+-- The vehicle nodes of every terminal of a construction's stations (copies), where trains stop.
+local function terminalNodes(construction : integer) : {NodeId}
+	local nodes : {NodeId} = {}
+	local con = api.engine.getComponent(construction, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+	if con == nil or con.stations == nil then
+		return nodes
+	end
+	for __, s in ipairs(con.stations) do
+		local st = api.engine.getComponent(s, api.type.ComponentType.STATION) as any as StationTerminals
+		for __, term in ipairs(st ~= nil and st.terminals or {}) do
+			local n = term.vehicleNodeId
+			if n ~= nil and (n.entity as integer) >= 0 then
+				table.insert(nodes, api.type.NodeId.new(n.entity, n.index))
+			end
+		end
+	end
+	return nodes
+end
+
+-- The track piece entity of one entry of the pathfinder's path, and how it was read. The tealdef says {EdgeId,
+-- boolean} pairs, but the tealdefs have been wrong about runtime shapes (MOVE_PATH's edges were EdgeIdDir userdata
+-- with .edgeId and .dir, AGENTS.md): .edgeId, [1] and the entry itself are tried, each read in a pcall of its own.
+local function pathEntity(entry : any) : integer, string
+	local function entityOf(read : function() : any) : integer
+		local ok, v = pcall(read)
+		if not ok or v == nil then
+			return nil
+		end
+		local okE, e = pcall(function() : any
+			return (v as {string : any}).entity
+		end)
+		if okE and e ~= nil and tonumber(e) ~= nil then
+			return math.floor(tonumber(e))
+		end
+		return nil
+	end
+	local e = entityOf(function() : any
+		return (entry as {string : any}).edgeId
+	end)
+	if e ~= nil then
+		return e, "edgeId"
+	end
+	e = entityOf(function() : any
+		return (entry as {any})[1]
+	end)
+	if e ~= nil then
+		return e, "[1]"
+	end
+	e = entityOf(function() : any
+		return entry
+	end)
+	if e ~= nil then
+		return e, "entity"
+	end
+	return nil, nil
+end
+
+function survey.trackLink(stationA : integer, stationB : integer) : number
+	local clock = api.type.Clock.new()
+	local ok, result = pcall(function() : number
+		local from, to = terminalNodes(stationA), terminalNodes(stationB)
+		if #from == 0 or #to == 0 then
+			debugPrint(LOG_PREFIX .. ("link %d -> %d: %d and %d terminal nodes"):format(stationA, stationB, #from, #to))
+			return nil
+		end
+		local path = api.engine.util.pathfinding.findPathNodeToNode(from, to, { api.type["enum"].TransportMode.TRAIN })
+		local entries = (path or {}) as {any}
+		-- Each piece once (a piece with several transport edges shows up once per edge), by its chord: the pieces are
+		-- short, and the 1.5 detour limit doesn't need the arcs' few metres more.
+		local seen : {integer : boolean} = {}
+		local length, pieces, unread = 0.0, 0, 0
+		local how : string = nil
+		for __, entry in ipairs(entries) do
+			local e, read = pathEntity(entry)
+			how = how or read
+			if e == nil then
+				unread = unread + 1
+			elseif not seen[e] then
+				seen[e] = true
+				local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+				local a, b : Pt3, Pt3 = nil, nil
+				if edge ~= nil then
+					a, b = nodeAt(edge.node0 as integer), nodeAt(edge.node1 as integer)
+				end
+				if a ~= nil and b ~= nil then
+					length = length + math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2 + (b.z - a.z) ^ 2)
+					pieces = pieces + 1
+				else
+					unread = unread + 1
+				end
+			end
+		end
+		debugPrint(LOG_PREFIX .. ("link %d -> %d: %d entries (first %s %s, read by %s), %d pieces, %.0f m, %d unread, %d us")
+			:format(stationA, stationB, #entries, type(entries[1]), tostring(entries[1]), tostring(how), pieces, length,
+			unread, math.floor(clock:getTime()))) -- PROBE (remove before release)
+		-- Nothing readable is no link: a path whose pieces can't be measured can't be weighed.
+		if pieces == 0 then
+			return nil
+		end
+		return length
+	end)
+	if not ok then
+		logOnce("link", ("link %d -> %d: %s"):format(stationA, stationB, tostring(result)))
+		return nil
+	end
+	return result as number
+end
+
 return survey
