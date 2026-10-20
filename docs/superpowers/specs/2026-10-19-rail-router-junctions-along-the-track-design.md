@@ -145,8 +145,11 @@ connected.
   `api.engine.util.pathfinding.findPathNodeToNode` query (TRAIN) from every terminal's vehicle node of one station
   construction to every one of the other's. It follows the track's geometry and ignores one-way signals (Rail
   Doctor). The path's length is the sum of its pieces' chords, each piece once; no path, or none readable, is no link.
-  The tealdef's `{EdgeId, boolean}` entries are read defensively (`.edgeId`, `[1]`, the entry itself), and a probe
-  line logs each query's path shape until it's confirmed in-game.
+  The entries are read defensively (`.edgeId`, `[1]`, the entry itself); in-game they were pairs, read by `[1]`
+  (Antelope → Aloha: 114 entries, 97 pieces, 5625 m against about 4420 m between the centres). Entries that aren't
+  track pieces (6 there, most likely the stations' own network inside their constructions) are accepted only before
+  the first piece and after the last; one between pieces is no link. A probe line logs each query, with each unread
+  entry's index, entity and components, to confirm that.
 - **Planning (`route.tl`, pure):** the 1.5× check is the planner's (`Input.links` carries the raw length). Before any
   station is placed, the linkable legs are settled (`resolveLinks`): each station touching one is read with that side
   left out (as at a line's end); a station that can't be used then (its other end has no room for a junction, say)

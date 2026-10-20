@@ -949,38 +949,76 @@ function survey.trackLink(stationA : integer, stationB : integer) : number
 		local path = api.engine.util.pathfinding.findPathNodeToNode(from, to, { api.type["enum"].TransportMode.TRAIN })
 		local entries = (path or {}) as {any}
 		-- Each piece once (a piece with several transport edges shows up once per edge), by its chord: the pieces are
-		-- short, and the 1.5 detour limit doesn't need the arcs' few metres more.
-		local seen : {integer : boolean} = {}
-		local length, pieces, unread = 0.0, 0, 0
+		-- short, and the 1.5 detour limit doesn't need the arcs' few metres more. An entry whose entity isn't a
+		-- readable track piece (BASE_EDGE with both nodes) is unread: in-game (Antelope to Aloha, 114 entries) 6 were,
+		-- most likely the stations' own transport network inside their constructions, at the path's two ends.
+		local piece : {integer : boolean} = {}
+		local length, pieces = 0.0, 0
 		local how : string = nil
+		-- Whether each entry (by index) read as a piece, and what the unread ones are, for the log.
+		local readable : {boolean} = {}
+		local unread : {string} = {}
+		-- Which of a few components an unread entity has (C construction, E base edge, T transport network), each
+		-- read in a pcall: "?" where the read threw.
+		local function components(e : integer) : string
+			local out = ""
+			for __, c in ipairs({ { "C", api.type.ComponentType.CONSTRUCTION }, { "E", api.type.ComponentType.BASE_EDGE },
+					{ "T", api.type.ComponentType.TRANSPORT_NETWORK } }) do
+				local okC, has = pcall(function() : boolean
+					return api.engine.getComponent(e, c[2] as Engine.ComponentType) ~= nil
+				end)
+				if not okC then
+					out = out .. "?"
+				elseif has as boolean then
+					out = out .. (c[1] as string)
+				end
+			end
+			return out
+		end
 		-- By index, not ipairs: should the path be an engine vector (userdata) rather than a table, ipairs (raw access
 		-- in Lua 5.2) would fail on it, where # and indexing go through its metatable (Rail Doctor read its #).
 		for k = 1, #entries do
 			local e, read = pathEntity(entries[k])
 			how = how or read
-			if e == nil then
-				unread = unread + 1
-			elseif not seen[e] then
-				seen[e] = true
+			if e ~= nil and piece[e] == nil then
+				piece[e] = false
 				local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
 				local a, b : Pt3, Pt3 = nil, nil
 				if edge ~= nil then
 					a, b = nodeAt(edge.node0 as integer), nodeAt(edge.node1 as integer)
 				end
 				if a ~= nil and b ~= nil then
+					piece[e] = true
 					length = length + math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2 + (b.z - a.z) ^ 2)
 					pieces = pieces + 1
-				else
-					unread = unread + 1
 				end
 			end
+			readable[k] = e ~= nil and piece[e]
+			if not readable[k] then
+				table.insert(unread, ("%d:%s/%s"):format(k, tostring(e), e ~= nil and components(e) or "-"))
+			end
 		end
-		debugPrint(LOG_PREFIX .. ("link %d -> %d: %d entries (first %s %s, read by %s), %d pieces, %.0f m, %d unread, %d us%s")
-			:format(stationA, stationB, #entries, type(entries[1]), tostring(entries[1]), tostring(how), pieces, length,
-			unread, math.floor(clock:getTime()), unread > 0 and "; not linked: some entries unread" or "")) -- PROBE (remove before release)
-		-- Nothing readable is no link: a path whose pieces can't be measured can't be weighed. Nor, until the probe has
-		-- confirmed the path's shape, is a path with any entry unread: measured short, it could pass the detour check.
-		if pieces == 0 or unread > 0 then
+		-- Unread entries are taken only before the first piece and after the last (inside the two stations): one
+		-- between them is track the length leaves out, which could pass the detour check measured short.
+		local first, last : integer, integer = nil, nil
+		for k = 1, #entries do
+			if readable[k] then
+				first = first or k
+				last = k
+			end
+		end
+		local inside = 0
+		for k = first or 1, last or 0 do
+			if not readable[k] then
+				inside = inside + 1
+			end
+		end
+		debugPrint(LOG_PREFIX .. ("link %d -> %d: %d entries (first %s %s, read by %s), %d pieces (entries %s to %s), %.0f m, %d unread [%s], %d us%s")
+			:format(stationA, stationB, #entries, type(entries[1]), tostring(entries[1]), tostring(how), pieces,
+			tostring(first), tostring(last), length, #unread, table.concat(unread, " "), math.floor(clock:getTime()),
+			inside > 0 and "; not linked: unread entries between pieces" or "")) -- PROBE (remove before release)
+		-- Nothing readable is no link: a path whose pieces can't be measured can't be weighed.
+		if pieces == 0 or inside > 0 then
 			return nil
 		end
 		return length
