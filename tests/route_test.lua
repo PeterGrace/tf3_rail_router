@@ -1347,14 +1347,114 @@ t.test("route: the leg's place is the straight one when the town lies beyond it"
 end)
 
 t.test("route: with time priced, the place is chosen by time, shared track included", function()
+	-- 60° curve, C east of it on the curve's outside: from the straight tail (733 m out, heading 60° left) the new track
+	-- to C is shorter, so it's cheaper to build; but the train first runs round the curve to get there, and from the
+	-- curve place (289 m out) the whole way is shorter.
+	local function planned(w)
+		local station, snap = curvedStation(3000, 60)
+		local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 6000, -300) }, 1, station, snap, { weights = w })
+		t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+		local b = plan.stations[1]
+		t.eq(#b.places[1], 2, "two places weighed")
+		local idx = b.junctions[1] == b.places[1][1].junction and 1 or 2
+		local shared = tonumber(plan.notes[1]:match("^Joins the existing line (%d+) m out"))
+		return idx, plan, shared
+	end
+	local cheapIdx, cheap, cheapShared = planned(W)
+	local fastIdx, fast, fastShared = planned(withWeights({ timeCost = 1, topSpeed = 40, lateralAccel = 1 }))
+	t.eq(cheapIdx, 2, "Cheapest: the straight place")
+	t.eq(fastIdx, 1, "Fastest: the curve place")
+	t.ok(cheap.summary.estimate < fast.summary.estimate, "Cheapest's line costs less to build")
+	t.ok(fastShared + fast.legs[1].length < cheapShared + cheap.legs[1].length,
+		("Fastest's way is shorter, shared track included (%d + %.0f against %d + %.0f)"):format(fastShared,
+		fast.legs[1].length, cheapShared, cheap.legs[1].length))
+end)
+
+-- A station as curvedStation's, turned half round its centre: its track leads on from its −x end, curving the other
+-- way (towards −y as it heads −x).
+local function turned(station, snap)
+	local cx = station.centre.x
+	for __, p in ipairs(snap.pieces) do
+		p.p0 = { x = 2 * cx - p.p0.x, y = -p.p0.y, z = p.p0.z }
+		p.p1 = { x = 2 * cx - p.p1.x, y = -p.p1.y, z = p.p1.z }
+		p.t0 = { x = -p.t0.x, y = -p.t0.y, z = p.t0.z }
+		p.t1 = { x = -p.t1.x, y = -p.t1.y, z = p.t1.z }
+	end
+	return station, snap
+end
+
+t.test("route: a leg between two existing stations weighs all four combinations of their places", function()
+	-- Each station's line curves 30° away on the town's side (the curve's inside): two places each.
+	local s1, n1 = curvedStation(0, 30)
+	local s2, n2 = turned(curvedStation(5000, 30))
+	s2.entity = 2
+	local input = { grid = grid.new(-1000, -2500, 100, 81, 51), stops = { town(1, "A", 0, 0), town(2, "B", 5000, 0) },
+		weights = W, platformLength = 160, existingStations = { [1] = s1, [2] = s2 }, snapshots = { [1] = n1, [2] = n2 },
+		radius = JR }
+	local job = route.start(input)
+	local combos, steps = nil, 0
+	while not route.step(job, 500) do
+		steps = steps + 1
+		assert(steps < 100000, "runaway")
+		if job.placing ~= nil then
+			combos = #job.placing.combos
+		end
+	end
+	local plan = route.plan(job)
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	local a, b = plan.stations[1], plan.stations[2]
+	t.eq(#a.places[1], 2, "A: two places")
+	t.eq(#b.places[-1], 2, "B: two places")
+	t.eq(combos, 4, "four combinations")
+	-- The tails run towards each other's town at 30°: both legs' ends further out leave less to build.
+	t.ok(a.junctions[1] == a.places[1][2].junction, "A: the straight place")
+	t.ok(b.junctions[-1] == b.places[-1][2].junction, "B: the straight place")
+	t.eq(#plan.notes, 2, "a note for each")
+	local p = legStart(plan.legs[1])
+	local q = midline.world(a.ends[1].frame, a.junctions[1].approachX, 10 * a.sides[1])
+	t.near(p.x, q.x, 1e-6, "the leg leaves from A's place (x)")
+	t.near(p.y, q.y, 1e-6, "the leg leaves from A's place (y)")
+	local r = legEnd(plan.legs[1])
+	local u = midline.world(b.ends[-1].frame, b.junctions[-1].approachX, 10 * b.sides[-1])
+	t.near(r.x, u.x, 1e-6, "the leg arrives at B's place (x)")
+	t.near(r.y, u.y, 1e-6, "the leg arrives at B's place (y)")
+end)
+
+t.test("route: a place whose leg finds no way out is passed over for one that found a leg", function()
 	local station, snap = curvedStation(3000, 90)
-	local plan = runExisting({ town(2, "B", 3000, 0), town(3, "C", 3600, -1500) }, 1, station, snap,
-		{ weights = withWeights({ timeCost = 1, topSpeed = 40, lateralAccel = 1 }) })
+	local stops = { town(2, "B", 3000, 0), town(3, "C", 3600, -1500) }
+	local places = runExisting(stops, 1, station, snap).stations[1].places[1]
+	-- A ring of buildings round the straight place (the second weighed), clear of its own straight.
+	local function ringed()
+		local g = flatGrid()
+		local pl = places[2]
+		local c = midline.world(pl.stretch.frame, pl.junction.approachX, -10)
+		for ix = 1, g.nx do
+			for iy = 1, g.ny do
+				local x, y = g.x0 + (ix - 0.5) * g.cell, g.y0 + (iy - 0.5) * g.cell
+				local d = math.sqrt((x - c.x) ^ 2 + (y - c.y) ^ 2)
+				if d > 150 and d < 450 then
+					g.blocked[grid.index(g, ix, iy)] = true
+				end
+			end
+		end
+		return g
+	end
+	local plan = runExisting(stops, 1, station, snap, { grid = ringed() })
 	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
 	local b = plan.stations[1]
-	t.eq(#b.places[1], 2, "two places weighed")
-	-- From the tail the leg turns back on itself: slower, and 600 m more of the existing line to run first.
-	t.ok(b.junctions[1] == b.places[1][1].junction, "the curve place taken")
+	t.eq(#b.places[1], 2, "two places")
+	t.ok(b.junctions[1] == b.places[1][1].junction, "the curve place")
+	-- The straight place alone (the curve place's straight built over): walled in.
+	local g = ringed()
+	local f = places[1]
+	local __, out = midline.at(f.stretch.frame, f.junction.approachX)
+	local p = midline.world(f.stretch.frame, f.junction.approachX, -10)
+	local ix, iy = grid.cellOf(g, { x = p.x + out.x * 30, y = p.y + out.y * 30 })
+	g.blocked[grid.index(g, ix, iy)] = true
+	local alone = runExisting(stops, 1, station, snap, { grid = g })
+	t.eq(#alone.stations[1].places[1], 1, "the straight place alone")
+	t.eq(alone.ok, false, "it finds no way out")
 end)
 
 t.test("route: weighing a leg's places, progress never goes back, and leaves room for the second", function()
