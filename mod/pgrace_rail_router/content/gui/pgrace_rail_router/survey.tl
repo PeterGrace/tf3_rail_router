@@ -953,8 +953,10 @@ function survey.trackLink(stationA : integer, stationB : integer) : number
 		local seen : {integer : boolean} = {}
 		local length, pieces, unread = 0.0, 0, 0
 		local how : string = nil
-		for __, entry in ipairs(entries) do
-			local e, read = pathEntity(entry)
+		-- By index, not ipairs: should the path be an engine vector (userdata) rather than a table, ipairs (raw access
+		-- in Lua 5.2) would fail on it, where # and indexing go through its metatable (Rail Doctor read its #).
+		for k = 1, #entries do
+			local e, read = pathEntity(entries[k])
 			how = how or read
 			if e == nil then
 				unread = unread + 1
