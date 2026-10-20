@@ -8,6 +8,7 @@ local existing = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner
 local junction = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/junction.tl" as PgraceRailRouterJunction
 local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/area.tl" as PgraceRailRouterArea
 local midline = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/midline.tl" as PgraceRailRouterMidline
+local placement = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/placement.tl" as PgraceRailRouterPlacement
 
 local route : PgraceRailRouterRoute = {}
 
@@ -353,32 +354,16 @@ end
 local RAY_SLACK = 0.5
 
 -- How far our straight at end k's junction may run (metres along the ray from its approach start; see RAY_SLACK),
--- kept in station.rays. The frame's samples past the approach start are read off the ray (how far along it, and how far
--- across from it): the ray ends at the first that comes within JUNCTION_OFFSET − RAY_SLACK of it, or more than a grid
--- cell from it, or that lies no further along than the one before (the track turning back), else at the last (the
--- stretch's end; on a straight exactly there). One pass over the samples: projecting points along the ray onto the frame instead cost a leg's
--- first search step 8 ms on the line1 map (two ends, 1.3 km stretches).
+-- kept in station.rays: see placement.rayRoom (offset JUNCTION_OFFSET, slack RAY_SLACK, a grid cell). One pass over the
+-- frame's samples: projecting points along the ray onto the frame instead cost a leg's first search step 8 ms on the
+-- line1 map (two ends, 1.3 km stretches).
 local function rayRoom(input : Input, station : Station, k : integer) : number
 	station.rays = station.rays or {}
 	if station.rays[k] ~= nil then
 		return station.rays[k]
 	end
 	local e, j, side = station.ends[k], station.junctions[k], station.sides[k]
-	local f = e.frame
-	local start = midline.world(f, j.approachX, JUNCTION_OFFSET * side)
-	local __, out = midline.at(f, j.approachX)
-	local d = 0.0
-	for i = math.floor(j.approachX / f.step) + 2, #f.pts do
-		local p = f.pts[i]
-		local rx, ry = p.x - start.x, p.y - start.y
-		local along = rx * out.x + ry * out.y
-		-- The midline's offset from the ray towards our side: −JUNCTION_OFFSET where they run parallel.
-		local across = (out.x * ry - out.y * rx) * side
-		if across > -(JUNCTION_OFFSET - RAY_SLACK) or across < -input.grid.cell or along <= d then
-			break
-		end
-		d = along
-	end
+	local d = placement.rayRoom(e.frame, j.approachX, side, JUNCTION_OFFSET, RAY_SLACK, input.grid.cell)
 	station.rays[k] = d
 	return d
 end
