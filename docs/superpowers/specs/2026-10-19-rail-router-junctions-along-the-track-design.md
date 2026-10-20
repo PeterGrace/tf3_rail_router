@@ -177,6 +177,10 @@ The player built Bangor → Aloha via Antelope, then planned Mercer Island → A
   must lie 15 m clear of the junction's whole span, the merge's switch to the cross-out piece's end. Not proven
   (captures hold no signals), but it was the only piece refused and the only one over a signal.
 
+- **Result:** the plan reused line 1 between Antelope and Aloha and joined Antelope's south end with a junction
+  (merge switch about 330 m out from the platforms), built first time; trains ran through it both ways. Map:
+  `maps/rail-router-test-5x14km-junction.map`.
+
 ## Testing
 
 - **Unit:** the midline from synthetic pieces (straight, arc, straight then arc, an S-bend); mapping frame points and
@@ -193,3 +197,7 @@ The player built Bangor → Aloha via Antelope, then planned Mercer Island → A
 - The flying junction (4b-2) stays a later stage; it will use this frame.
 - Junctions on bridges or in tunnels, and on single track.
 - Moving or removing existing signals.
+- **The wye (next milestone, 4d, agreed 2026-10-20):** a junction faces the station it serves, so after
+  Mercer Island → Antelope joined line 1 south of Antelope, a Mercer Island → Bangor train would have to reverse.
+  The other side of the triangle needs junctions on line 1 between stations, facing either way; it will use this
+  frame and layout.
