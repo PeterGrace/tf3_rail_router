@@ -110,3 +110,12 @@ t.test("placement: 150 m turnouts' merge (94 m as one Hermite) passes on straigh
 		t.ok(r >= own * 0.99, ("%s: %.0f m, no tighter than on straight track"):format(p.role, r))
 	end
 end)
+
+t.test("placement: rayRoom with a limit stops once that far, and agrees below it", function()
+	local f = track(100, 220, 70, 300)
+	local full = placement.rayRoom(f, 150, -1, 10, 0.5, 100)
+	local capped = placement.rayRoom(f, 150, -1, 10, 0.5, 100, 50)
+	t.ok(capped >= 50 and capped <= full and capped < 60, ("capped at %.1f of %.1f"):format(capped, full))
+	-- Inside, where the room is under the limit, the same answer either way.
+	t.eq(placement.rayRoom(f, 150, 1, 10, 0.5, 100, 50), placement.rayRoom(f, 150, 1, 10, 0.5, 100), "inside")
+end)

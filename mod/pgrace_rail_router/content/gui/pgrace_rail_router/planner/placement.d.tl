@@ -23,9 +23,9 @@ global record PgraceRailRouterPlacement
 	-- How far our straight, starting at frame (approachX, offset × side) along the frame's direction there, may run
 	-- (metres along it): it ends at the first sample past the approach start whose midline comes within offset − slack
 	-- of the ray, or lies more than `cell` from it on the far side, or lies no further along than the one before; else
-	-- at the last sample.
+	-- at the last sample. With `limit`, it may stop at the first sample at least that far along (accept needs no more).
 	rayRoom : function(f : PgraceRailRouterMidline.Frame, approachX : number, side : number, offset : number,
-		slack : number, cell : number) : number
+		slack : number, cell : number, limit ?: number) : number
 	-- junction.fit's accept for placements anywhere on the stretch, curves included: every mapped piece no tighter
 	-- than minRadius, or where the piece itself is (unmapped, in the straight frame), no tighter than that (less 1%),
 	-- and our straight past the approach start with rayRoom ≥ straight.

@@ -33,7 +33,7 @@ function placement.tightest(h : Hermite) : number
 end
 
 function placement.rayRoom(f : Frame, approachX : number, side : number, offset : number, slack : number,
-		cell : number) : number
+		cell : number, limit ?: number) : number
 	local start = midline.world(f, approachX, offset * side)
 	local __, out = midline.at(f, approachX)
 	local d = 0.0
@@ -47,6 +47,9 @@ function placement.rayRoom(f : Frame, approachX : number, side : number, offset 
 			break
 		end
 		d = along
+		if limit ~= nil and d >= limit then
+			break
+		end
 	end
 	return d
 end
@@ -61,6 +64,11 @@ function placement.accept(f : Frame, side : number, o : PgraceRailRouterPlacemen
 	local ownLength : {string : number} = {}
 	local ownRadius : {string : number} = {}
 	return function(j : Layout) : boolean
+		-- The ray first: one pass over the frame's samples, where the radius check maps and samples every piece (on a
+		-- 1.4 km curve's inside, where the ray turns every placement down, 11 ms of a 15 ms fit).
+		if placement.rayRoom(f, j.approachX, side, o.offset, o.slack, o.cell, o.straight) < o.straight - 1e-6 then
+			return false
+		end
 		for __, p in ipairs(j.pieces) do
 			local r = placement.tightest(placement.mapPiece(f, p))
 			if r < o.minRadius then
@@ -78,7 +86,7 @@ function placement.accept(f : Frame, side : number, o : PgraceRailRouterPlacemen
 				end
 			end
 		end
-		return placement.rayRoom(f, j.approachX, side, o.offset, o.slack, o.cell) >= o.straight - 1e-6
+		return true
 	end
 end
 

@@ -1433,6 +1433,22 @@ t.test("route: an existing station with no room for a junction falls back to a n
 		.. "a new station was planned.")
 end)
 
+t.test("route: with no place's straight clear, the station falls back, saying so", function()
+	local station, snap = curvedStation(3000, 90)
+	local stops = { town(1, "A", 0, -300), town(2, "B", 3000, 0), town(3, "C", 3600, -1500) }
+	local read = runExisting({ stops[2], stops[3] }, 1, station, snap).stations[1].places[1]
+	-- A building on each place's straight, 30 m past its approach start.
+	local g = flatGrid()
+	for __, place in ipairs(read) do
+		local __, out = midline.at(place.stretch.frame, place.junction.approachX)
+		local p = midline.world(place.stretch.frame, place.junction.approachX, -10)
+		local ix, iy = grid.cellOf(g, { x = p.x + out.x * 30, y = p.y + out.y * 30 })
+		g.blocked[grid.index(g, ix, iy)] = true
+	end
+	fellBack(runExisting(stops, 2, station, snap, { grid = g }), "The station in B has no room for a junction at its C "
+		.. "end with 50 m of clear straight track beyond it; a new station was planned.")
+end)
+
 t.test("route: a middle stop whose legs would use the same end of an existing station falls back", function()
 	local station, snap = existingStation(3000, { [1] = 1000, [-1] = 1000 })
 	-- C behind B as seen from A along the station's axis: both neighbours lie off its −x end.

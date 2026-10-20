@@ -1789,8 +1789,6 @@ local function existingStop(input : Input, i : integer, linked : {integer : bool
 		return nil, note("can't be used: both legs would use the same end")
 	end
 	-- The junction, and our approach beyond it along the stretch (see junctionEnds).
-	local room = note(("has no room for a junction (needs %d m of straight double track)"):format(
-		math.floor(junction.needed(input.radius) + JUNCTION_STRAIGHT + 0.5)))
 	local snap : PgraceRailRouterExisting.Snapshot = input.snapshots ~= nil and input.snapshots[i] or nil
 	if snap == nil then
 		return nil, ("The track at the station in %s couldn't be read; a new station was planned."):format(town.name)
@@ -1860,15 +1858,15 @@ local function existingStop(input : Input, i : integer, linked : {integer : bool
 			for __, s in ipairs(result.stretches[k] or {}) do
 				local isStraight = onStraight(s)
 				local anywhere = placement.accept(s.frame, sides[k], opts)
-				local before = copy()
+				local frames = copy()
 				junction.fit(s.length - JUNCTION_STRAIGHT, input.radius, sides[k], s.signals, s.nodes,
 					function(j : PgraceRailRouterJunction.Layout) : boolean
 						local flat = isStraight(j)
 						if any == nil and (flat or anywhere(j)) then
-							any = { stretch = s, junction = j, before = before, curved = not flat }
+							any = { stretch = s, junction = j, before = frames, curved = not flat }
 						end
 						if flat then
-							straight = { stretch = s, junction = j, before = before, curved = false }
+							straight = { stretch = s, junction = j, before = frames, curved = false }
 						end
 						return flat
 					end)
@@ -1930,8 +1928,11 @@ local function existingStop(input : Input, i : integer, linked : {integer : bool
 				end
 			end
 			if #kept == 0 then
-				return nil, room
+				return nil, note(("has no room for a junction at its %s end with %d m of clear straight track beyond it")
+					:format(neighbours[forward].name, math.floor(JUNCTION_STRAIGHT + 0.5)))
 			end
+			-- The station's height is its used ends' stretches' (see above): the kept place's.
+			station.z = station.z + (kept[1].stretch.z - places[k][1].stretch.z) / n
 			places[k] = kept
 			ends[k], junctions[k], before[k] = kept[1].stretch, kept[1].junction, kept[1].before
 		end
@@ -2050,16 +2051,19 @@ local function sharedLength(station : Station, k : integer) : number
 	return math.max(0, d - station.existing.half)
 end
 
--- Where a leg joins an existing station's line, for the plan's notes (whole metres out from its platforms).
-local function placeNote(job : Job, station : Station, k : integer)
-	local note = ("Joins the existing line %d m out from %s's platforms."):format(
-		math.floor(sharedLength(station, k) + 0.5), station.town.name)
-	for __, n in ipairs(job.result.notes) do
-		if n == note then
-			return
+-- Where each leg joins an existing station's line, for the plan's notes (whole metres out from its platforms): every
+-- end that had places to choose from, at the place chosen. Added once the plan is done, so a leg built again (re-siting
+-- the station after it) leaves no note for a place it no longer uses.
+local function placeNotes(job : Job)
+	for __, station in ipairs(job.result.stations) do
+		for __, forward in ipairs({ false, true }) do
+			local k = endAt(station, forward)
+			if placeCount(station, k) > 1 then
+				table.insert(job.result.notes, ("Joins the existing line %d m out from %s's platforms."):format(
+					math.floor(sharedLength(station, k) + 0.5), station.town.name))
+			end
 		end
 	end
-	table.insert(job.result.notes, note)
 end
 
 -- At a leg's start, where its ends have more than one combination of places, lists them (the leaving station's
@@ -2101,7 +2105,8 @@ end
 -- plan's estimate counts: track, bridges and tunnels at their prices). The search cost doesn't see the bridge the
 -- profile puts where a leg passes within TRACK_NEAR of other track: on the line1 map it chose Aloha's curve place for
 -- a leg that then ran 14 m beside another line, 7.3 m above it. Fastest by the time from platform end to platform end,
--- the existing track to each junction included at top speed; ties (within 0.5 s) by estimate.
+-- the existing track to each junction included at top speed; ties (within 0.5 s) by estimate. Before either, a leg
+-- with defects loses to one with fewer (see below).
 local function weighPlace(job : Job, a : Station, b : Station, leg : Leg) : boolean
 	local input, pl = job.input, job.placing
 	local w = input.weights
@@ -2120,14 +2125,34 @@ local function weighPlace(job : Job, a : Station, b : Station, leg : Leg) : bool
 			end
 			score = (leg.length + shared) / w.topSpeed + leg.timeLost
 		end
+		-- A leg with defects never beats one without: first fewer arcs the game can't build, then ends within the grade
+		-- limit, then fewer samples on blocked cells; only then the score.
+		local below = 0
+		for __, piece in ipairs(leg.pieces) do
+			if piece.kind == "arc" and piece.radius < w.minBuildRadius - 1e-6 then
+				below = below + 1
+			end
+		end
+		local steep = leg.steepEnds and 1 or 0
 		local better = pl.best == nil
-		if not better and priced then
-			better = score < pl.bestScore - 0.5 or (math.abs(score - pl.bestScore) <= 0.5 and estimate < pl.bestEstimate)
-		elseif not better then
-			better = score < pl.bestScore
+		local function tier(mine : number, theirs : number) : boolean
+			if mine ~= theirs then
+				better = mine < theirs
+				return true
+			end
+			return false
+		end
+		if not better and not tier(below, pl.bestBelow) and not tier(steep, pl.bestSteep)
+				and not tier(leg.blockedSamples, pl.bestBlocked) then
+			if priced then
+				better = score < pl.bestScore - 0.5 or (math.abs(score - pl.bestScore) <= 0.5 and estimate < pl.bestEstimate)
+			else
+				better = score < pl.bestScore
+			end
 		end
 		if better then
 			pl.best, pl.bestScore, pl.bestEstimate, pl.leg = pl.index, score, estimate, leg
+			pl.bestBelow, pl.bestSteep, pl.bestBlocked = below, steep, leg.blockedSamples
 		end
 	else
 		pl.expansions = pl.expansions + (job.searchExpansions or 0)
@@ -2145,12 +2170,6 @@ local function weighPlace(job : Job, a : Station, b : Station, leg : Leg) : bool
 	end
 	usePlaces(job, a, b, pl.best)
 	pl.leg.searchExpansions = pl.expansions
-	if placeCount(a, endAt(a, true)) > 1 then
-		placeNote(job, a, endAt(a, true))
-	end
-	if placeCount(b, endAt(b, false)) > 1 then
-		placeNote(job, b, endAt(b, false))
-	end
 	return false
 end
 
@@ -2160,6 +2179,7 @@ local function nextLeg(job : Job) : boolean
 	job.placing = nil
 	job.legIndex = job.legIndex + 1
 	if job.legIndex > #plan.stations - 1 then
+		placeNotes(job)
 		plan.summary = summarise(job.input, plan)
 		job.phase = "done"
 		return true

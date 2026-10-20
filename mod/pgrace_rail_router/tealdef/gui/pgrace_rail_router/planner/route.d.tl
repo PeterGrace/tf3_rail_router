@@ -292,7 +292,7 @@ global record PgraceRailRouterRoute
 
 	-- A leg's ends' places being weighed (milestone 4c stage 3; see route.tl's weighPlace). Internal: each combination
 	-- (the leaving station's place index, the arriving one's), the one being tried, and the best so far (its score,
-	-- its estimate, and its leg, built); the states expanded over the combinations so far; and whether the best is
+	-- its estimate, its defects, and its leg, built); the states expanded over the combinations so far; and whether the best is
 	-- chosen (put back in place).
 	record Placing
 		combos : {{integer}}
@@ -300,6 +300,10 @@ global record PgraceRailRouterRoute
 		best : integer
 		bestScore : number
 		bestEstimate : number
+		-- The best's arcs below the build minimum, steep ends (1, else 0) and samples on blocked cells.
+		bestBelow : integer
+		bestSteep : integer
+		bestBlocked : integer
 		leg : Leg
 		expansions : integer
 		chosen : boolean
