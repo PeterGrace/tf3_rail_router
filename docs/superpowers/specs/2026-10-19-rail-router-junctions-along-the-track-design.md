@@ -126,6 +126,39 @@ Each stage ends with an in-game test.
   about 1.1 MB in that step (accepted: a one-off hitch).
 - **Captures have no signals,** so offline runs assume right-hand running and no signal clearances; in-game reads
   the station's one-way signals.
+- **Linked legs** (below) were added after the in-game test: a leg between two existing stations already joined by
+  track is left out instead of duplicated.
+
+## Linked legs (added after stage 1's in-game test)
+
+The player built Aloha → Antelope → Mercer Island, then planned Antelope → Imperial Beach via Aloha with both
+existing stations ticked. The planner put a junction just outside Antelope and laid a new double track beside the
+existing Antelope–Aloha line to a second junction outside Aloha: nothing asked whether the two stations were already
+connected.
+
+- **The rule (agreed with the player):** when two consecutive stops are both joined at existing stations, and a
+  train can already run from one to the other on existing track (no reversing) by a path at most 1.5 times
+  (`LINK_DETOUR`) the straight distance between the stations' centres, the leg between them is linked: no scout, no
+  search, no track, and no junction at either station's end facing the other. The plan says "Uses the existing line
+  between A and B (3.2 km)". Otherwise the leg is planned as before.
+- **Measuring (window, `survey.trackLink`):** for each consecutive pair of stops with existing stations offered, one
+  `api.engine.util.pathfinding.findPathNodeToNode` query (TRAIN) from every terminal's vehicle node of one station
+  construction to every one of the other's. It follows the track's geometry and ignores one-way signals (Rail
+  Doctor). The path's length is the sum of its pieces' chords, each piece once; no path, or none readable, is no link.
+  The tealdef's `{EdgeId, boolean}` entries are read defensively (`.edgeId`, `[1]`, the entry itself), and a probe
+  line logs each query's path shape until it's confirmed in-game.
+- **Planning (`route.tl`, pure):** the 1.5× check is the planner's (`Input.links` carries the raw length). Before any
+  station is placed, the linkable legs are settled (`resolveLinks`): each station touching one is read with that side
+  left out (as at a line's end); a station that can't be used then (its other end has no room for a junction, say)
+  gets a station of ours, so its links are dropped and its neighbours read again. A station whose legs are all linked
+  uses no end at all (it faces the way from the previous stop to the next, at the ground's height). Linked stations
+  aren't checked for being too close together. If every leg is linked, the plan fails with `nothing_to_build`
+  ("Nothing to build: existing track already runs between A and B").
+- **A linked leg** (`Leg.linked`) has no pieces, samples or spans: its length (the existing path's) counts in the
+  line's length, not in the estimate; `network.build` gives it no edges and no chunk, so the preview, the check and
+  the builder skip it.
+- **Offline:** `replaylib.planOnMap` takes `links = { [leg] = metres }` (captures hold no train paths); no regression
+  route uses it yet.
 
 ## Testing
 
