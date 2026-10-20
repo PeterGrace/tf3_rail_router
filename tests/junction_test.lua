@@ -117,15 +117,41 @@ t.test("junction: no existing node within 20 m outward of a switch or 3 m behind
 	local by = cutsOf(junction.fit(600, R, 1, NONE, { near = {}, far = { 150 } }))
 	t.near(by["far switch"], 150, 1e-9, "the far switch on the node")
 	t.near(by["near switch"], 20, 1e-9, "the merge 5 m further out")
-	-- A far node 19 m past it: still too close; 21 m: fine.
+	-- A far node 19 m past it: still too close; 21 m: clear of the switch rule, but the cross-in piece passes it 0.7 m
+	-- beside (closer than 2 m), so the switch moves onto it too; 55 m (past the crossing's x): left where it was.
 	by = cutsOf(junction.fit(600, R, 1, NONE, { near = {}, far = { 164 } }))
 	t.near(by["far switch"], 164, 1e-9, "19 m: moved onto it")
 	by = cutsOf(junction.fit(600, R, 1, NONE, { near = {}, far = { 166 } }))
-	t.near(by["far switch"], 145, 1e-9, "21 m: left where it was")
+	t.near(by["far switch"], 166, 1e-9, "21 m: moved onto it, the cross-in too close beside it")
+	by = cutsOf(junction.fit(600, R, 1, NONE, { near = {}, far = { 200 } }))
+	t.near(by["far switch"], 145, 1e-9, "55 m: left where it was")
 	-- A near node 0.6 m behind the merge's switch (and before the stretch's 15 m clearance, so not a switch itself):
 	-- the merge moves to the next place 3 m clear.
 	by = cutsOf(junction.fit(600, R, 1, NONE, { near = { 14.4 }, far = {} }))
 	t.near(by["near switch"], 20, 1e-9, "the merge at 20, 5.6 m past the node")
+end)
+
+t.test("junction: every piece passes existing nodes at least 2 m beside it (P17)", function()
+	-- A near node 27.5 m past the merge's switch, where the merge is about 1.3 m off the near track (P17 refused it):
+	-- the junction moves until the node is 2 m clear of every piece, or a cut is on it.
+	local free = cutsOf(junction.fit(600, R, 1, NONE))
+	local node = free["near switch"] + 27.5
+	local j = junction.fit(600, R, 1, NONE, { near = { node }, far = {} })
+	t.ok(j ~= nil, "fits")
+	local by = cutsOf(j)
+	t.ok(by["near switch"] ~= free["near switch"], "the merge moved")
+	for __, p in ipairs(j.pieces) do
+		for i = 0, 400 do
+			local u = i / 400
+			local u2, u3 = u * u, u * u * u
+			local a, b, c, d = 2 * u3 - 3 * u2 + 1, u3 - 2 * u2 + u, -2 * u3 + 3 * u2, u3 - u2
+			local x = a * p.x0 + b * p.tx0 + c * p.x1 + d * p.tx1
+			local y = a * p.y0 + b * p.ty0 + c * p.y1 + d * p.ty1
+			local dist = math.sqrt((x - node) ^ 2 + (y - 2.5) ^ 2)
+			local own = math.abs(p.x0 - node) < 0.5 or math.abs(p.x1 - node) < 0.5
+			t.ok(own or dist >= 2 - 0.05, ("%s passes the node %.2f m beside it"):format(p.role, dist))
+		end
+	end
 end)
 
 t.test("junction: a node within half a metre of a switch becomes the switch", function()

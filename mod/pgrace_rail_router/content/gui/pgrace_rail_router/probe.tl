@@ -1627,10 +1627,6 @@ local P17_SAMPLE = 2.0
 -- at x = 130 (arc piece 1), the far switch at 260 (arc piece 3) and the crossing at 314.6 (arc piece 4).
 local P17_CURVED = 2.0
 local P17_INSIDE = 12.0
--- The crossing cut keeps further in: the cross-in piece runs about 2 m beside the near track 13 m before the
--- crossing, and the game refused a new piece 0.6 m beside existing track past a joint, so a joint there could fail
--- the junction for a reason other than the curve. 22 m leaves about 3 m.
-local P17_CROSSING_INSIDE = 22.0
 
 local record P17Cut
 	-- 1 or 2: which existing track; "switch" or "crossing"; its x in the frame; the point on the track.
@@ -2007,9 +2003,8 @@ local function p17Fit(copy : P17Copy, list : {P15Piece}, side : number) : boolea
 	local function onCurve(j : PgraceRailRouterJunction.Layout) : boolean
 		for __, c in ipairs(j.cuts) do
 			local p, s = p17PieceAt(f, list, trackNo(c.track), c.x)
-			local inside = c.kind == "crossing" and P17_CROSSING_INSIDE or P17_INSIDE
-			if p == nil or turnOf(p.h) < P17_CURVED or s * chord(p.h) < inside
-					or (1 - s) * chord(p.h) < inside then
+			if p == nil or turnOf(p.h) < P17_CURVED or s * chord(p.h) < P17_INSIDE
+					or (1 - s) * chord(p.h) < P17_INSIDE then
 				return false
 			end
 		end

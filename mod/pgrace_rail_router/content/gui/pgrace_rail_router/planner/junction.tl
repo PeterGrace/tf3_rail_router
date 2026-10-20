@@ -85,6 +85,47 @@ local function crossingClear(x : number, nodes : {number}) : boolean
 	return true
 end
 
+-- Every junction piece passes each existing node (and each other cut) at least this far away, but the nodes it starts
+-- or ends on (within END of them): P17 had a merge refused ("Construction Not Possible") passing a joint of its own
+-- track 1.32 m beside it, and clean at 1.97 m; a crossing piece passed one 1.60 m beside it.
+local BESIDE = 2.0
+local END = 0.5
+
+local function hermite(p : Piece, t : number) : number, number
+	local t2, t3 = t * t, t * t * t
+	local a, b, c, d = 2 * t3 - 3 * t2 + 1, t3 - 2 * t2 + t, -2 * t3 + 3 * t2, t3 - t2
+	return a * p.x0 + b * p.tx0 + c * p.x1 + d * p.tx1, a * p.y0 + b * p.ty0 + c * p.y1 + d * p.ty1
+end
+
+-- No piece passes a point (pxs[k], pys[k], k ≤ count) within BESIDE, but at its own ends. Samples and points go in
+-- tables kept between calls (the fit runs in the planner's steps, which keep allocation down).
+local N = 64
+local xs, ys, pxs, pys : {number}, {number}, {number}, {number} = {}, {}, {}, {}
+local function besideClear(pieces : {Piece}, count : integer) : boolean
+	for __, p in ipairs(pieces) do
+		for i = 0, N do
+			xs[i], ys[i] = hermite(p, i / N)
+		end
+		local lo, hi = math.min(p.x0, p.x1) - BESIDE, math.max(p.x0, p.x1) + BESIDE
+		for k = 1, count do
+			local qx, qy = pxs[k], pys[k]
+			if qx > lo and qx < hi and (qx - p.x0) ^ 2 + (qy - p.y0) ^ 2 > END * END
+					and (qx - p.x1) ^ 2 + (qy - p.y1) ^ 2 > END * END then
+				for i = 1, N do
+					local ax, ay = xs[i - 1], ys[i - 1]
+					local dx, dy = xs[i] - ax, ys[i] - ay
+					local len2 = dx * dx + dy * dy
+					local u = len2 > 0 and math.max(0, math.min(1, ((qx - ax) * dx + (qy - ay) * dy) / len2)) or 0
+					if (ax + u * dx - qx) ^ 2 + (ay + u * dy - qy) ^ 2 < BESIDE * BESIDE then
+						return false
+					end
+				end
+			end
+		end
+	end
+	return true
+end
+
 function junction.fit(length : number, radius : number, side : number, signals : {string : {number}},
 		nodes ?: {string : {number}}, accept ?: function(Layout) : boolean) : Layout
 	local l = junction.sCurve(10, radius)
@@ -130,7 +171,21 @@ function junction.fit(length : number, radius : number, side : number, signals :
 						{ track = "far", x = cs, kind = "switch" },
 					},
 				}
-				if accept == nil or accept(layout) then
+				-- Each track's nodes and the cuts, as points in the frame (the near track at y = 2.5 side).
+				local count = 0
+				for __, n in ipairs(near) do
+					count = count + 1
+					pxs[count], pys[count] = n, 2.5 * side
+				end
+				for __, n in ipairs(far) do
+					count = count + 1
+					pxs[count], pys[count] = n, -2.5 * side
+				end
+				for __, c in ipairs(layout.cuts) do
+					count = count + 1
+					pxs[count], pys[count] = c.x, (c.track == "near" and 2.5 or -2.5) * side
+				end
+				if besideClear(layout.pieces, count) and (accept == nil or accept(layout)) then
 					return layout
 				end
 			end

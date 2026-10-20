@@ -181,6 +181,17 @@ The player built Bangor → Aloha via Antelope, then planned Mercer Island → A
   (merge switch about 330 m out from the platforms), built first time; trains ran through it both ways. Map:
   `maps/rail-router-test-5x14km-junction.map`.
 
+## What P17 found (so far, 2026-10-20)
+
+- **Cuts on curves build:** both switches and the crossing node were split into 17.5° arc pieces of a 220 m curve
+  (the general Hermite split), each within 0.001 m of the curve, and the game took every split and its lane repair.
+- **The crossing pieces on the curve dry-run clean** on their own (cross in, cross out, from the outside).
+- **A junction piece must pass the existing track's nodes at least about 1.5 m beside it:** the merge (110 m
+  S-curve) was refused ("Construction Not Possible", no collisions) passing its own track's joint 27.5 m past the
+  switch 1.32 m beside it; the same merge 90 m long (1.97 m) and shorter were clean, and the cross-in passed a joint
+  1.60 m beside it. This holds on straights too (it may be what refused Aloha's cross-in in the first test).
+  `junction.fit` now keeps every piece 2 m from every node and cut of both tracks but its own ends.
+
 ## Testing
 
 - **Unit:** the midline from synthetic pieces (straight, arc, straight then arc, an S-bend); mapping frame points and
