@@ -1715,3 +1715,89 @@ t.test("route: an existing station whose tracks end 20 m apart along the axis fa
 	fellBack(runExisting(AXC, 2, station, snap), "The station in B can't be used: its tracks at the C end don't end "
 		.. "level with each other; a new station was planned.")
 end)
+
+-- Linked legs (added after 4c stage 1's in-game test): two stops' existing stations already joined by track.
+
+-- Plans `stops` with existing stations at the stops given (`at`: {stop index = {station, snapshot}}), the legs'
+-- existing paths `links` and the grid x from -1000 to 9000.
+local function runLinked(stops, at, links, changes)
+	local offered, snaps = {}, {}
+	for i, pair in pairs(at) do
+		offered[i], snaps[i] = pair[1], pair[2]
+	end
+	return runExisting(stops, 1, nil, nil, { grid = grid.new(-1000, -1500, 100, 101, 31),
+		existingStations = offered, snapshots = snaps, links = links })
+end
+
+-- Existing stations at x = 1500 and 4500 (3 km apart), double track 1 km past both ends of each.
+local function twoStations()
+	local a, sa = existingStation(1500, { [1] = 1000, [-1] = 1000 })
+	local b, sb = existingStation(4500, { [1] = 1000, [-1] = 1000 })
+	return { a, sa }, { b, sb }
+end
+
+t.test("route: a line whose only leg runs on existing track has nothing to build", function()
+	local a, b = twoStations()
+	local plan = runLinked({ town(1, "A", 1500, 0), town(2, "B", 4500, 0) }, { [1] = a, [2] = b }, { [1] = 3200 })
+	t.eq(plan.ok, false, "not a plan to build")
+	t.eq(plan.failure, "nothing_to_build", "why")
+	t.eq(plan.failureTowns[1], "A", "from")
+	t.eq(plan.failureTowns[2], "B", "to")
+end)
+
+t.test("route: existing track more than 1.5 times the stations' distance round isn't used; the leg is planned", function()
+	local a, b = twoStations()
+	local plan = runLinked({ town(1, "A", 1500, 0), town(2, "B", 4500, 0) }, { [1] = a, [2] = b }, { [1] = 4600 })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(#plan.notes, 0, "no notes: " .. tostring(plan.notes[1]))
+	t.ok(not plan.legs[1].linked, "not linked")
+	t.ok(#plan.legs[1].pieces > 0, "track planned")
+	t.ok(plan.stations[1].junctions[1] ~= nil, "a junction at A's end facing B")
+	t.ok(plan.stations[2].junctions[-1] ~= nil, "a junction at B's end facing A")
+end)
+
+t.test("route: a linked first leg is left out; the second is joined at the middle station's far end only", function()
+	local a, b = twoStations()
+	local plan = runLinked({ town(1, "A", 1500, 0), town(2, "B", 4500, 0), town(3, "C", 7500, -300) },
+		{ [1] = a, [2] = b }, { [1] = 3200 })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.eq(#plan.legs, 2, "two legs")
+	local linked, built = plan.legs[1], plan.legs[2]
+	t.ok(linked.linked, "the first leg is linked")
+	t.eq(#linked.pieces, 0, "no pieces")
+	t.eq(#linked.samples, 0, "no samples")
+	t.eq(linked.length, 3200, "the existing path's length")
+	t.ok(not built.linked and #built.pieces > 0, "the second leg is planned")
+	local sa, sb = plan.stations[1], plan.stations[2]
+	t.ok(sa.existing == a[1] and sb.existing == b[1], "both existing stations used")
+	t.eq(next(sa.endOf), nil, "A uses no end")
+	t.eq(next(sa.junctions), nil, "no junction at A")
+	t.near(sa.site.dir.x, 1, 1e-9, "A faces the way the line runs")
+	t.eq(sb.endOf[false], nil, "B's end facing A unused")
+	t.eq(sb.endOf[true], 1, "B's +x end for C")
+	t.eq(sb.junctions[-1], nil, "no junction at B's end facing A")
+	t.ok(sb.junctions[1] ~= nil, "a junction at B's far end")
+	t.eq(#plan.notes, 1, "one note")
+	t.eq(plan.notes[1], "Uses the existing line between A and B (3.2 km).", "note")
+	-- The line's length counts the existing path, and C's platforms (ours); the estimate only the leg built.
+	t.near(plan.summary.length, 3200 + built.length + 160, 1e-6, "length")
+	local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+	local net = network.build(plan, network.defaults())
+	t.ok(#net.chunks > 0, "chunks for the leg built")
+	for __, c in ipairs(net.chunks) do
+		t.eq(c.leg, 2, "every chunk on leg 2")
+	end
+end)
+
+t.test("route: a link to a station that can't be used is dropped, and the leg built", function()
+	local a = { existingStation(1500, { [1] = 1000, [-1] = 1000 }) }
+	-- B has only 200 m of double track past its +x end: no room for C's junction, so B gets a station of ours.
+	local b = { existingStation(4500, { [1] = 200, [-1] = 1000 }) }
+	local plan = runLinked({ town(1, "A", 1500, 0), town(2, "B", 4500, 0), town(3, "C", 7500, -300) },
+		{ [1] = a, [2] = b }, { [1] = 3200 })
+	t.ok(plan.ok, "ok: " .. tostring(plan.failure))
+	t.ok(not plan.legs[1].linked, "not linked")
+	t.eq(plan.stations[2].existing, nil, "a station of ours at B")
+	t.ok(plan.stations[1].junctions[1] ~= nil, "a junction at A's end facing B")
+	t.eq(#plan.notes, 1, "B's note only: " .. tostring(plan.notes[2]))
+end)

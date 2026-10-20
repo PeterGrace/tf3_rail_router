@@ -131,6 +131,11 @@ local RESITE_MOVE = 300.0
 -- At an existing station's junction, our two tracks run at 7.5 and 12.5 m off the existing axis (junction.tl), so
 -- a leg's end sits on their midline, this far off.
 local JUNCTION_OFFSET = 10.0
+-- Two consecutive stops' existing stations already joined by track (Input.links) are linked, and nothing is built
+-- between them, where the train path between them is at most this many times their centres' distance apart. Further
+-- round, a line of its own is worth planning (agreed with the player after stage 1's in-game test, where the planner
+-- laid a new double track beside the existing line between Antelope and Aloha).
+local LINK_DETOUR = 1.5
 
 -- A profile sample within this of an existing station's track (its snapshot's pieces; metres from our line's midline)
 -- crosses it: our tracks run 2.5 m either side, so about a metre between rails. Our straight beside a stretch is 7.5 m
@@ -1762,11 +1767,18 @@ end
 -- has room (onStraight). nil, and a note saying why, where it can't be used. Pure Lua
 -- over the snapshot (a few hundred pieces at most), reading both ends' tracks out to existing.REACH: 5–7 ms on the
 -- desktop for a 268-piece Halt 2+2, once per stop.
-local function existingStop(input : Input, i : integer) : Station, string
+-- A linked leg's side (`linked`, by leg index) is left out, as at the line's end: no end is read or joined there.
+local function existingStop(input : Input, i : integer, linked : {integer : boolean}) : Station, string
 	local st, town = input.existingStations[i], input.stops[i]
 	local dir = geo.norm(st.dir)
 	local neighbours : {boolean : Town} = {}
 	neighbours[false], neighbours[true] = input.stops[i - 1], input.stops[i + 1]
+	if linked[i - 1] then
+		neighbours[false] = nil
+	end
+	if linked[i] then
+		neighbours[true] = nil
+	end
 	local endOf : {boolean : integer} = {}
 	local sides : {integer : number} = {}
 	for __, forward in ipairs({ false, true }) do
@@ -1859,8 +1871,17 @@ local function existingStop(input : Input, i : integer) : Station, string
 		end
 	end
 	-- The site faces the way the line runs through the station: out of the end the leg out uses, or into the one the
-	-- leg in uses.
-	local facing = endOf[true] or -endOf[false]
+	-- leg in uses; with both its legs linked, along the way from the previous stop to the next.
+	local facing : number = endOf[true]
+	if facing == nil and endOf[false] ~= nil then
+		facing = -endOf[false]
+	elseif facing == nil then
+		facing = sign(geo.dot(stopDir(input.stops, i), dir))
+	end
+	-- With no end used, no leg meets the station's track: the ground's height stands in, for the preview.
+	if n == 0 then
+		z, n = grid.heightAt(input.grid, st.centre), 1
+	end
 	local site : PgraceRailRouterStations.Site = { centre = { x = st.centre.x, y = st.centre.y },
 		dir = geo.scale(dir, facing), distance = geo.dist(town.pos, st.centre) }
 	local station : Station = { town = town, site = site, z = z / n, existing = st, ends = ends, junctions = junctions,
@@ -1885,9 +1906,85 @@ local function existingStop(input : Input, i : integer) : Station, string
 	return station, nil
 end
 
+-- Stop i's existing station read with the given legs linked (existingStop), once per stop and pair of links: the
+-- links are settled by reading the stops (resolveLinks), and the sites phase reads them again.
+local function readStop(job : Job, i : integer, linked : {integer : boolean}) : Station, string
+	local key = ("%d %s %s"):format(i, tostring(linked[i - 1] == true), tostring(linked[i] == true))
+	local read = job.reads[key]
+	if read == nil then
+		local station, note = existingStop(job.input, i, linked)
+		read = { station = station, note = note }
+		job.reads[key] = read
+	end
+	return read.station, read.note
+end
+
+-- Whether leg i may be linked: both its stops have an existing station offered, existing track runs between them
+-- (Input.links), and no further than LINK_DETOUR times their centres' distance apart.
+local function linkable(input : Input, i : integer) : boolean
+	local links, offered = input.links, input.existingStations
+	if links == nil or offered == nil or links[i] == nil or offered[i] == nil or offered[i + 1] == nil then
+		return false
+	end
+	return links[i] <= LINK_DETOUR * geo.dist(offered[i].centre, offered[i + 1].centre) + 1e-6
+end
+
+-- The linked legs (job.linked): each linkable leg whose two stations can both be joined with it left out. A station
+-- that can't be used (its other end has no room for a junction, say) gets a station of ours, and a leg to it is built,
+-- so its links are dropped and its neighbours read again, until none changes. Read before any station is placed, so a
+-- station placed with a leg left out never finds its neighbour fall back later. (Leaving a leg out never makes a
+-- station harder to use: it has one end fewer to join.)
+local function resolveLinks(job : Job)
+	local input = job.input
+	local linked : {integer : boolean} = {}
+	for i = 1, #input.stops - 1 do
+		if linkable(input, i) then
+			linked[i] = true
+		end
+	end
+	local changed = true
+	while changed do
+		changed = false
+		for i = 1, #input.stops do
+			if (linked[i - 1] or linked[i]) and readStop(job, i, linked) == nil then
+				linked[i - 1], linked[i] = nil, nil
+				changed = true
+			end
+		end
+	end
+	job.linked = linked
+end
+
+-- A linked leg (Leg.linked): nothing to build, its length the existing path's.
+local function linkedLeg(input : Input, i : integer) : Leg
+	return { pieces = {}, samples = {}, z = {}, spans = {}, length = input.links[i], minRadius = math.huge, maxGrade = 0,
+		tightCurves = 0, steepEnds = false, blockedSamples = 0, searchExpansions = 0, searchCost = 0, guarded = 0,
+		timeLost = 0, linked = true }
+end
+
+-- On to the next leg once one is in plan.legs: true once the last is (the plan is done).
+local function nextLeg(job : Job) : boolean
+	local plan = job.result
+	job.legIndex = job.legIndex + 1
+	if job.legIndex > #plan.stations - 1 then
+		plan.summary = summarise(job.input, plan)
+		job.phase = "done"
+		return true
+	end
+	return false
+end
+
+-- On to the next leg's scout, or to turning the stations after the last.
+local function nextScout(job : Job)
+	job.scoutIndex = job.scoutIndex + 1
+	if job.scoutIndex > #job.result.stations - 1 then
+		job.phase, job.siteIndex = "turn", 1
+	end
+end
+
 function route.start(input : Input) : Job
 	local job : Job = { input = input, phase = "sites", siteIndex = 1, legIndex = 1, taken = {}, searchExpansions = 0,
-		exits = {}, turnPending = false, resited = {}, searchCache = {}, searchKeys = {},
+		exits = {}, turnPending = false, resited = {}, searchCache = {}, searchKeys = {}, reads = {},
 		result = { ok = true, failureTowns = {}, platformLength = input.platformLength, stations = {}, legs = {},
 			notes = {} } }
 	if #input.stops < 2 then
@@ -1905,11 +2002,25 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		return true
 	end
 	if job.phase == "sites" then
+		-- First, which legs existing track already covers: every one, and there's nothing to build.
+		if job.linked == nil then
+			resolveLinks(job)
+			local all = true
+			for i = 1, #input.stops - 1 do
+				all = all and job.linked[i] == true
+			end
+			if all then
+				return fail(job, "nothing_to_build", { input.stops[1].name, input.stops[#input.stops].name })
+			end
+			return false
+		end
 		local i = job.siteIndex
 		local town = input.stops[i]
 		local prev = plan.stations[i - 1]
+		-- A linked leg in (both stations existing, already joined by track) leaves no approaches to fit between them.
+		local linkedIn = job.linked[i - 1] == true
 		local function placed(station : Station) : boolean
-			if prev ~= nil and not apartEnough(input, prev.site, station.site, halfOf(input, prev), halfOf(input, station),
+			if prev ~= nil and not linkedIn and not apartEnough(input, prev.site, station.site, halfOf(input, prev), halfOf(input, station),
 					approachAt(input, prev, true), approachAt(input, station, false)) then
 				return fail(job, "too_close", { prev.town.name, town.name })
 			end
@@ -1929,8 +2040,8 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 			-- An existing station is joined as it is, where it can be; otherwise the stop gets a station of ours, and
 			-- the plan a note saying why.
 			if input.existingStations ~= nil and input.existingStations[i] ~= nil then
-				local station, note = existingStop(input, i)
-				if station ~= nil and prev ~= nil
+				local station, note = readStop(job, i, job.linked)
+				if station ~= nil and prev ~= nil and not linkedIn
 						and not apartEnough(input, prev.site, station.site, halfOf(input, prev), halfOf(input, station),
 							approachAt(input, prev, true), approachAt(input, station, false)) then
 					station, note = nil, ("The station in %s is too close to the station in %s; a new station was planned.")
@@ -1941,6 +2052,9 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 					table.insert(job.trackIndexes, trackIndex(station, input.snapshots[i]))
 					return placed(station)
 				end
+				-- Too close to the previous station (resolveLinks read the rest): the leg out is built after all, and the
+				-- next stop is read again with it.
+				job.linked[i] = nil
 				table.insert(plan.notes, note)
 			end
 			job.finder = stations.startFind(input.grid, town.pos, stopDir(input.stops, i),
@@ -1965,6 +2079,11 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		-- A search between consecutive site centres, free to start and end in any direction, turning as freely as the
 		-- Cheapest radius allows: where the line wants to run, whichever way the stations face.
 		local i = job.scoutIndex
+		-- A linked leg has nothing to scout: its stations are existing ones, never turned.
+		if job.linked[i] then
+			nextScout(job)
+			return false
+		end
 		if job.search == nil then
 			local a, b = plan.stations[i].site.centre, plan.stations[i + 1].site.centre
 			local any : Pt = { x = 0, y = 0 }
@@ -1979,10 +2098,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		-- No scout (no path): the station keeps its direction on that side; the leg's own search reports it.
 		job.scouts[i] = grid.path(job.search)
 		job.search = nil
-		job.scoutIndex = i + 1
-		if job.scoutIndex > #plan.stations - 1 then
-			job.phase, job.siteIndex = "turn", 1
-		end
+		nextScout(job)
 		return false
 	end
 	if job.phase == "turn" then
@@ -2054,6 +2170,14 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		stepResite(job, maxExpansions)
 		return false
 	end
+	-- A linked leg: the existing line between its stations, nothing searched or built.
+	if job.linked[job.legIndex] and job.path == nil and job.search == nil then
+		local leg = linkedLeg(input, job.legIndex)
+		table.insert(plan.legs, leg)
+		table.insert(plan.notes, ("Uses the existing line between %s and %s (%.1f km)."):format(a.town.name, b.town.name,
+			leg.length / 1000))
+		return nextLeg(job)
+	end
 	if job.path ~= nil then
 		if job.simplified == nil then
 			job.simplified = simplifyLeg(input, job.alongFree, a, b, job.path, job.taken, job.footprint)
@@ -2097,13 +2221,7 @@ function route.step(job : Job, maxExpansions : integer) : boolean
 		table.insert(plan.legs, leg)
 		job.path = nil
 		job.searchRadius, job.searchExpansions = nil, 0
-		job.legIndex = job.legIndex + 1
-		if job.legIndex > #plan.stations - 1 then
-			plan.summary = summarise(input, plan)
-			job.phase = "done"
-			return true
-		end
-		return false
+		return nextLeg(job)
 	end
 	if job.search == nil then
 		if job.radii == nil then

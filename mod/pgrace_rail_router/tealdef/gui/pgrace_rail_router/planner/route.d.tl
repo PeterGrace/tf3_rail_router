@@ -26,6 +26,13 @@ global record PgraceRailRouterRoute
 		-- The turnout radius junctions are fitted for (metres); needed with existingStations (else the plan fails
 		-- "no_radius").
 		radius : number
+		-- Existing track between consecutive stops' existing stations, by leg (links[i]: from stop i's to stop
+		-- i + 1's), as the window's survey.trackLink measured it: the length of the train path the game's pathfinder
+		-- found from one station's terminals to the other's (metres; nil where there's none, or it couldn't be read).
+		-- The leg is linked (Leg.linked: nothing is built for it) where it is at most LINK_DETOUR (1.5) times the
+		-- straight distance between the two stations' centres and both stations can be joined with that leg left
+		-- out (route.tl's resolveLinks).
+		links : {integer : number}
 	end
 
 	record Station
@@ -50,7 +57,9 @@ global record PgraceRailRouterRoute
 		-- ends. Such a station is never turned or re-sited, the planner spaces things beside it by its own half
 		-- (existing.half, not the window's platform length), its footprint is its track along the stretches used and
 		-- its platforms and bare ends' approaches (see route.tl's addFootprint), and its platforms aren't counted in
-		-- the summary's length.
+		-- the summary's length. A linked leg's side (Leg.linked) uses no end: endOf has no entry for it, as at the
+		-- line's end; a station whose legs are all linked uses none (ends, junctions and bare empty, its z the
+		-- ground's at its centre, its site facing the way from the previous stop to the next).
 		existing : PgraceRailRouterExisting.Station
 		ends : {integer : PgraceRailRouterExisting.End}
 		junctions : {integer : PgraceRailRouterJunction.Layout}
@@ -113,6 +122,10 @@ global record PgraceRailRouterRoute
 		-- Seconds a train stopping at both stations loses to the leg's curves below weights.minRadius (speed.tl); 0
 		-- where weights.topSpeed or lateralAccel is not given.
 		timeLost : number
+		-- A linked leg (Input.links): existing track already runs between its two existing stations, so nothing is
+		-- built for it. It has no pieces, samples, heights or spans; its length is the existing path's (counted in
+		-- the line's length, not in the estimate), minRadius math.huge, and the other figures 0.
+		linked : boolean
 	end
 
 	record Summary
@@ -144,15 +157,18 @@ global record PgraceRailRouterRoute
 		-- wall every one in, or a leg's search found its start closed off inside the area: a wider area can't help),
 		-- "too_close" (two consecutive stations' platforms, with their approaches, don't fit between them, or the
 		-- second isn't ahead of the first along both stations' directions), "no_path" or "no_radius" (existing stations
-		-- given without Input.radius); nil when ok.
+		-- given without Input.radius), or "nothing_to_build" (every leg is linked: existing track already runs between
+		-- all the stops); nil when ok.
 		failure : string
-		-- The town for no_site and no_exit; the two towns for too_close and no_path.
+		-- The town for no_site and no_exit; the two towns for too_close and no_path; the first and last stops' for
+		-- nothing_to_build.
 		failureTowns : {string}
 		platformLength : number
 		stations : {Station}
 		legs : {Leg}
 		summary : Summary
-		-- Existing stations that couldn't be used, and why (a new station was planned instead), for the window.
+		-- Existing stations that couldn't be used, and why (a new station was planned instead), and the legs that use
+		-- existing track (linked), for the window.
 		notes : {string}
 	end
 
@@ -256,9 +272,20 @@ global record PgraceRailRouterRoute
 		points : {integer : {number}}
 	end
 
+	-- An existing station read for a stop (route.tl's existingStop): the station, or nil and the note saying why it
+	-- can't be used. Internal.
+	record ExistingRead
+		station : Station
+		note : string
+	end
+
 	-- Work in progress. The fields are internal.
 	record Job
 		input : Input
+		-- The linked legs (by leg index; nil until the first step has resolved them: route.tl's resolveLinks), and
+		-- each existing stop read so far, by stop index and which of its legs are linked (route.tl's readStop).
+		linked : {integer : boolean}
+		reads : {string : ExistingRead}
 		-- "sites", "scout", "turn", "legs" or "done"
 		phase : string
 		-- The station being sited, or turned; its site search, spread over steps (nil between stations); and, when

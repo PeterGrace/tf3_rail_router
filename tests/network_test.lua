@@ -450,6 +450,26 @@ local function halt()
 	return o
 end
 
+-- A linked leg (route.tl: existing track already runs between its stations), as the planner makes it.
+local function linkedLeg(length)
+	return { pieces = {}, samples = {}, z = {}, spans = {}, length = length, minRadius = math.huge, maxGrade = 0,
+		tightCurves = 0, linked = true }
+end
+
+t.test("network: a linked leg has no edges or chunks; the legs either side keep their own", function()
+	for __, o in ipairs({ network.defaults(), halt() }) do
+		local only = network.build(plan({ linkedLeg(3000) }), o)
+		t.eq(#only.edges, 0, "no edges")
+		t.eq(#only.chunks, 0, "no chunks")
+		local net = network.build(plan({ leg({ straight(0, 0, 300, 0) }), linkedLeg(3000), leg({ straight(0, 0, 300, 0) }) }), o)
+		t.ok(#net.chunks >= 2, "chunks")
+		for __, c in ipairs(net.chunks) do
+			t.ok(c.leg ~= 2, "no chunk on the linked leg")
+		end
+		t.eq(net.chunks[#net.chunks].leg, 3, "the last leg's chunks")
+	end
+end)
+
 t.test("network: a Halt 2+2 fan's turnout length follows the radius, as the Express & Local mod's", function()
 	t.eq(network.turnoutLength(150), 55, "simple")
 	t.eq(network.turnoutLength(300), 75, "standard")
