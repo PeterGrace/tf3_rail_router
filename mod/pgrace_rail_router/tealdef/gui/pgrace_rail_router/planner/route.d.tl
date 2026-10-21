@@ -26,6 +26,22 @@ global record PgraceRailRouterRoute
 		-- The turnout radius junctions are fitted for (metres); needed with existingStations (else the plan fails
 		-- "no_radius").
 		radius : number
+		-- Existing track between consecutive stops' existing stations, by leg (links[i]: from stop i's to stop
+		-- i + 1's), as the window's survey.trackLink measured it: the length of the train path the game's pathfinder
+		-- found from one station's terminals to the other's (metres; nil where there's none, or it couldn't be read).
+		-- The leg is linked (Leg.linked: nothing is built for it) where it is at most LINK_DETOUR (1.5) times the
+		-- straight distance between the two stations' centres and both stations can be joined with that leg left
+		-- out (route.tl's resolveLinks).
+		links : {integer : number}
+	end
+
+	-- One place a junction end may use (milestone 4c stage 3): the stretch it's on, the junction fitted there, the
+	-- frames of the stretches before it (as Station.before), and whether it lies on curved midline.
+	record Place
+		stretch : PgraceRailRouterExisting.End
+		junction : PgraceRailRouterJunction.Layout
+		before : {PgraceRailRouterMidline.Frame}
+		curved : boolean
 	end
 
 	record Station
@@ -41,7 +57,7 @@ global record PgraceRailRouterRoute
 		-- An existing station the line joins instead of a station of ours (nil: ours). Its site is its own centre
 		-- (distance from the town's centre as for ours), facing the way the line runs through it. On each end it
 		-- uses (by end, ±1, as existing.Result's) the line joins it either at a junction, where track leads on: the
-		-- end's stretch (ends) and the junction fitted to it (junctions); or, at a bare end (bare: nothing attached,
+		-- stretch it's on (ends: the place in use, see places) and the junction fitted to it (junctions); or, at a bare end (bare: nothing attached,
 		-- see existing.bareEnd), on its free track end nodes directly, as at a station of ours: the leg's end is then
 		-- its platform end (centre + out × existing.half, at bare.mid's height), with Input.approach and room to turn
 		-- beyond it along the axis. The two ends may differ. sides: the side of outward our line comes from (+1
@@ -49,7 +65,9 @@ global record PgraceRailRouterRoute
 		-- ends. Such a station is never turned or re-sited, the planner spaces things beside it by its own half
 		-- (existing.half, not the window's platform length), its footprint is its track along the stretches used and
 		-- its platforms and bare ends' approaches (see route.tl's addFootprint), and its platforms aren't counted in
-		-- the summary's length.
+		-- the summary's length. A linked leg's side (Leg.linked) uses no end: endOf has no entry for it, as at the
+		-- line's end; a station whose legs are all linked uses none (ends, junctions and bare empty, its z the
+		-- ground's at its centre, its site facing the way from the previous stop to the next).
 		existing : PgraceRailRouterExisting.Station
 		ends : {integer : PgraceRailRouterExisting.End}
 		junctions : {integer : PgraceRailRouterJunction.Layout}
@@ -59,10 +77,21 @@ global record PgraceRailRouterRoute
 		-- Per bare end, the cells (by grid index) of the station's own box along its axis, which a leg at that end may
 		-- use though the survey blocked them (route.tl's ownCells). Internal, filled in as needed.
 		own : {integer : {integer : boolean}}
+		-- Per junction end, how far our straight past the junction may run along its ray (route.tl's rayRoom).
+		-- Internal, filled in as needed.
+		rays : {integer : number}
+		-- Per junction end, the frames of the end's stretches nearer the station than the one the junction is on (ends),
+		-- nearest first (empty where it's on the first): the track the station's footprint and free cells follow out to
+		-- it (route.tl's leadIn).
+		before : {integer : {PgraceRailRouterMidline.Frame}}
+		-- Per junction end, its places, nearest first (one or two; see route.tl's existingStop): ends, junctions
+		-- and before hold the one in use.
+		places : {integer : {Place}}
 	end
 
 	-- From one station's platform end to the next one's (at an existing station's junction, its approach start, 10 m
-	-- off the existing axis, and the approach and room to turn run along that axis; at its bare end, its platform end
+	-- off the existing track's midline, and the approach and room to turn run straight on along the midline's
+	-- direction there, no further than they stay clear of it; at its bare end, its platform end
 	-- by its own half): a straight approach of 100 m at
 	-- each end, then room for the
 	-- search's first turn at full radius before the searched path: 45° where the search turns freely, one 22.5° step
@@ -104,6 +133,10 @@ global record PgraceRailRouterRoute
 		-- Seconds a train stopping at both stations loses to the leg's curves below weights.minRadius (speed.tl); 0
 		-- where weights.topSpeed or lateralAccel is not given.
 		timeLost : number
+		-- A linked leg (Input.links): existing track already runs between its two existing stations, so nothing is
+		-- built for it. It has no pieces, samples, heights or spans; its length is the existing path's (counted in
+		-- the line's length, not in the estimate), minRadius math.huge, and the other figures (searchRadius too) 0.
+		linked : boolean
 	end
 
 	record Summary
@@ -135,15 +168,18 @@ global record PgraceRailRouterRoute
 		-- wall every one in, or a leg's search found its start closed off inside the area: a wider area can't help),
 		-- "too_close" (two consecutive stations' platforms, with their approaches, don't fit between them, or the
 		-- second isn't ahead of the first along both stations' directions), "no_path" or "no_radius" (existing stations
-		-- given without Input.radius); nil when ok.
+		-- given without Input.radius), or "nothing_to_build" (every leg is linked: existing track already runs between
+		-- all the stops); nil when ok.
 		failure : string
-		-- The town for no_site and no_exit; the two towns for too_close and no_path.
+		-- The town for no_site and no_exit; the two towns for too_close and no_path; the first and last stops' for
+		-- nothing_to_build.
 		failureTowns : {string}
 		platformLength : number
 		stations : {Station}
 		legs : {Leg}
 		summary : Summary
-		-- Existing stations that couldn't be used, and why (a new station was planned instead), for the window.
+		-- Existing stations that couldn't be used, and why (a new station was planned instead), and the legs that use
+		-- existing track (linked), for the window.
 		notes : {string}
 	end
 
@@ -247,9 +283,39 @@ global record PgraceRailRouterRoute
 		points : {integer : {number}}
 	end
 
+	-- An existing station read for a stop (route.tl's existingStop): the station, or nil and the note saying why it
+	-- can't be used. Internal.
+	record ExistingRead
+		station : Station
+		note : string
+	end
+
+	-- A leg's ends' places being weighed (milestone 4c stage 3; see route.tl's weighPlace). Internal: each combination
+	-- (the leaving station's place index, the arriving one's), the one being tried, and the best so far (its score,
+	-- its estimate, its defects, and its leg, built); the states expanded over the combinations so far; and whether the best is
+	-- chosen (put back in place).
+	record Placing
+		combos : {{integer}}
+		index : integer
+		best : integer
+		bestScore : number
+		bestEstimate : number
+		-- The best's arcs below the build minimum, steep ends (1, else 0) and samples on blocked cells.
+		bestBelow : integer
+		bestSteep : integer
+		bestBlocked : integer
+		leg : Leg
+		expansions : integer
+		chosen : boolean
+	end
+
 	-- Work in progress. The fields are internal.
 	record Job
 		input : Input
+		-- The linked legs (by leg index; nil until the first step has resolved them: route.tl's resolveLinks), and
+		-- each existing stop read so far, by stop index and which of its legs are linked (route.tl's readStop).
+		linked : {integer : boolean}
+		reads : {string : ExistingRead}
 		-- "sites", "scout", "turn", "legs" or "done"
 		phase : string
 		-- The station being sited, or turned; its site search, spread over steps (nil between stations); and, when
@@ -288,6 +354,8 @@ global record PgraceRailRouterRoute
 		-- A station being re-sited (nil: none), and the stations that have been (each at most once).
 		resite : Resite
 		resited : {integer : boolean}
+		-- The leg's places being weighed (milestone 4c stage 3; nil when its ends have one combination).
+		placing : Placing
 		simplified : Simplified
 		fitting : Fitting
 		fitted : PgraceRailRouterSmooth.Result

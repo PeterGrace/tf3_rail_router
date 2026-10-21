@@ -89,4 +89,11 @@ global record PgraceRailRouterSurvey
 	-- station's centre and radius ≥ station.half + existing.REACH + 50. A piece whose signals can't all be read is
 	-- "unknown" (the analyser stops there). Logs its size, the time it took and the failed reads.
 	trackSnapshot : function(centre : PgraceRailRouterGeo.Pt, radius : number) : PgraceRailRouterExisting.Snapshot
+	-- Linked legs (added after 4c stage 1's in-game test): the length (metres) of the train path the game's
+	-- pathfinder finds from any terminal of one station construction to any of the other's (findPathNodeToNode,
+	-- TransportMode.TRAIN: it follows the track's geometry, so a train never reverses on it, and ignores one-way
+	-- signals), summing its track pieces' chords, each piece once. Entries that aren't readable track pieces are
+	-- allowed only before the first piece and after the last (the stations' own network inside their constructions);
+	-- nil where there's no path, no piece, an unread entry between pieces, or a read throws (logged once). Logs each query (the path's size and how its entries read).
+	trackLink : function(stationA : integer, stationB : integer) : number
 end

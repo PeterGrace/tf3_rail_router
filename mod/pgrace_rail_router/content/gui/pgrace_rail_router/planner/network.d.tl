@@ -179,6 +179,7 @@ global record PgraceRailRouterNetwork
 	-- S-curve edge (track 3; tightest radius 327 m), tangent to the axis at both ends, before the crossovers.
 	-- Crossovers follow the fan (or S-curves) where the straight has room, and with Halt 2+2 the starters and home
 	-- signals as at a station of ours (a starter on an island end's leaving S-curve).
+	-- A linked leg (route.Leg.linked: it runs on existing track) gets no edges and no chunk.
 	build : function(plan : PgraceRailRouterRoute.Plan, options : Options) : Network
 	-- Sets `problem` on every chunk that splits an existing piece an earlier chunk splits too (network.build calls it):
 	-- the first split replaces the piece, and the later one would find it gone.

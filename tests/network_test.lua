@@ -1,5 +1,6 @@
 local t = ...
 local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 
 -- A leg along x from (0, 0): pieces as given, flat at height z unless heights are given as {s, z} pairs, spans as
 -- {kind, s0, s1}. Samples every 25 m, as route.tl makes them.
@@ -449,6 +450,26 @@ local function halt()
 	return o
 end
 
+-- A linked leg (route.tl: existing track already runs between its stations), as the planner makes it.
+local function linkedLeg(length)
+	return { pieces = {}, samples = {}, z = {}, spans = {}, length = length, minRadius = math.huge, maxGrade = 0,
+		tightCurves = 0, linked = true }
+end
+
+t.test("network: a linked leg has no edges or chunks; the legs either side keep their own", function()
+	for __, o in ipairs({ network.defaults(), halt() }) do
+		local only = network.build(plan({ linkedLeg(3000) }), o)
+		t.eq(#only.edges, 0, "no edges")
+		t.eq(#only.chunks, 0, "no chunks")
+		local net = network.build(plan({ leg({ straight(0, 0, 300, 0) }), linkedLeg(3000), leg({ straight(0, 0, 300, 0) }) }), o)
+		t.ok(#net.chunks >= 2, "chunks")
+		for __, c in ipairs(net.chunks) do
+			t.ok(c.leg ~= 2, "no chunk on the linked leg")
+		end
+		t.eq(net.chunks[#net.chunks].leg, 3, "the last leg's chunks")
+	end
+end)
+
 t.test("network: a Halt 2+2 fan's turnout length follows the radius, as the Express & Local mod's", function()
 	t.eq(network.turnoutLength(150), 55, "simple")
 	t.eq(network.turnoutLength(300), 75, "standard")
@@ -494,6 +515,50 @@ t.test("network: Halt 2+2 fans run each local track into the line's track on its
 		crossovers = crossovers + (e.track == 0 and 1 or 0)
 	end
 	t.eq(crossovers, 4, "a pair at each end")
+end)
+
+-- A leg with an extra sample at each s in `extra` (route.tl samples curves more finely than every 25 m).
+local function withSamples(l, extra)
+	for __, s in ipairs(extra) do
+		local k = 1
+		while k <= #l.samples and l.samples[k].s < s do
+			k = k + 1
+		end
+		table.insert(l.samples, k, { p = { x = s, y = 0 }, s = s })
+		table.insert(l.z, k, l.z[k] or l.z[#l.z])
+	end
+	return l
+end
+
+-- In-game (Bangor to Aloha via Antelope): a sample 0.24 m before the end's merge was kept as a cut and the merge
+-- dropped, so the fan found no node there and was left out, and the station's outer tracks dead-ended.
+t.test("network: a Halt 2+2 fan's merge stays a node with a sample just beside it, at either end", function()
+	local merge = 20 + 75
+	for __, at in ipairs({ 3000 - merge - 0.24, 3000 - merge + 0.24, merge - 0.24, merge + 0.24 }) do
+		local label = ("a sample at %.2f"):format(at)
+		local net = network.build(plan({ withSamples(leg({ straight(0, 0, 3000, 0) }), { at }) }), halt())
+		local uses = {}
+		for __, e in ipairs(net.edges) do
+			uses[e.node0] = (uses[e.node0] or 0) + 1
+			uses[e.node1] = (uses[e.node1] or 0) + 1
+		end
+		local fans = {}
+		for __, e in ipairs(net.edges) do
+			if e.track == 3 then
+				table.insert(fans, e)
+			end
+		end
+		t.eq(#fans, 4, label .. ": two fans at each end")
+		for __, e in ipairs(fans) do
+			t.eq(uses[e.s0 == 0 and e.node1 or e.node0], 3, label .. ": a switch at the merge")
+		end
+		for n = 1, #net.nodes do
+			t.ok(uses[n] ~= nil, label .. ": every node on an edge")
+		end
+		for k, c in ipairs(net.chunks) do
+			t.ok(c.problem == nil, ("%s: chunk %d: %s"):format(label, k, tostring(c.problem)))
+		end
+	end
 end)
 
 t.test("network: Halt 2+2 crossovers at every station end, after the fans, so a train can turn back anywhere", function()
@@ -595,6 +660,7 @@ end
 local function exEnd(origin, dir, side, z, grade, near)
 	local e = { origin = origin, dir = dir, z = z, grade = grade, length = 700, pieces = { near = {}, far = {} },
 		signals = { near = {}, far = {} } }
+	e.frame = midline.line(origin, dir, z, grade, 700)
 	for __, p in ipairs(near or { { 101, 0, 700 } }) do
 		table.insert(e.pieces.near, exPiece(e, p[1], p[2], p[3], 2.5 * side))
 	end
@@ -767,6 +833,37 @@ t.test("network: junctions at either end, either side, either way round: the mer
 				local net, e, j = junctionNet({ x = 3000, y = 3000 }, dir, side, atStart)
 				checkJunction(net, e, j, side, atStart and 1 or #net.chunks, atStart)
 			end
+		end
+	end
+end)
+
+t.test("network: a junction's edges and cuts follow the end's frame, not its origin and direction", function()
+	-- The frame starts 100 m further out than the end's origin says (its pieces run from frame x −100 to 600): every
+	-- edge and cut must be where the frame puts them, so nothing reads origin/dir for geometry (milestone 4c).
+	for __, atStart in ipairs({ true, false }) do
+		local origin, dir = { x = 2000, y = 1000 }, { x = 0.6, y = 0.8 }
+		local e = exEnd(origin, dir, 1, 10, 0)
+		local shifted = { x = origin.x + dir.x * 100, y = origin.y + dir.y * 100 }
+		e.frame = midline.line(shifted, dir, 10, 0, 700)
+		local st, j = exStation(e, 1, atStart)
+		-- The checks' frame (exEnd's helpers read origin and dir): the shifted one.
+		local seen = { origin = shifted, dir = dir, z = 10, grade = 0 }
+		local l = junctionLeg(seen, j, 1, 2500, atStart)
+		local net = network.build({ ok = true, legs = { l }, stations = atStart and { st, {} } or { {}, st },
+			platformLength = 160 }, network.defaults())
+		local __, existingNodes, c = checkJunction(net, seen, j, 1, atStart and 1 or #net.chunks, atStart)
+		t.ok(c.problem == nil, "no problem: " .. tostring(c.problem))
+		local byPiece = {}
+		for __, sp in ipairs(c.splits) do
+			byPiece[sp.piece] = sp.s
+		end
+		-- Frame x 15 (the merge's switch) is 115 m along the near piece, 700 m long.
+		t.near(byPiece[101][1], 115 / 700, 1e-9, "the merge's switch at frame x 15")
+		t.near(byPiece[102][1], 245 / 700, 1e-9, "the far switch at frame x 145")
+		for __, n in ipairs(existingNodes) do
+			local p, y = net.nodes[n], net.nodes[n].existing.piece == 101 and 2.5 or -2.5
+			t.near(p.x, origin.x + dir.x * 700 * p.existing.s - dir.y * y, 1e-9, "on its piece (x)")
+			t.near(p.y, origin.y + dir.y * 700 * p.existing.s + dir.x * y, 1e-9, "on its piece (y)")
 		end
 	end
 end)
@@ -988,6 +1085,7 @@ t.test("network: junctions at both ends of a leg; heights on the stretch's grade
 	local st2, j2 = exStation(e2, -1, false)
 	e2.origin = { x = ax + j2.approachX, y = 0 }
 	e2.z = 20 + 0.01 * j1.approachX
+	e2.frame = midline.line(e2.origin, e2.dir, e2.z, 0, e2.length)
 	e2.pieces = exEnd(e2.origin, e2.dir, -1, e2.z, 0).pieces
 	local net = network.build({ ok = true, legs = { l }, stations = { st1, st2 }, platformLength = 160 },
 		network.defaults())

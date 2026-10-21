@@ -38,15 +38,19 @@ global record PgraceRailRouterJunction
 	crossAngle : function(radius : number) : number
 	-- The x length of each crossing arc at radius r: r sin(crossAngle(r)).
 	crossRun : function(radius : number) : number
-	-- The junction nearest the stretch's start that fits, keeping every cut CLEAR (15 m) from the existing signals
-	-- (x positions along the stretch, per track) and from the stretch's start: nil if none fits within `length`.
+	-- The junction nearest the stretch's start that fits, keeping every cut CLEAR (15 m) from the stretch's start, and
+	-- the existing signals (x positions along the stretch, per track; both tracks') CLEAR from its whole span, the
+	-- merge's switch to the cross-out piece's end: nil if none fits within `length`.
 	-- `nodes` (nil: none): each track's existing nodes (its pieces' ends) as x along the stretch. A switch cut keeps
 	-- every node 20 m outward of it and 3 m behind it away (the game refuses a switch whose main track on the branch's
 	-- side is 16.6 m or shorter), but one within 0.5 m, which becomes the switch (the cut and its piece's end move
 	-- onto it); the crossing cut keeps nodes 3 m away but one at its place (within 0.01 m). Placements every 5 m are
-	-- tried, and those that put a cut on a node.
+	-- tried, and those that put a cut on a node. Every junction piece passes each node and each other cut at least
+	-- 2 m away, but those it starts or ends on (P17: the game refused a merge passing a joint 1.32 m beside it). `accept` (nil: any): a placement that fits is returned only if
+	-- `accept` takes it; otherwise the search goes on outward (milestone 4c: the planner takes only placements on
+	-- straight midline).
 	fit : function(length : number, radius : number, side : number, signals : {string : {number}},
-		nodes ?: {string : {number}}) : Layout
+		nodes ?: {string : {number}}, accept ?: function(Layout) : boolean) : Layout
 	-- Total length a junction needs at radius r (no signals in the way): sCurve(10, r) + 2 crossRun(r) + 80.
 	needed : function(radius : number) : number
 end

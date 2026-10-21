@@ -128,6 +128,8 @@ local record Work
 	existingRead : boolean
 	existingStations : {integer : PgraceRailRouterExisting.Station}
 	snapshots : {integer : PgraceRailRouterExisting.Snapshot}
+	-- Existing track between consecutive stops' stations, by leg (route.Input.links): its path's length.
+	links : {integer : number}
 	surveyJob : PgraceRailRouterSurvey.Job
 	routeJob : PgraceRailRouterRoute.Job
 	-- Timing diagnostics for the planning part (after the survey) of the current attempt, logged when the plan is
@@ -515,6 +517,9 @@ local function failureText(plan : Plan) : string
 			{ town = towns[1] or "?" })
 	elseif plan.failure == "no_path" then
 		return fill(_("No route found from {from} to {to}."), { from = towns[1] or "?", to = towns[2] or "?" })
+	elseif plan.failure == "nothing_to_build" then
+		return fill(_("Nothing to build: existing track already runs between {from} and {to}."),
+			{ from = towns[1] or "?", to = towns[2] or "?" })
 	elseif plan.failure == "too_close" then
 		return fill(_("The stations in {from} and {to} would be too close together or facing apart. Try other stops or shorter platforms."),
 			{ from = towns[1] or "?", to = towns[2] or "?" })
@@ -607,7 +612,8 @@ local function resultRows(plan : Plan, priceFactor : number) : {TreeNodeId}
 	return rows
 end
 
--- Why existing stations weren't used (a new station was planned instead), one row each.
+-- Why existing stations weren't used (a new station was planned instead), and the legs that run on existing track
+-- (linked), one row each.
 local function noteRows(plan : Plan) : {TreeNodeId}
 	local rows : {TreeNodeId} = {}
 	for __, note in ipairs(plan.notes or {}) do
@@ -1026,11 +1032,21 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			if any then
 				work.existingStations, work.snapshots = stationsByStop, snapshots
 			end
+			-- Consecutive stops' stations already joined by track: the planner links the leg between them (no new
+			-- track) where the path is short enough. One pathfinder query each (Rail Doctor: under a millisecond).
+			local links : {integer : number} = {}
+			for i = 1, #work.stops - 1 do
+				local a, b = stationsByStop[i], stationsByStop[i + 1]
+				if a ~= nil and b ~= nil and a.entity ~= b.entity then
+					links[i] = survey.trackLink(a.entity, b.entity)
+				end
+			end
+			work.links = links
 			return true
 		end)
 		if not ok then
 			debugPrint(LOG_PREFIX .. "existing stations: " .. tostring(err) .. "; planning without them")
-			work.existingStations, work.snapshots = nil, nil
+			work.existingStations, work.snapshots, work.links = nil, nil, nil
 		end
 	end
 
@@ -1055,7 +1071,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.routeJob = route.start({ grid = survey.grid(work.surveyJob), stops = work.stops,
 					weights = work.weights, platformLength = work.platform, approach = work.approach,
 					bareApproach = work.bareApproach,
-					existingStations = work.existingStations, snapshots = work.snapshots,
+					existingStations = work.existingStations, snapshots = work.snapshots, links = work.links,
 					radius = JUNCTION_RADIUS })
 				setProgress(work, "plan", 0)
 			else
@@ -1094,11 +1110,15 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			local plan = route.plan(work.routeJob)
 			local length = plan.summary ~= nil and plan.summary.length or 0
 			-- Each leg's search radius (below the mode's where its turns didn't fit, or didn't pay), expansions, and the
-			-- seconds its tight curves lose (planner/speed.tl).
+			-- seconds its tight curves lose (planner/speed.tl); a linked leg (on existing track) just its length.
 			local searches : {string} = {}
 			for __, leg in ipairs(plan.legs or {}) do
-				table.insert(searches, tostring(math.floor(leg.searchRadius or 0)) .. " m/"
-					.. tostring(leg.searchExpansions or 0) .. "/" .. string.format("%.1f", leg.timeLost or 0) .. " s")
+				if leg.linked then
+					table.insert(searches, ("linked %.0f m"):format(leg.length))
+				else
+					table.insert(searches, tostring(math.floor(leg.searchRadius or 0)) .. " m/"
+						.. tostring(leg.searchExpansions or 0) .. "/" .. string.format("%.1f", leg.timeLost or 0) .. " s")
+				end
 			end
 			debugPrint(LOG_PREFIX .. "plan done: " .. (plan.ok and "ok" or tostring(plan.failure)) .. ", "
 				.. tostring(math.floor(work.planUs / 1000)) .. " ms over " .. tostring(work.planFrames)
@@ -1220,6 +1240,8 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 				work.tasks = probe.trackCrossing(settings)
 			elseif work.name == "P15" then
 				work.tasks = probe.junction(settings)
+			elseif work.name == "P17" then
+				work.tasks = probe.curveJunction(settings)
 			elseif work.name == "P13" then
 				work.tasks = probe.stationStreets()
 			else
@@ -1714,6 +1736,7 @@ local Content = react.RegisterRecipe("PgraceRailRouterContent", function(params 
 			{ "P14", "Probe P14: build a Halt 2+2 station, fans and signals (test map only)" },
 			{ "P15", "Probe P15: junction into existing track, stage by stage (test map only)" },
 			{ "P16", "Probe P16: a diamond crossing at 6.5°, as the game makes one (test map only)" },
+			{ "P17", "Probe P17: junction into curved track, stage by stage (test map only)" },
 		}) do
 			table.insert(body, builtin.Button{
 				content = builtin.TextView{ text = p[2] },

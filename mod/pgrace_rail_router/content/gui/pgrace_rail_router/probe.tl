@@ -6,6 +6,8 @@ local modes = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/mo
 local sl = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/stationlayout.tl" as PgraceRailRouterStationLayout
 local survey = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/survey.tl" as PgraceRailRouterSurvey
 local builder = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/builder.tl" as PgraceRailRouterBuilder
+local midline = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/midline.tl" as PgraceRailRouterMidline
+local junction = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/junction.tl" as PgraceRailRouterJunction
 
 local probe : PgraceRailRouterProbe = {}
 
@@ -699,10 +701,17 @@ local record P15State
 	-- Where stage 1 put the signal on track 1.
 	signalPt : Pt
 	pieces : {P15Piece}
+	-- Which track a piece is on (P17: by its own frame); nil: by y = ±off from the origin (P15).
+	classify : function(Hermite) : integer
 end
 
 local p15Stage = 1
 local p15 : P15State = { z = 0, off = 2.5, pieces = {} }
+-- The probe whose state the shared helpers below (rel, trackOf, splitTrack, repairNodes, ...) use, and log under.
+local cur : P15State = p15
+local tag = "P15"
+-- PROBE (remove before release): P17 runs too; a failed callback frees it as well.
+local p17Busy = false
 
 local function v3of(p : Pt3) : Vec3f
 	return api.type.Vec3f.new(p.x, p.y, p.z)
@@ -714,16 +723,19 @@ end
 
 -- A point relative to the origin, as text.
 local function rel(p : Pt3) : string
-	if p15.origin == nil then
+	if cur.origin == nil then
 		return ("(%.1f %.1f %.1f)"):format(p.x, p.y, p.z)
 	end
-	return ("(%.1f %.1f %.1f)"):format(p.x - p15.origin.x, p.y - p15.origin.y, p.z)
+	return ("(%.1f %.1f %.1f)"):format(p.x - cur.origin.x, p.y - cur.origin.y, p.z)
 end
 
 local function trackOf(h : Hermite) : integer
-	local o = p15.origin
+	if cur.classify ~= nil then
+		return cur.classify(h)
+	end
+	local o = cur.origin
 	for __, t in ipairs({ 1, 2 }) do
-		local y = o.y + (t == 1 and p15.off or -p15.off)
+		local y = o.y + (t == 1 and cur.off or -cur.off)
 		if math.abs(h.p0.y - y) < 0.6 and math.abs(h.p1.y - y) < 0.6 then
 			return t
 		end
@@ -762,7 +774,7 @@ local function logPiece(p : P15Piece)
 	local ok, text = pcall(function() : string
 		return signalsOn(p.entity)
 	end)
-	log("P15", ("piece %d track %d nodes %d/%d %s -> %s, %d objects: %s"):format(p.entity, p.track, p.node0, p.node1,
+	log(tag, ("piece %d track %d nodes %d/%d %s -> %s, %d objects: %s"):format(p.entity, p.track, p.node0, p.node1,
 		rel(p.h.p0), rel(p.h.p1), p.objects, ok and text as string or "signalsOn failed"))
 end
 
@@ -781,13 +793,13 @@ local function logAdded(what : string, res : WorldBuildProposalCommandData)
 		local ok, pos = pcall(function() : Vec3f
 			return (api.engine.getComponent(n.entity, api.type.ComponentType.BASE_NODE) as Engine.Component.BaseNode).position
 		end)
-		log("P15", ("%s: new node %d at %s"):format(what, n.entity as integer, ok and rel(p3of(pos as Vec3f)) or "?"))
+		log(tag, ("%s: new node %d at %s"):format(what, n.entity as integer, ok and rel(p3of(pos as Vec3f)) or "?"))
 	end
 	for __, seg in ipairs(sp.addedSegments) do
 		local e = seg.entity as integer
 		local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
 		if edge == nil then
-			log("P15", ("%s: new piece %d has no BASE_EDGE"):format(what, e))
+			log(tag, ("%s: new piece %d has no BASE_EDGE"):format(what, e))
 		else
 			local h : Hermite = { p0 = p3of(edge.position0), p1 = p3of(edge.position1), t0 = p3of(edge.tangent0),
 				t1 = p3of(edge.tangent1) }
@@ -865,7 +877,7 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 	local restU = 0.0
 	for __, u in ipairs(us) do
 		if u < 0.02 or u > 0.98 then
-			log("P15", ("REFUSED split of %d: parameter %.4f is outside 0.02..0.98"):format(piece.entity, u))
+			log(tag, ("REFUSED split of %d: parameter %.4f is outside 0.02..0.98"):format(piece.entity, u))
 			return nil
 		end
 		local here, after = network.splitHermite(rest, (u - restU) / (1 - restU))
@@ -875,7 +887,7 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 	table.insert(hs, rest)
 	for j, sh in ipairs(hs) do
 		if chord(sh) < MIN_PIECE then
-			log("P15", ("REFUSED split of %d: sub-piece %d would be %.1f m (under %.0f m)"):format(piece.entity, j,
+			log(tag, ("REFUSED split of %d: sub-piece %d would be %.1f m (under %.0f m)"):format(piece.entity, j,
 				chord(sh), MIN_PIECE))
 			return nil
 		end
@@ -885,11 +897,11 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 	local template = sp.addedSegments[1]
 	local objs = template.comp.objects or {}
 	local edgeObjects = (sp.edgeObjectsToAdd or {}) as {any}
-	log("P15", ("replaceSegment(%d): %d added segments, %d added nodes, %d removed segments, %d edge objects to add, %d node configs, template objects %d"):format(
+	log(tag, ("replaceSegment(%d): %d added segments, %d added nodes, %d removed segments, %d edge objects to add, %d node configs, template objects %d"):format(
 		piece.entity, #sp.addedSegments, #sp.addedNodes, #(sp.removedSegments or {}), #edgeObjects,
 		#(sp.nodeConfigsToAdd or {}), #objs))
 	if #edgeObjects > 0 and #edgeObjects ~= #objs then
-		log("P15", ("REFUSED split of %d: %d edge objects to add against %d objects on the piece"):format(piece.entity,
+		log(tag, ("REFUSED split of %d: %d edge objects to add against %d objects on the piece"):format(piece.entity,
 			#edgeObjects, #objs))
 		return nil
 	end
@@ -900,7 +912,7 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 			return ("edgeEntity %s param %s model %s left %s"):format(tostring(t.edgeEntity), tostring(t.param),
 				tostring(t.model), tostring(t.left))
 		end)
-		log("P15", ("edgeObjectsToAdd[%d]: %s"):format(i, okE and text as string or "unreadable: " .. tostring(text)))
+		log(tag, ("edgeObjectsToAdd[%d]: %s"):format(i, okE and text as string or "unreadable: " .. tostring(text)))
 	end
 	for __, field in ipairs({ "new2oldEdgeObjects", "old2newEdgeObjects" }) do
 		pcall(function() : boolean
@@ -919,7 +931,7 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 					table.insert(parts, tostring(from) .. " -> " .. table.concat(list, ","))
 				end
 			end
-			log("P15", ("%s: %s"):format(field, #parts > 0 and table.concat(parts, "; ") or "empty"))
+			log(tag, ("%s: %s"):format(field, #parts > 0 and table.concat(parts, "; ") or "empty"))
 			return true
 		end)
 	end
@@ -935,13 +947,13 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 			return (o as {any})[1], (o as {any})[2]
 		end)
 		if not okO or a == nil or b == nil then
-			log("P15", ("REFUSED split of %d: object %d isn't a readable {entity, type} pair (%s, %s)"):format(piece.entity,
+			log(tag, ("REFUSED split of %d: object %d isn't a readable {entity, type} pair (%s, %s)"):format(piece.entity,
 				idx, tostring(a), tostring(b)))
 			return nil
 		end
 		local at = objectAt[idx] or objectAt[1]
 		if at == nil then
-			log("P15", ("REFUSED split of %d: object %d has no known place"):format(piece.entity, idx))
+			log(tag, ("REFUSED split of %d: object %d has no known place"):format(piece.entity, idx))
 			return nil
 		end
 		local bestJ, bestD, bestU = 1, math.huge, 0.0
@@ -953,7 +965,7 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 				bestJ, bestD, bestU = j, d, u
 			end
 		end
-		log("P15", ("object %d (entity %s, type %s) goes on sub-piece %d at param %.3f, %.2f m off its curve"):format(idx,
+		log(tag, ("object %d (entity %s, type %s) goes on sub-piece %d at param %.3f, %.2f m off its curve"):format(idx,
 			tostring(a), tostring(b), bestJ, bestU, math.sqrt(bestD)))
 		objJ[idx], objU[idx] = bestJ, bestU
 		table.insert(lists[bestJ], { a, b })
@@ -989,10 +1001,10 @@ local function splitTrack(piece : P15Piece, us : {number}, objectAt : {Pt}) : Pr
 				t.param = objU[i]
 				return true
 			end)
-			log("P15", ("edgeObjectsToAdd[%d] rewritten to edge %d param %.3f: %s"):format(i, pieces[objJ[i]].entity,
+			log(tag, ("edgeObjectsToAdd[%d] rewritten to edge %d param %.3f: %s"):format(i, pieces[objJ[i]].entity,
 				objU[i], okW and "ok" or tostring(err)))
 			if not okW then
-				log("P15", ("REFUSED split of %d: edge object %d couldn't be rewritten"):format(piece.entity, i))
+				log(tag, ("REFUSED split of %d: edge object %d couldn't be rewritten"):format(piece.entity, i))
 				return nil
 			end
 		end
@@ -1017,8 +1029,9 @@ local function sendProposal(proposal : any, done : function(WorldBuildProposalCo
 				return true
 			end)
 			if not ok then
-				log("P15", "ERROR " .. tostring(err))
+				log(tag, "ERROR " .. tostring(err))
 				p15Busy = false
+				p17Busy = false
 			end
 		end)
 end
@@ -1045,7 +1058,7 @@ end
 -- logs whether each node has its config before and after.
 local function repairNodes(what : string, nodes : {integer}, done : function())
 	for __, n in ipairs(nodes) do
-		log("P15", ("%s: node %d before repair: %s"):format(what, n, hasConfig(n)))
+		log(tag, ("%s: node %d before repair: %s"):format(what, n, hasConfig(n)))
 	end
 	local queue : {integer} = {}
 	local seen : {integer : boolean} = {}
@@ -1062,30 +1075,30 @@ local function repairNodes(what : string, nodes : {integer}, done : function())
 				end
 			end
 		else
-			log("P15", ("%s: getNodeTrackSegments(%d) failed: %s"):format(what, n, tostring(segs)))
+			log(tag, ("%s: getNodeTrackSegments(%d) failed: %s"):format(what, n, tostring(segs)))
 		end
 	end
 	local function step()
 		local seg = table.remove(queue, 1)
 		if seg == nil then
 			for __, n in ipairs(nodes) do
-				log("P15", ("%s: node %d after repair: %s"):format(what, n, hasConfig(n)))
+				log(tag, ("%s: node %d after repair: %s"):format(what, n, hasConfig(n)))
 			end
 			return done()
 		end
 		if not api.engine.entityExists(seg) then
-			log("P15", ("%s: piece %d is gone: skipped"):format(what, seg))
+			log(tag, ("%s: piece %d is gone: skipped"):format(what, seg))
 			return step()
 		end
 		local ok, rep = pcall(function() : Proposal
 			return api.engine.util.proposal.replaceSegment(seg)
 		end)
 		if not ok or rep == nil then
-			log("P15", ("%s: repair of piece %d: replaceSegment failed: %s"):format(what, seg, tostring(rep)))
+			log(tag, ("%s: repair of piece %d: replaceSegment failed: %s"):format(what, seg, tostring(rep)))
 			return step()
 		end
 		sendProposal(rep, function(__ : WorldBuildProposalCommandData, success : boolean)
-			log("P15", ("%s: repair of piece %d: %s"):format(what, seg, tostring(success)))
+			log(tag, ("%s: repair of piece %d: %s"):format(what, seg, tostring(success)))
 			step()
 		end)
 	end
@@ -1438,6 +1451,7 @@ function probe.junction(settings : Settings) : {function()}
 			return
 		end
 		p15Busy = true
+		cur, tag = p15, "P15"
 		local stage = p15Stage
 		log("P15", ("stage %d"):format(stage))
 		local ok, err = pcall(function() : boolean
@@ -1468,6 +1482,7 @@ local P16_ANGLE = 6.5
 
 function probe.trackCrossing(settings : Settings) : {function()}
 	return { guarded("P16", function()
+		cur, tag = p15, "P15"
 		local c = camera()
 		local east : Pt = { x = 1, y = 0 }
 		local ground = groundAt(c)
@@ -1578,6 +1593,833 @@ function probe.trackCrossing(settings : Settings) : {function()}
 			end
 		end)
 	end) }
+end
+
+-- P17 ------------------------------------------------------------------------------------------------------------
+-- PROBE (remove before release): P15 on a curve (milestone 4c, stage 2): does the game take a flat junction cut into
+-- curved double track? Three stages, one click each: 1 builds a curved double track east of the camera; 2 lays a
+-- junction from the curve's outside (junction.fit in a midline frame read from the built track, mapped as
+-- network.junctionEdges maps one), all three cuts on the arc's pieces, splits the tracks there and builds it; 3 builds
+-- a copy of stage 1's track P17_SHIFT m further east and does the same from the inside. Uses P15's split and repair
+-- helpers (they log under "P17" while it runs).
+
+-- The track: P17_STRAIGHT1 m east, a left arc of P17_RADIUS (the planner's tightest) through P17_TURN degrees, then
+-- P17_STRAIGHT2 m. The arc must hold a 300 m junction's cuts (the merge's switch to the crossing: 185 m), so it
+-- turns 70° (269 m): 30° at 220 m is only 115 m.
+local P17_STRAIGHT1 = 100.0
+local P17_RADIUS = 220.0
+local P17_TURN = 70.0
+local P17_STRAIGHT2 = 150.0
+-- The longest edge: the arc in 4 pieces of 17.5° (67 m; the player's curves had 17° edges, P1), the straights in
+-- 50 m pieces.
+local P17_EDGE = 70.0
+-- The one-way signals, metres along the centre line: 120 m into the last straight (20 m into its third piece), clear
+-- of the junction's span and 15 m and more from every piece end.
+local P17_SIGNAL_S = P17_STRAIGHT1 + P17_RADIUS * math.rad(P17_TURN) + 120
+local P17_TOTAL = P17_STRAIGHT1 + P17_RADIUS * math.rad(P17_TURN) + P17_STRAIGHT2
+-- The junction's turnout radius (standard track's, as the planner fits them), and stage 3's copy's shift east.
+local P17_JUNCTION_RADIUS = 300.0
+local P17_SHIFT = 300.0
+-- The built midline: track 1 sampled every so many metres, each sample paired with track 2's nearest point.
+local P17_SAMPLE = 2.0
+-- A cut lies on a curved piece: one whose ends' directions differ by more than this (degrees), at least P17_INSIDE
+-- metres from both its ends (splitTrack refuses a sub-piece under 10 m). On this track that puts the merge's switch
+-- at x = 130 (arc piece 1), the far switch at 260 (arc piece 3) and the crossing at 314.6 (arc piece 4).
+local P17_CURVED = 2.0
+local P17_INSIDE = 12.0
+
+local record P17Cut
+	-- 1 or 2: which existing track; "switch" or "crossing"; its x in the frame; the point on the track.
+	track : integer
+	kind : string
+	x : number
+	p : Pt3
+end
+
+local record P17Copy
+	origin : Pt
+	z : number
+	-- The planned centre line as a frame: sorts scanned pieces onto their tracks.
+	design : PgraceRailRouterMidline.Frame
+	-- The signal's place on track 1 and on track 2.
+	signalPts : {Pt}
+	built : boolean
+	-- The frame read from the built track, the junction fitted in it, and its cuts (in the layout's order), once
+	-- fitted: a retry carries on with them.
+	frame : PgraceRailRouterMidline.Frame
+	layout : PgraceRailRouterJunction.Layout
+	cuts : {P17Cut}
+end
+
+local p17Stage = 1
+local p17Copies : {P17Copy} = {}
+local p17State : P15State = { z = 0, off = 2.5, pieces = {} }
+
+-- The planned centre line's point and unit direction at s metres along it.
+local function p17Centre(o : Pt, s : number) : Pt, Pt
+	local turn = math.rad(P17_TURN)
+	local arcLen = P17_RADIUS * turn
+	if s <= P17_STRAIGHT1 then
+		return { x = o.x + s, y = o.y }, { x = 1, y = 0 }
+	end
+	if s <= P17_STRAIGHT1 + arcLen then
+		local a = (s - P17_STRAIGHT1) / P17_RADIUS
+		return { x = o.x + P17_STRAIGHT1 + P17_RADIUS * math.sin(a), y = o.y + P17_RADIUS * (1 - math.cos(a)) },
+			{ x = math.cos(a), y = math.sin(a) }
+	end
+	local d = s - P17_STRAIGHT1 - arcLen
+	local dir : Pt = { x = math.cos(turn), y = math.sin(turn) }
+	return { x = o.x + P17_STRAIGHT1 + P17_RADIUS * math.sin(turn) + dir.x * d,
+		y = o.y + P17_RADIUS * (1 - math.cos(turn)) + dir.y * d }, dir
+end
+
+local function p17Pieces(o : Pt) : {Piece}
+	local east : Pt = { x = 1, y = 0 }
+	local a = straight(o, east, P17_STRAIGHT1)
+	local turn = math.rad(P17_TURN)
+	local b = leftArc(a.b, east, P17_RADIUS, turn)
+	return { a, b, straight(b.b, { x = math.cos(turn), y = math.sin(turn) }, P17_STRAIGHT2) }
+end
+
+local function p17NewCopy(o : Pt, off : number) : P17Copy
+	local pts : {Pt3} = {}
+	local z = groundAt(o)
+	local s = 0.0
+	while true do
+		local p = p17Centre(o, s)
+		table.insert(pts, { x = p.x, y = p.y, z = z })
+		if s >= P17_TOTAL then
+			break
+		end
+		s = math.min(P17_TOTAL, s + 5)
+	end
+	local sp, dir = p17Centre(o, P17_SIGNAL_S)
+	local left : Pt = { x = -dir.y, y = dir.x }
+	return { origin = o, z = z, design = midline.fromPoints(pts, midline.STEP), built = false,
+		signalPts = { geo.add(sp, geo.scale(left, off)), geo.add(sp, geo.scale(left, -off)) } }
+end
+
+-- Points the shared helpers at a copy: its origin for rel, its design frame for trackOf, "P17" for their logs.
+local function p17Use(copy : P17Copy, off : number)
+	p17State.origin, p17State.z, p17State.off = copy.origin, copy.z, off
+	p17State.classify = function(h : Hermite) : integer
+		local track = 0
+		for k, q in ipairs({ h.p0, network.hermiteAt(h, 0.5), h.p1 }) do
+			local x, y = midline.project(copy.design, { x = q.x, y = q.y })
+			if x < -1 or x > P17_TOTAL + 1 then
+				return 0
+			end
+			local t = 0
+			if math.abs(y - off) < 0.6 then
+				t = 1
+			elseif math.abs(y + off) < 0.6 then
+				t = 2
+			end
+			if t == 0 or (k > 1 and t ~= track) then
+				return 0
+			end
+			track = t
+		end
+		return track
+	end
+	cur, tag = p17State, "P17"
+end
+
+-- The angle (degrees) between two plan vectors, ignoring which way each points if `undirected`.
+local function angleOf(a : Pt3, b : Pt3, undirected : boolean) : number
+	local la, lb = math.sqrt(a.x ^ 2 + a.y ^ 2), math.sqrt(b.x ^ 2 + b.y ^ 2)
+	if la < 1e-9 or lb < 1e-9 then
+		return 0
+	end
+	local c = (a.x * b.x + a.y * b.y) / (la * lb)
+	if undirected then
+		c = math.abs(c)
+	end
+	return math.deg(math.acos(math.max(-1, math.min(1, c))))
+end
+
+-- How far a piece turns end to end (degrees).
+local function turnOf(h : Hermite) : number
+	return angleOf(h.t0, h.t1, false)
+end
+
+-- A Hermite curve's tightest radius in plan (51 samples, from the curvature of the cubic), and the parameter there;
+-- math.huge for a straight.
+local function tightest(h : Hermite) : number, number
+	local best, at = math.huge, 0.0
+	for k = 0, 50 do
+		local s = k / 50
+		local d00, d10, d01, d11 = 6 * s * s - 6 * s, 3 * s * s - 4 * s + 1, -6 * s * s + 6 * s, 3 * s * s - 2 * s
+		local e00, e10, e01, e11 = 12 * s - 6, 6 * s - 4, -12 * s + 6, 6 * s - 2
+		local dx = d00 * h.p0.x + d10 * h.t0.x + d01 * h.p1.x + d11 * h.t1.x
+		local dy = d00 * h.p0.y + d10 * h.t0.y + d01 * h.p1.y + d11 * h.t1.y
+		local ddx = e00 * h.p0.x + e10 * h.t0.x + e01 * h.p1.x + e11 * h.t1.x
+		local ddy = e00 * h.p0.y + e10 * h.t0.y + e01 * h.p1.y + e11 * h.t1.y
+		local v = math.sqrt(dx * dx + dy * dy)
+		local cross = math.abs(dx * ddy - dy * ddx)
+		if v > 1e-9 and cross > 1e-12 then
+			local r = v ^ 3 / cross
+			if r < best then
+				best, at = r, s
+			end
+		end
+	end
+	return best, at
+end
+
+local function fmtR(h : Hermite) : string
+	local r, at = tightest(h)
+	if r > 1e6 then
+		return "straight"
+	end
+	return ("%.1f m at param %.2f"):format(r, at)
+end
+
+local function fmtT(t : Pt3) : string
+	return ("(%.2f %.2f %.2f)"):format(t.x, t.y, t.z)
+end
+
+-- Every plain track piece of a copy, read fresh, track set by its design frame (0: not one of its two tracks), in
+-- order along it.
+local function p17Scan(copy : P17Copy) : {P15Piece}
+	local list : {P15Piece} = {}
+	local mid = p17Centre(copy.origin, P17_TOTAL / 2)
+	local found = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(mid.x, mid.y), 350,
+		api.type.ComponentType.BASE_EDGE)
+	for __, e in ipairs(found) do
+		pcall(function() : boolean
+			local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+			if edge == nil or edge.roadType ~= api.type["enum"].RoadType.TRACK
+					or edge.type ~= api.type["enum"].BaseEdgeType.NORMAL then
+				return true
+			end
+			local h : Hermite = { p0 = p3of(edge.position0), p1 = p3of(edge.position1), t0 = p3of(edge.tangent0),
+				t1 = p3of(edge.tangent1) }
+			table.insert(list, { entity = e as integer, node0 = edge.node0 as integer, node1 = edge.node1 as integer,
+				h = h, objects = #(edge.objects or {}), track = trackOf(h) })
+			return true
+		end)
+	end
+	local key : {integer : number} = {}
+	for __, p in ipairs(list) do
+		local q = network.hermiteAt(p.h, 0.5)
+		key[p.entity] = midline.project(copy.design, { x = q.x, y = q.y })
+	end
+	table.sort(list, function(a : P15Piece, b : P15Piece) : boolean
+		return key[a.entity] < key[b.entity]
+	end)
+	return list
+end
+
+local function p17LogTracks(list : {P15Piece})
+	for __, p in ipairs(list) do
+		if p.track ~= 0 then
+			logPiece(p)
+			log("P17", ("  piece %d: %.1f m, turns %.1f degrees, tightest radius %s"):format(p.entity, chord(p.h),
+				turnOf(p.h), fmtR(p.h)))
+		end
+	end
+end
+
+local function p17Done(stage : integer, ok : boolean)
+	p17Busy = false
+	if ok then
+		p17Stage = stage % 3 + 1
+		log("P17", ("stage %d finished; the next click runs stage %d"):format(stage, p17Stage))
+	else
+		log("P17", ("stage %d did not finish: click again to retry stage %d"):format(stage, stage))
+	end
+end
+
+-- A copy's double track, with a one-way signal on each track at P17_SIGNAL_S (as P15's stage 1 builds its own).
+local function p17BuildTrack(copy : P17Copy, settings : Settings, done : function(boolean))
+	local opts : Options = {}
+	for k, v in pairs(settings.network as {string : any}) do
+		(opts as {string : any})[k] = v
+	end
+	opts.fan = nil
+	opts.crossovers = false
+	opts.chunkLength = 100000
+	opts.maxEdge = P17_EDGE
+	local s = with(settings, function(c : Settings)
+		c.network = opts
+		c.signal = "::/infrastructure/signal/signal_path_" .. (settings.year < 1950 and "a" or "c") .. ".con"
+	end)
+	local net = network.build(testPlan(p17Pieces(copy.origin), copy.z, 0, "ground"), opts)
+	for __, e in ipairs(net.edges) do
+		local h : Hermite = { p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }
+		log("P17", ("planned edge track %d s %.1f..%.1f %s -> %s, turns %.1f degrees, tightest radius %s"):format(
+			e.track, e.s0, e.s1, rel(e.p0), rel(e.p1), turnOf(h), fmtR(h)))
+		if (e.track == 1 or e.track == 2) and e.s0 <= P17_SIGNAL_S and P17_SIGNAL_S <= e.s1 then
+			local u = (P17_SIGNAL_S - e.s0) / (e.s1 - e.s0)
+			e.signals = { { param = u, forward = e.track == 2 } }
+			log("P17", ("signal on track %d edge s %.1f..%.1f at %.3f"):format(e.track, e.s0, e.s1, u))
+		end
+	end
+	local proposal, why = builder.chunkProposal(net, 1, #net.edges, s)
+	if proposal == nil then
+		log("P17", "no track proposal: " .. tostring(why))
+		return done(false)
+	end
+	local ok, cost, messages, __, data = builder.dryRun(proposal)
+	log("P17", ("track dry run: %s, %d"):format(ok and "clean" or table.concat(messages, "; "), cost))
+	logCollisions("P17", data)
+	if not ok then
+		return done(false)
+	end
+	sendProposal(proposal, function(res : WorldBuildProposalCommandData, success : boolean)
+		log("P17", "track built: " .. tostring(success))
+		if not success then
+			return done(false)
+		end
+		copy.built = true
+		logAdded("track", res)
+		log("P17", "tracks as scanned:")
+		p17LogTracks(p17Scan(copy))
+		done(true)
+	end)
+end
+
+-- The piece of `track` whose frame-x range holds x, and its parameter where its curve is at x (bisected, as
+-- network.junctionEdges finds a cut).
+local function p17PieceAt(f : PgraceRailRouterMidline.Frame, list : {P15Piece}, track : integer, x : number)
+		: P15Piece, number
+	local function frameX(p : Pt3) : number
+		local fx = midline.project(f, { x = p.x, y = p.y })
+		return fx
+	end
+	for __, p in ipairs(list) do
+		if p.track == track then
+			local xa, xb = frameX(p.h.p0), frameX(p.h.p1)
+			if math.abs(xb - xa) > 1e-9 and x >= math.min(xa, xb) - 1e-6 and x <= math.max(xa, xb) + 1e-6 then
+				local lo, hi = 0.0, 1.0
+				local rising = xb > xa
+				for __ = 1, 60 do
+					local m = (lo + hi) / 2
+					if (frameX(network.hermiteAt(p.h, m)) < x) == rising then
+						lo = m
+					else
+						hi = m
+					end
+				end
+				return p, (lo + hi) / 2
+			end
+		end
+	end
+	return nil, 0
+end
+
+-- The midline read from the built track: track 1 sampled every P17_SAMPLE m, each sample's midpoint with track 2's
+-- nearest point. nil, why if the tracks can't be read.
+local function p17Midline(copy : P17Copy, list : {P15Piece}) : PgraceRailRouterMidline.Frame, string
+	local t1, t2 : {P15Piece}, {P15Piece} = {}, {}
+	for __, p in ipairs(list) do
+		if p.track == 1 then
+			table.insert(t1, p)
+		elseif p.track == 2 then
+			table.insert(t2, p)
+		end
+	end
+	if #t1 == 0 or #t2 == 0 then
+		return nil, ("track pieces found: %d on track 1, %d on track 2"):format(#t1, #t2)
+	end
+	local pts : {Pt3} = {}
+	local worst = 0.0
+	for __, p in ipairs(t1) do
+		local xa = midline.project(copy.design, { x = p.h.p0.x, y = p.h.p0.y })
+		local xb = midline.project(copy.design, { x = p.h.p1.x, y = p.h.p1.y })
+		local n = math.max(1, math.ceil(chord(p.h) / P17_SAMPLE))
+		for k = 0, n do
+			local s = k / n
+			if xb < xa then
+				s = 1 - s
+			end
+			local q = network.hermiteAt(p.h, s)
+			local best : Pt3 = nil
+			local bestD = math.huge
+			for __, p2 in ipairs(t2) do
+				local r = network.hermiteAt(p2.h, network.nearestParam(p2.h, { x = q.x, y = q.y }))
+				local d = (r.x - q.x) ^ 2 + (r.y - q.y) ^ 2
+				if d < bestD then
+					best, bestD = r, d
+				end
+			end
+			local last = pts[#pts]
+			local m : Pt3 = { x = (q.x + best.x) / 2, y = (q.y + best.y) / 2, z = (q.z + best.z) / 2 }
+			if bestD < 36 and (last == nil or (m.x - last.x) ^ 2 + (m.y - last.y) ^ 2 > 0.25) then
+				table.insert(pts, m)
+				worst = math.max(worst, math.abs(math.sqrt(bestD) - 2 * p17State.off))
+			end
+		end
+	end
+	if #pts < 2 then
+		return nil, "fewer than two midline samples"
+	end
+	local f = midline.fromPoints(pts, midline.STEP)
+	-- How far the built tracks are from ±off in the frame (sampled at their pieces' quarter points).
+	local dev = 0.0
+	for __, p in ipairs(list) do
+		if p.track ~= 0 then
+			for __, s in ipairs({ 0.25, 0.5, 0.75 }) do
+				local q = network.hermiteAt(p.h, s)
+				local __, y = midline.project(f, { x = q.x, y = q.y })
+				dev = math.max(dev, math.abs(math.abs(y) - p17State.off))
+			end
+		end
+	end
+	log("P17", ("built midline: %d samples, frame %.1f m long, tracks %.3f m off their spacing at worst, %.3f m off +-%.1f in the frame"):format(
+		#pts, f.length, worst, dev, p17State.off))
+	return f
+end
+
+-- Fits the junction on side `side` (+1 inside the left curve, -1 outside) with every cut inside a curved piece, and
+-- keeps its frame, layout and cuts on the copy. false if none fits.
+local function p17Fit(copy : P17Copy, list : {P15Piece}, side : number) : boolean
+	local f, why = p17Midline(copy, list)
+	if f == nil then
+		log("P17", "no midline: " .. tostring(why))
+		return false
+	end
+	local nearT = side > 0 and 1 or 2
+	local farT = 3 - nearT
+	local function trackNo(which : string) : integer
+		return which == "near" and nearT or farT
+	end
+	local function fx(p : Pt) : number
+		local x = midline.project(f, p)
+		return x
+	end
+	local nodes : {string : {number}} = { near = {}, far = {} }
+	for __, p in ipairs(list) do
+		if p.track ~= 0 then
+			local key = p.track == nearT and "near" or "far"
+			table.insert(nodes[key], fx({ x = p.h.p0.x, y = p.h.p0.y }))
+			table.insert(nodes[key], fx({ x = p.h.p1.x, y = p.h.p1.y }))
+		end
+	end
+	local signals : {string : {number}} = { near = { fx(copy.signalPts[nearT]) }, far = { fx(copy.signalPts[farT]) } }
+	log("P17", ("fitting at radius %.0f, side %.0f (near track %d): signals near %.1f far %.1f"):format(
+		P17_JUNCTION_RADIUS, side, nearT, signals.near[1], signals.far[1]))
+	local function onCurve(j : PgraceRailRouterJunction.Layout) : boolean
+		for __, c in ipairs(j.cuts) do
+			local p, s = p17PieceAt(f, list, trackNo(c.track), c.x)
+			if p == nil or turnOf(p.h) < P17_CURVED or s * chord(p.h) < P17_INSIDE
+					or (1 - s) * chord(p.h) < P17_INSIDE then
+				return false
+			end
+		end
+		return true
+	end
+	local j = junction.fit(f.length, P17_JUNCTION_RADIUS, side, signals, nodes, onCurve)
+	if j == nil then
+		log("P17", "no junction fits with all its cuts on curved pieces")
+		return false
+	end
+	log("P17", ("junction fitted: approach at x = %.1f"):format(j.approachX))
+	for __, pc in ipairs(j.pieces) do
+		log("P17", ("  frame piece %s: (%.1f %.1f) -> (%.1f %.1f), tangents (%.1f %.1f) (%.1f %.1f)"):format(pc.role,
+			pc.x0, pc.y0, pc.x1, pc.y1, pc.tx0, pc.ty0, pc.tx1, pc.ty1))
+	end
+	local cuts : {P17Cut} = {}
+	for __, c in ipairs(j.cuts) do
+		local t = trackNo(c.track)
+		local p, s = p17PieceAt(f, list, t, c.x)
+		local at = network.hermiteAt(p.h, s)
+		local ideal = midline.world(f, c.x, c.track == "near" and 2.5 * side or -2.5 * side)
+		log("P17", ("cut %s on the %s track (%d) at x = %.1f: piece %d (%.1f m, turns %.1f degrees, radius %s) param %.4f at %s, %.3f m off the frame's track line"):format(
+			c.kind, c.track, t, c.x, p.entity, chord(p.h), turnOf(p.h), fmtR(p.h), s, rel(at),
+			math.sqrt((at.x - ideal.x) ^ 2 + (at.y - ideal.y) ^ 2)))
+		table.insert(cuts, { track = t, kind = c.kind, x = c.x, p = { x = at.x, y = at.y, z = at.z } })
+	end
+	copy.frame, copy.layout, copy.cuts = f, j, cuts
+	return true
+end
+
+-- The track piece holding a point (within 0.6 m of its curve, not at its ends), and the parameter there.
+local function p17PieceHolding(list : {P15Piece}, track : integer, p : Pt3) : P15Piece, number
+	local best : P15Piece = nil
+	local bestU, bestD = 0.0, 0.36
+	for __, pc in ipairs(list) do
+		if pc.track == track then
+			local u = network.nearestParam(pc.h, { x = p.x, y = p.y })
+			local q = network.hermiteAt(pc.h, u)
+			local d = (q.x - p.x) ^ 2 + (q.y - p.y) ^ 2
+			if d < bestD and u > 0.001 and u < 0.999 then
+				best, bestU, bestD = pc, u, d
+			end
+		end
+	end
+	return best, bestU
+end
+
+-- The existing track's direction at a node (the tangent of a track piece there), and that piece; nil if none.
+local function p17TrackDir(list : {P15Piece}, node : integer) : Pt3, integer
+	for __, p in ipairs(list) do
+		if p.track ~= 0 then
+			if p.node0 == node then
+				return p.h.t0, p.entity
+			elseif p.node1 == node then
+				return p.h.t1, p.entity
+			end
+		end
+	end
+	return nil, nil
+end
+
+-- With every cut made: the junction's pieces as network.junctionEdges maps them (each piece's ends and tangents
+-- through the frame, a straight on from each end on our tracks to the approach), dry-run, built if clean.
+local function p17Junction(copy : P17Copy, settings : Settings, side : number, done : function(boolean))
+	local f, j = copy.frame, copy.layout
+	local list = p17Scan(copy)
+	local nodes : {Pt3} = {}
+	local cutNode : {integer} = {}
+	local switches : {integer : boolean} = {}
+	local entities : {integer} = {}
+	for ci, c in ipairs(copy.cuts) do
+		local n, q = findNodeAt(list, c.p.x, c.p.y)
+		if n == nil then
+			log("P17", ("no node at the %s cut on track %d (x = %.1f)"):format(c.kind, c.track, c.x))
+			return done(false)
+		end
+		table.insert(nodes, { x = q.x, y = q.y, z = q.z, entity = n })
+		cutNode[ci] = #nodes
+		table.insert(entities, n)
+		if c.kind == "switch" then
+			switches[n] = true
+		end
+		log("P17", ("cut node: %s on track %d -> %d at %s"):format(c.kind, c.track, n, rel(q)))
+	end
+	local function cutAt(x : number, y : number) : integer
+		for ci, c in ipairs(j.cuts) do
+			if math.abs(c.x - x) < 1e-6 and math.abs(y) < 5 and (c.track == "near") == (y * side > 0) then
+				return cutNode[ci]
+			end
+		end
+		return nil
+	end
+	local function newNode(p : Pt3) : integer
+		table.insert(nodes, p)
+		return #nodes
+	end
+	local function world(x : number, y : number) : Pt3
+		return midline.world(f, x, y)
+	end
+	local function vec(x : number, tx : number, ty : number) : Pt3
+		return midline.vector(f, x, tx, ty)
+	end
+	local edges : {PgraceRailRouterNetwork.Edge} = {}
+	local roles : {string} = {}
+	-- Each frame piece's edges, first..last (its straights on, then the piece), for dry runs of their own.
+	local groups : {{any}} = {}
+	local function add(a : integer, b : integer, x0 : number, x1 : number, t0 : Pt3, t1 : Pt3, role : string)
+			: PgraceRailRouterNetwork.Edge
+		local pa, pb = nodes[a], nodes[b]
+		local e : PgraceRailRouterNetwork.Edge = { node0 = a, node1 = b, p0 = { x = pa.x, y = pa.y, z = pa.z },
+			p1 = { x = pb.x, y = pb.y, z = pb.z }, t0 = t0, t1 = t1, kind = "ground", track = 4, leg = 1,
+			s0 = x0 - j.approachX, s1 = x1 - j.approachX }
+		table.insert(edges, e)
+		table.insert(roles, role)
+		return e
+	end
+	local pairX = -math.huge
+	for __, pc in ipairs(j.pieces) do
+		pairX = math.max(pairX, pc.x1)
+	end
+	for __, pc in ipairs(j.pieces) do
+		local first = #edges + 1
+		local a = cutAt(pc.x0, pc.y0)
+		if a == nil then
+			log("P17", ("piece %s doesn't start on a cut"):format(pc.role))
+			return done(false)
+		end
+		local b = cutAt(pc.x1, pc.y1)
+		if b == nil then
+			b = newNode(world(pc.x1, pc.y1))
+			local from, x = b, pc.x1
+			if pairX - x > 0.5 then
+				local m = newNode(world(pairX, pc.y1))
+				add(from, m, x, pairX, vec(x, pairX - x, 0), vec(pairX, pairX - x, 0), pc.role .. " straight")
+				from, x = m, pairX
+			end
+			local d = j.approachX - x
+			add(from, newNode(world(j.approachX, pc.y1)), x, j.approachX, vec(x, d, 0), vec(j.approachX, d, 0),
+				pc.role .. " straight on").paired = true
+		end
+		add(a, b, pc.x0, pc.x1, vec(pc.x0, pc.tx0, pc.ty0), vec(pc.x1, pc.tx1, pc.ty1), pc.role).whole = true
+		table.insert(groups, { pc.role, first, #edges })
+	end
+	for i, e in ipairs(edges) do
+		local h : Hermite = { p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }
+		log("P17", ("new piece %d (%s): %s -> %s, tangents %s %s, %.1f m, turns %.1f degrees, tightest radius %s"):format(
+			i, roles[i], rel(e.p0), rel(e.p1), fmtT(e.t0), fmtT(e.t1), chord(h), turnOf(h), fmtR(h)))
+		for k = 1, 2 do
+			local n = nodes[k == 1 and e.node0 or e.node1]
+			if n.entity ~= nil then
+				local dir, piece = p17TrackDir(list, n.entity)
+				if dir ~= nil then
+					log("P17", ("  at node %d (%s): %.2f degrees off the existing track (piece %d)"):format(n.entity,
+						switches[n.entity] and "switch" or "crossing", angleOf(k == 1 and e.t0 or e.t1, dir, true), piece))
+				end
+			end
+		end
+	end
+	local function dryRunAll(net : PgraceRailRouterNetwork.Network, what : string) : SimpleProposal
+		local proposal, why = builder.chunkProposal(net, 1, #net.edges, settings)
+		if proposal == nil then
+			log("P17", ("%s: no proposal: %s"):format(what, tostring(why)))
+			return nil
+		end
+		local ok, cost, messages, us, data = builder.dryRun(proposal)
+		log("P17", ("%s dry run: %s, price %d, %d us"):format(what, ok and "clean" or table.concat(messages, "; "), cost,
+			us))
+		pcall(function() : boolean
+			local infos : {string} = {}
+			for __, m in ipairs(data.errorState.infos or {}) do
+				table.insert(infos, tostring(m))
+			end
+			log("P17", ("%s infos: %s"):format(what, #infos > 0 and table.concat(infos, "; ") or "none"))
+			return true
+		end)
+		for __, h in ipairs(builder.collisions(data)) do
+			log("P17", ("%s collision: %s %d"):format(what, h.what, h.entity))
+		end
+		logCollisions("P17", data)
+		if not ok then
+			for __, g in ipairs(groups) do
+				local pr = builder.chunkProposal(net, g[2] as integer, g[3] as integer, settings)
+				if pr ~= nil then
+					local okP, costP, messagesP = builder.dryRun(pr)
+					log("P17", ("  %s: %s only: %s, %d"):format(what, g[1] as string,
+						okP and "clean" or table.concat(messagesP, "; "), costP))
+				end
+			end
+			return nil
+		end
+		return proposal
+	end
+	local net : PgraceRailRouterNetwork.Network = { nodes = nodes, edges = edges, chunks = {} }
+	local proposal = dryRunAll(net, "junction")
+	-- PROBE (remove before release): the merge alone (its S-curve, a dead end), at its planned length and shorter,
+	-- with how close it passes each existing node of its main track: is it the joint past the switch it's refused for?
+	if proposal == nil then
+		pcall(function() : boolean
+			local mc : PgraceRailRouterJunction.Piece = nil
+			for __, pc in ipairs(j.pieces) do
+				if pc.role == "merge" then
+					mc = pc
+				end
+			end
+			local a = cutAt(mc.x0, mc.y0)
+			local track = copy.cuts[1].track
+			local joints : {Pt3} = {}
+			for __, pc in ipairs(list) do
+				if pc.track == track then
+					table.insert(joints, pc.h.p0)
+					table.insert(joints, pc.h.p1)
+				end
+			end
+			for __, len in ipairs({ mc.x1 - mc.x0, 90, 70, 55 }) do
+				local x1 = mc.x0 + len
+				local sub : {Pt3} = { nodes[a], world(x1, mc.y1) }
+				local e : PgraceRailRouterNetwork.Edge = { node0 = 1, node1 = 2, p0 = sub[1], p1 = sub[2],
+					t0 = vec(mc.x0, len, 0), t1 = vec(x1, len, 0), kind = "ground", track = 4, leg = 1, s0 = 0, s1 = len,
+					whole = true }
+				local h : Hermite = { p0 = e.p0, p1 = e.p1, t0 = e.t0, t1 = e.t1 }
+				local near : {string} = {}
+				for __, q in ipairs(joints) do
+					local dq = math.sqrt((q.x - sub[1].x) ^ 2 + (q.y - sub[1].y) ^ 2)
+					if dq > 0.5 and dq < len + 5 then
+						local u = network.nearestParam(h, { x = q.x, y = q.y })
+						local r = network.hermiteAt(h, u)
+						table.insert(near, ("node %.1f m out: %.2f m beside"):format(dq,
+							math.sqrt((r.x - q.x) ^ 2 + (r.y - q.y) ^ 2)))
+					end
+				end
+				local pr = builder.chunkProposal({ nodes = sub, edges = { e }, chunks = {} }, 1, 1, settings)
+				local okP, costP, messagesP = false, 0, { "no proposal" }
+				if pr ~= nil then
+					okP, costP, messagesP = builder.dryRun(pr)
+				end
+				log("P17", ("merge alone, %.0f m (tightest radius %s): %s, %d; its track's nodes: %s"):format(len, fmtR(h),
+					okP and "clean" or table.concat(messagesP, "; "), costP, #near > 0 and table.concat(near, ", ") or "none"))
+			end
+			return true
+		end)
+	end
+	if proposal == nil then
+		-- The same with each switch's tangent turned onto the existing track's direction there.
+		local snapped : {PgraceRailRouterNetwork.Edge} = {}
+		for __, e in ipairs(edges) do
+			local c : PgraceRailRouterNetwork.Edge = { node0 = e.node0, node1 = e.node1, p0 = e.p0, p1 = e.p1, t0 = e.t0,
+				t1 = e.t1, kind = e.kind, track = e.track, leg = e.leg, s0 = e.s0, s1 = e.s1, paired = e.paired,
+				whole = e.whole }
+			for k = 1, 2 do
+				local n = nodes[k == 1 and e.node0 or e.node1]
+				if n.entity ~= nil and switches[n.entity] then
+					local dir = p17TrackDir(list, n.entity)
+					local t = k == 1 and c.t0 or c.t1
+					if dir ~= nil then
+						local ld = math.sqrt(dir.x ^ 2 + dir.y ^ 2)
+						local lt = math.sqrt(t.x ^ 2 + t.y ^ 2)
+						local sign = (dir.x * t.x + dir.y * t.y) < 0 and -1 or 1
+						local s : Pt3 = { x = dir.x / ld * lt * sign, y = dir.y / ld * lt * sign, z = t.z }
+						if k == 1 then
+							c.t0 = s
+						else
+							c.t1 = s
+						end
+					end
+				end
+			end
+			table.insert(snapped, c)
+		end
+		proposal = dryRunAll({ nodes = nodes, edges = snapped, chunks = {} }, "junction, switch tangents on the track")
+	end
+	if proposal == nil then
+		return done(false)
+	end
+	sendProposal(proposal, function(res : WorldBuildProposalCommandData, success : boolean)
+		log("P17", "junction built: " .. tostring(success))
+		if not success then
+			return done(false)
+		end
+		logAdded("junction", res)
+		for __, n in ipairs(entities) do
+			local okS, segs = pcall(function() : {any}
+				return api.engine.system.streetSystem.getNodeTrackSegments(n) as {any}
+			end)
+			log("P17", ("node %d: %s track pieces"):format(n, okS and tostring(#(segs as {any})) or "unreadable"))
+		end
+		repairNodes("junction", entities, function()
+			log("P17", "tracks after the junction:")
+			p17LogTracks(p17Scan(copy))
+			done(true)
+		end)
+	end)
+end
+
+-- Splits the existing pieces at the copy's cuts, one piece per proposal (re-scanned each time; cuts that already
+-- have a node are skipped, so a retry carries on), then builds the junction.
+local function p17Cuts(copy : P17Copy, settings : Settings, side : number, done : function(boolean))
+	local function nextCut(attempt : integer)
+		if attempt > 8 then
+			log("P17", "too many cuts")
+			return done(false)
+		end
+		local list = p17Scan(copy)
+		local pending : {P17Cut} = {}
+		for __, c in ipairs(copy.cuts) do
+			if findNodeAt(list, c.p.x, c.p.y) == nil then
+				table.insert(pending, c)
+			end
+		end
+		if #pending == 0 then
+			return p17Junction(copy, settings, side, done)
+		end
+		local piece = p17PieceHolding(list, pending[1].track, pending[1].p)
+		if piece == nil then
+			log("P17", ("no track %d piece holds the %s cut at x = %.1f"):format(pending[1].track, pending[1].kind,
+				pending[1].x))
+			return done(false)
+		end
+		local us : {number} = {}
+		for __, c in ipairs(pending) do
+			local same, u = p17PieceHolding(list, c.track, c.p)
+			if same ~= nil and same.entity == piece.entity then
+				local q = network.hermiteAt(piece.h, u)
+				log("P17", ("split: piece %d (turns %.1f degrees) at param %.4f for the %s cut at x = %.1f on track %d, %.3f m off the piece's curve"):format(
+					piece.entity, turnOf(piece.h), u, c.kind, c.x, c.track, math.sqrt((q.x - c.p.x) ^ 2 + (q.y - c.p.y) ^ 2)))
+				table.insert(us, u)
+			end
+		end
+		table.sort(us)
+		local rep = splitTrack(piece, us, piece.objects > 0 and { copy.signalPts[piece.track] } or {})
+		if rep == nil then
+			return done(false)
+		end
+		sendProposal(rep, function(res : WorldBuildProposalCommandData, success : boolean)
+			log("P17", "split sent: " .. tostring(success))
+			if not success then
+				return done(false)
+			end
+			afterSplit("cut", res, function()
+				nextCut(attempt + 1)
+			end)
+		end)
+	end
+	nextCut(1)
+end
+
+-- Fits (once) and builds the junction on a copy.
+local function p17JunctionOn(copy : P17Copy, settings : Settings, side : number, done : function(boolean))
+	if copy.layout == nil then
+		local list = p17Scan(copy)
+		log("P17", "tracks before the junction:")
+		p17LogTracks(list)
+		if not p17Fit(copy, list, side) then
+			return done(false)
+		end
+	end
+	p17Cuts(copy, settings, side, done)
+end
+
+function probe.curveJunction(settings : Settings) : {function()}
+	return { function()
+		if p17Busy then
+			log("P17", "busy: a stage is still running, click again when it has finished")
+			return
+		end
+		p17Busy = true
+		local stage = p17Stage
+		local off = settings.network.offset
+		log("P17", ("stage %d"):format(stage))
+		local ok, err = pcall(function() : boolean
+			if stage == 1 then
+				local copy = p17NewCopy(camera(), off)
+				p17Copies = { copy }
+				p17Use(copy, off)
+				log("P17", ("track from the camera (%.1f %.1f), ground %.2f: %.0f m east, a %.0f m left arc through %.0f degrees, %.0f m on"):format(
+					copy.origin.x, copy.origin.y, copy.z, P17_STRAIGHT1, P17_RADIUS, P17_TURN, P17_STRAIGHT2))
+				p17BuildTrack(copy, settings, function(built : boolean) p17Done(1, built) end)
+			elseif p17Copies[1] == nil or not p17Copies[1].built then
+				log("P17", "no track: run stage 1 first")
+				p17Done(1, false)
+				p17Stage = 1
+			elseif stage == 2 then
+				p17Use(p17Copies[1], off)
+				log("P17", "junction from the curve's outside (side -1)")
+				p17JunctionOn(p17Copies[1], settings, -1, function(built : boolean) p17Done(2, built) end)
+			else
+				if p17Copies[2] == nil then
+					local o = p17Copies[1].origin
+					p17Copies[2] = p17NewCopy({ x = o.x + P17_SHIFT, y = o.y }, off)
+				end
+				local copy = p17Copies[2]
+				p17Use(copy, off)
+				local function inside()
+					log("P17", "junction from the curve's inside (side +1)")
+					p17JunctionOn(copy, settings, 1, function(built : boolean) p17Done(3, built) end)
+				end
+				if copy.built then
+					inside()
+				else
+					log("P17", ("second track %.0f m further east, ground %.2f"):format(P17_SHIFT, copy.z))
+					p17BuildTrack(copy, settings, function(built : boolean)
+						if built then
+							inside()
+						else
+							p17Done(3, false)
+						end
+					end)
+				end
+			end
+			return true
+		end)
+		if not ok then
+			log("P17", "ERROR " .. tostring(err))
+			p17Busy = false
+		end
+	end }
 end
 
 -- P6 -------------------------------------------------------------------------------------------------------------

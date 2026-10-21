@@ -2,6 +2,8 @@ local grid = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/gri
 local modes = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/modes.tl" as PgraceRailRouterModes
 local area = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/area.tl" as PgraceRailRouterArea
 
+local existing = ug_require "pgrace_rail_router::/gui/pgrace_rail_router/planner/existing.tl" as PgraceRailRouterExisting
+
 local survey : PgraceRailRouterSurvey = {}
 
 local type Town = PgraceRailRouterCorridor.Town
@@ -646,53 +648,6 @@ function survey.trackEnds(station : integer) : {Pt3}
 	return ends
 end
 
--- Track ends closer together than this along the station's axis are one end of it (metres): a station with all its
--- ends at one side (a terminus) has no platforms' centre to read.
-local MIN_STATION_SPAN = 20.0
-
--- A station from its track ends: they split into two groups along the line between the two furthest apart; the
--- centre is the midpoint of the groups' centroids, dir the unit vector from one to the other, half half the distance
--- between them. nil (with why) if they don't make two groups.
-local function stationOf(entity : integer, ends : {Pt3}) : Station, string
-	if #ends < 2 then
-		return nil, "fewer than two track ends"
-	end
-	local a, b : Pt3, Pt3 = ends[1], ends[2]
-	local far = -1.0
-	for i = 1, #ends do
-		for j = i + 1, #ends do
-			local d = (ends[i].x - ends[j].x) ^ 2 + (ends[i].y - ends[j].y) ^ 2
-			if d > far then
-				a, b, far = ends[i], ends[j], d
-			end
-		end
-	end
-	local len = math.sqrt(far)
-	if len < MIN_STATION_SPAN then
-		return nil, ("track ends only %.1f m apart"):format(len)
-	end
-	local ux, uy = (b.x - a.x) / len, (b.y - a.y) / len
-	local sums : {{number}} = { { 0, 0, 0 }, { 0, 0, 0 } }
-	local ids : {integer} = {}
-	for __, e in ipairs(ends) do
-		local s = (e.x - a.x) * ux + (e.y - a.y) * uy
-		local g = s < len / 2 and 1 or 2
-		sums[g][1] = sums[g][1] + e.x
-		sums[g][2] = sums[g][2] + e.y
-		sums[g][3] = sums[g][3] + 1
-		table.insert(ids, e.entity)
-	end
-	local c1 : Pt = { x = sums[1][1] / sums[1][3], y = sums[1][2] / sums[1][3] }
-	local c2 : Pt = { x = sums[2][1] / sums[2][3], y = sums[2][2] / sums[2][3] }
-	local dx, dy = c2.x - c1.x, c2.y - c1.y
-	local d = math.sqrt(dx * dx + dy * dy)
-	if d < MIN_STATION_SPAN then
-		return nil, ("its ends' groups only %.1f m apart"):format(d)
-	end
-	return { entity = entity, centre = { x = (c1.x + c2.x) / 2, y = (c1.y + c2.y) / 2 }, dir = { x = dx / d, y = dy / d },
-		half = d / 2, ends = ids }, nil
-end
-
 function survey.existingStations(town : Town, reach : number) : {Station}
 	local result : {Station} = {}
 	local ok, found = pcall(function() : {Engine.Entity}
@@ -729,7 +684,7 @@ function survey.existingStations(town : Town, reach : number) : {Station}
 				-- No frozen track: a bus, tram, ship or air station.
 				return nil, nil
 			end
-			local station, why = stationOf(entity, ends)
+			local station, why = existing.stationFromEnds(entity, ends)
 			-- Its box, as markConstruction blocks it: the planner treats the cells it covers out of a bare end as the
 			-- station's own.
 			local bv = boundingBox(entity)
@@ -917,6 +872,174 @@ function survey.trackSnapshot(centre : Pt, radius : number) : Snapshot
 	debugPrint(LOG_PREFIX .. ("snapshot: %d pieces, %d us (%d one-way signals; %d pieces unreadable, %d unknown after %d failed signal reads, %d node degrees unreadable)")
 		:format(#snap.pieces, math.floor(clock:getTime()), signals, failed, unknown, signalFailures, degreeFailures))
 	return snap
+end
+
+-- Linked legs (added after 4c stage 1's in-game test) -----------------------------------------------------------
+
+-- The STATION component's terminals (api.type's Station record, which this file's Station alias shadows).
+local record StationTerminals
+	terminals : {Terminal}
+end
+
+-- The vehicle nodes of every terminal of a construction's stations (copies), where trains stop.
+local function terminalNodes(construction : integer) : {NodeId}
+	local nodes : {NodeId} = {}
+	local con = api.engine.getComponent(construction, api.type.ComponentType.CONSTRUCTION) as Engine.Component.Construction
+	if con == nil or con.stations == nil then
+		return nodes
+	end
+	for __, s in ipairs(con.stations) do
+		local st = api.engine.getComponent(s, api.type.ComponentType.STATION) as any as StationTerminals
+		for __, term in ipairs(st ~= nil and st.terminals or {}) do
+			local n = term.vehicleNodeId
+			if n ~= nil and (n.entity as integer) >= 0 then
+				table.insert(nodes, api.type.NodeId.new(n.entity, n.index))
+			end
+		end
+	end
+	return nodes
+end
+
+-- The track piece entity of one entry of the pathfinder's path, and how it was read. The tealdef says {EdgeId,
+-- boolean} pairs, but the tealdefs have been wrong about runtime shapes (MOVE_PATH's edges were EdgeIdDir userdata
+-- with .edgeId and .dir, AGENTS.md): .edgeId, [1] and the entry itself are tried, each read in a pcall of its own.
+local function pathEntity(entry : any) : integer, string
+	local function entityOf(read : function() : any) : integer
+		local ok, v = pcall(read)
+		if not ok or v == nil then
+			return nil
+		end
+		local okE, e = pcall(function() : any
+			return (v as {string : any}).entity
+		end)
+		if okE and e ~= nil and tonumber(e) ~= nil then
+			return math.floor(tonumber(e))
+		end
+		return nil
+	end
+	local e = entityOf(function() : any
+		return (entry as {string : any}).edgeId
+	end)
+	if e ~= nil then
+		return e, "edgeId"
+	end
+	e = entityOf(function() : any
+		return (entry as {any})[1]
+	end)
+	if e ~= nil then
+		return e, "[1]"
+	end
+	e = entityOf(function() : any
+		return entry
+	end)
+	if e ~= nil then
+		return e, "entity"
+	end
+	return nil, nil
+end
+
+function survey.trackLink(stationA : integer, stationB : integer) : number
+	local clock = api.type.Clock.new()
+	local ok, result = pcall(function() : number
+		local from, to = terminalNodes(stationA), terminalNodes(stationB)
+		if #from == 0 or #to == 0 then
+			debugPrint(LOG_PREFIX .. ("link %d -> %d: %d and %d terminal nodes"):format(stationA, stationB, #from, #to))
+			return nil
+		end
+		local path = api.engine.util.pathfinding.findPathNodeToNode(from, to, { api.type["enum"].TransportMode.TRAIN })
+		local entries = (path or {}) as {any}
+		-- Each piece once (a piece with several transport edges shows up once per edge), by its chord: the pieces are
+		-- short, and the 1.5 detour limit doesn't need the arcs' few metres more. An entry whose entity isn't a
+		-- readable track piece (BASE_EDGE with both nodes) is unread: in-game (Antelope to Aloha, 114 entries) 6 were,
+		-- most likely the stations' own transport network inside their constructions, at the path's two ends.
+		local piece : {integer : boolean} = {}
+		-- Entries that are a track node rather than a piece: the path passes through a switch's node (its own transport
+		-- network joins the pieces there; in-game, Antelope to Aloha, the 6 entries that weren't pieces were in two
+		-- clusters of three, one by each station's fan and crossovers). They add no length.
+		local node : {integer : boolean} = {}
+		local length, pieces, nodes = 0.0, 0, 0
+		local how : string = nil
+		-- Whether each entry (by index) read as a piece, and what the unread ones are, for the log.
+		local readable : {boolean} = {}
+		local unread : {string} = {}
+		-- Which of a few components an unread entity has (C construction, E base edge, T transport network), each
+		-- read in a pcall: "?" where the read threw.
+		local function components(e : integer) : string
+			local out = ""
+			for __, c in ipairs({ { "C", api.type.ComponentType.CONSTRUCTION }, { "E", api.type.ComponentType.BASE_EDGE },
+					{ "N", api.type.ComponentType.BASE_NODE }, { "T", api.type.ComponentType.TRANSPORT_NETWORK } }) do
+				local okC, has = pcall(function() : boolean
+					return api.engine.getComponent(e, c[2] as Engine.ComponentType) ~= nil
+				end)
+				if not okC then
+					out = out .. "?"
+				elseif has as boolean then
+					out = out .. (c[1] as string)
+				end
+			end
+			return out
+		end
+		-- By index, not ipairs: should the path be an engine vector (userdata) rather than a table, ipairs (raw access
+		-- in Lua 5.2) would fail on it, where # and indexing go through its metatable (Rail Doctor read its #).
+		for k = 1, #entries do
+			local e, read = pathEntity(entries[k])
+			how = how or read
+			if e ~= nil and piece[e] == nil then
+				piece[e] = false
+				local edge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) as Engine.Component.BaseEdge
+				local a, b : Pt3, Pt3 = nil, nil
+				if edge ~= nil then
+					a, b = nodeAt(edge.node0 as integer), nodeAt(edge.node1 as integer)
+				end
+				if a ~= nil and b ~= nil then
+					piece[e] = true
+					length = length + math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2 + (b.z - a.z) ^ 2)
+					pieces = pieces + 1
+				elseif edge == nil then
+					local okN, isNode = pcall(function() : boolean
+						return api.engine.getComponent(e, api.type.ComponentType.BASE_NODE) ~= nil
+					end)
+					if okN and isNode as boolean then
+						node[e] = true
+						nodes = nodes + 1
+					end
+				end
+			end
+			readable[k] = e ~= nil and (piece[e] or node[e] == true)
+			if not readable[k] then
+				table.insert(unread, ("%d:%s/%s"):format(k, tostring(e), e ~= nil and components(e) or "-"))
+			end
+		end
+		-- Unread entries are taken only before the first piece and after the last (inside the two stations): one
+		-- between them is track the length leaves out, which could pass the detour check measured short.
+		local first, last : integer, integer = nil, nil
+		for k = 1, #entries do
+			if readable[k] then
+				first = first or k
+				last = k
+			end
+		end
+		local inside = 0
+		for k = first or 1, last or 0 do
+			if not readable[k] then
+				inside = inside + 1
+			end
+		end
+		debugPrint(LOG_PREFIX .. ("link %d -> %d: %d entries (first %s %s, read by %s), %d pieces and %d nodes (entries %s to %s), %.0f m, %d unread [%s], %d us%s")
+			:format(stationA, stationB, #entries, type(entries[1]), tostring(entries[1]), tostring(how), pieces, nodes,
+			tostring(first), tostring(last), length, #unread, table.concat(unread, " "), math.floor(clock:getTime()),
+			inside > 0 and "; not linked: unread entries between pieces" or "")) -- PROBE (remove before release)
+		-- Nothing readable is no link: a path whose pieces can't be measured can't be weighed.
+		if pieces == 0 or inside > 0 then
+			return nil
+		end
+		return length
+	end)
+	if not ok then
+		logOnce("link", ("link %d -> %d: %s"):format(stationA, stationB, tostring(result)))
+		return nil
+	end
+	return result as number
 end
 
 return survey

@@ -74,6 +74,8 @@ local TEST_MAP = "rail-router-test-5x14km.map"
 local BIG_MAP = "big-54-towns-16x16km.map"
 -- The test map with Rail Router's first line (Bangor → Imperial Beach via Aloha, Halt 2+2, 320 m) built on it.
 local TEST_LINE1_MAP = "rail-router-test-5x14km-line1.map"
+-- The test map restarted with two Rail Router lines, the second joined into the first at a junction south of Antelope.
+local TEST_JUNCTION_MAP = "rail-router-test-5x14km-junction.map"
 -- The player's third save, "PottstownTown" (2254).
 local POTTSTOWN_MAP = "pottstowntown-16x16km.map"
 -- The player's first save, "New Game" (2153).
@@ -128,6 +130,34 @@ local ROUTES = {
 	{ map = TEST_LINE1_MAP, from = "Aloha", to = "Mercer Island", mode = "cheapest", track = "Standard Tracks",
 		quick = true, stops = { "Antelope" }, platform = 320, approach = 225, stopsSeen = "Aloha, Antelope, Mercer Island",
 		base = { length = 8813, estimate = 3175951, tight = 2, bridges = 3, bridgeLength = 611, tunnels = 0, tunnelLength = 0, sweep = 127, timeLost = 1.2 } },
+	-- 4c stage 1's in-game test, offline: a second line through Aloha joining its existing station (the first line's
+	-- Halt 2+2) at both ends. Each end's stretch runs from the last crossover through the line's first curve; the
+	-- junctions go on the straight past it (first cuts 397 and 347 m out from the platform ends). Recorded for 4c
+	-- stage 1 (2026-10-19). Known heavy: the sites step reading Aloha's ends (existing.analyse walks and pairs both
+	-- tracks out to 1.5 km at each end) allocates about 1.1 MB of the step's 1.45 MB, over STEP_ALLOC_KB; once per
+	-- plan, 7 ms on the desktop. Its 3 tight curves aren't the junctions': an S-jog 205–356 m before Aloha's −1
+	-- approach and a 130 m curve at Antelope's end (grid and search effects).
+	{ map = TEST_LINE1_MAP, from = "Antelope", to = "Imperial Beach", mode = "cheapest", track = "Standard Tracks",
+		quick = true, stops = { "Aloha" }, existing = { "Aloha" }, stopsSeen = "Antelope, Aloha, Imperial Beach",
+		maxAllocKB = 1600,
+		base = { length = 8473, estimate = 3131523, tight = 3, bridges = 5, bridgeLength = 683, tunnels = 0, tunnelLength = 0, sweep = 95, timeLost = 2.5 } },
+
+	-- 4c stage 3: junctions on a curve. Mercer Island's north end on the junction map: line 2's track curves 52° right
+	-- over its first 200 m past the fan; Fastest takes the place straddling the curve's end on its outside (first cut
+	-- 125 m out, where the track still turns), not the one on the straight past it (180 m). Its tight curve is the leg's
+	-- turn north towards Imperial Beach about 700 m on, for either place. Both routes' sites step reads the station's
+	-- ends (existing.analyse), 880–990 KB, over STEP_ALLOC_KB, as at Aloha below.
+	{ map = TEST_JUNCTION_MAP, from = "Mercer Island", to = "Imperial Beach", mode = "fastest", track = "Standard Tracks",
+		quick = true, stops = {}, existing = { "Mercer Island" }, curvedAt = "Mercer Island",
+		stopsSeen = "Mercer Island, Imperial Beach", maxAllocKB = 1100,
+		base = { length = 10920, estimate = 3981042, tight = 1, bridges = 2, bridgeLength = 373, tunnels = 0, tunnelLength = 0, sweep = 69, timeLost = 0.0 } },
+	-- Bangor's north end on the line1 map: the line curves 34° left over its first 200 m; Cheapest takes the place on
+	-- the curve's outside (first cut 110 m out) over the one past it (165 m). Both head north-west there, away from
+	-- Antelope: the leg's first turn back, 49 m past the approach start, is an 86 m curve (one of its 2 tight ones).
+	{ map = TEST_LINE1_MAP, from = "Bangor", to = "Antelope", mode = "cheapest", track = "Standard Tracks",
+		quick = true, stops = {}, existing = { "Bangor" }, curvedAt = "Bangor", stopsSeen = "Bangor, Antelope",
+		maxAllocKB = 1100,
+		base = { length = 3519, estimate = 1209325, tight = 2, bridges = 0, bridgeLength = 0, tunnels = 0, tunnelLength = 0, sweep = 135, timeLost = 9.9 } },
 
 	{ map = BIG_MAP, from = "Ames", to = "Bridgeport", mode = "cheapest", track = "Standard Tracks",
 		stopsSeen = "Ames, Foster City, Temple City, Miami, Bridgeport",
@@ -278,12 +308,47 @@ probe:close()
 local lib = dofile(t.root .. "/tools/replaylib.lua")(t.root)
 local arrows = t.requireTl("gui/pgrace_rail_router/planner/arrows.tl")
 local network = t.requireTl("gui/pgrace_rail_router/planner/network.tl")
+local midline = t.requireTl("gui/pgrace_rail_router/planner/midline.tl")
 local maps = {}
 local function loadMap(name)
 	if maps[name] == nil then
 		maps[name] = lib.maplib.load(mapsDir .. "/" .. name)
 	end
 	return maps[name]
+end
+
+-- The network as the window builds it with Halt 2+2 (window.script.tl settingsFor): a fan's two edges at each end of
+-- every station of ours that a leg leaves or reaches, and no chunk problems. A curve's sample just before a fan's
+-- merge once took the merge's place as a cut, and the fan was silently left out (Antelope's south end in-game).
+-- `speed`: the track's top speed (m/s), which picks the turnout as the window's turnoutRadius does.
+local function haltFans(plan, speed)
+	local radius = speed < 30 and 150 or (speed < 60 and 300 or 600)
+	local halt = network.defaults()
+	halt.fan = network.turnoutLength(radius)
+	halt.bareFan = halt.fan
+	halt.blockSpacing = 500
+	local net = network.build(plan, halt)
+	local fans = {}
+	for __, e in ipairs(net.edges) do
+		if e.track == 3 then
+			local key = e.leg .. (e.s0 == 0 and "s" or "e")
+			fans[key] = (fans[key] or 0) + 1
+		end
+	end
+	local stations = plan.stations or {}
+	for li, leg in ipairs(plan.legs) do
+		if not leg.linked and leg.length > 2 * (network.fanLength(halt.fan) + 1) then
+			for __, k in ipairs({ "s", "e" }) do
+				local st = stations[k == "s" and li or li + 1]
+				if st == nil or st.existing == nil then
+					t.eq(fans[li .. k] or 0, 2, ("Halt 2+2: leg %d's %s: fan edges"):format(li, k == "s" and "start" or "end"))
+				end
+			end
+		end
+	end
+	for k, c in ipairs(net.chunks) do
+		t.ok(c.problem == nil, ("Halt 2+2: chunk %d: %s"):format(k, tostring(c.problem)))
+	end
 end
 
 local function routeName(rt)
@@ -327,19 +392,55 @@ local function trackClearance(map, plan)
 		trackPoints[map] = index
 	end
 	local near = 15.0
-	local least, at = math.huge, nil
-	for __, leg in ipairs(plan.legs) do
-		for i, smp in ipairs(leg.samples) do
-			local bx, by = math.floor(smp.p.x / 50), math.floor(smp.p.y / 50)
-			for kx = bx - 1, bx + 1 do
-				for ky = by - 1, by + 1 do
-					for __, q in ipairs(index[kx .. "," .. ky] or {}) do
-						if (q[1] - smp.p.x) ^ 2 + (q[2] - smp.p.y) ^ 2 <= near * near and leg.z[i] - q[3] < least then
-							least, at = leg.z[i] - q[3], smp.p
-						end
+	-- The least height over the track points within `near` of sample i of a leg (nil: none near), and how far the
+	-- nearest track point is (in plan).
+	local function over(leg, i)
+		local smp, low, closest = leg.samples[i], nil, math.huge
+		local bx, by = math.floor(smp.p.x / 50), math.floor(smp.p.y / 50)
+		for kx = bx - 1, bx + 1 do
+			for ky = by - 1, by + 1 do
+				for __, q in ipairs(index[kx .. "," .. ky] or {}) do
+					local d2 = (q[1] - smp.p.x) ^ 2 + (q[2] - smp.p.y) ^ 2
+					if d2 <= near * near then
+						low = math.min(low or math.huge, leg.z[i] - q[3])
+						closest = math.min(closest, math.sqrt(d2))
 					end
 				end
 			end
+		end
+		return low, closest
+	end
+	-- A leg at an existing station's junction starts (or ends) beside its track on purpose, on the ground 10 m off its
+	-- midline (7.5 m from the near track): from that end, samples are left out until the first one clear of the track,
+	-- but only beside it, not over it: one within CROSS_NEAR of a track point still counts.
+	local CROSS_NEAR = 6.0
+	local function atJunction(st, forward)
+		return st ~= nil and st.existing ~= nil and st.junctions ~= nil and st.endOf ~= nil
+			and st.junctions[st.endOf[forward]] ~= nil
+	end
+	local least, at = math.huge, nil
+	for li, leg in ipairs(plan.legs) do
+		local function count(i, skipping)
+			local low, closest = over(leg, i)
+			if low ~= nil and (not skipping or closest < CROSS_NEAR) and low < least then
+				least, at = low, leg.samples[i].p
+			end
+			return low ~= nil
+		end
+		local n = #leg.samples
+		local first, last = 1, n
+		if atJunction(plan.stations[li], true) then
+			while first <= n and count(first, true) do
+				first = first + 1
+			end
+		end
+		if atJunction(plan.stations[li + 1], false) then
+			while last >= first and count(last, true) do
+				last = last - 1
+			end
+		end
+		for i = first, last do
+			count(i, false)
 		end
 	end
 	return least, at
@@ -370,8 +471,9 @@ local function check(rt, planFn, name)
 	t.eq(table.concat(names, ", "), rt.stopsSeen, "stops")
 	t.ok(worst <= STEP_BUDGET_MS, ("slowest step %.2f ms (%s), budget %.0f"):format(worst,
 		tostring(r.alloc.worstKind), STEP_BUDGET_MS))
-	t.ok(r.alloc.max <= STEP_ALLOC_KB, ("most allocated in a step %.0f KB (%s), at most %.0f"):format(r.alloc.max,
-		tostring(r.alloc.maxKind), STEP_ALLOC_KB))
+	local allocKB = rt.maxAllocKB or STEP_ALLOC_KB
+	t.ok(r.alloc.max <= allocKB, ("most allocated in a step %.0f KB (%s), at most %.0f"):format(r.alloc.max,
+		tostring(r.alloc.maxKind), allocKB))
 	t.ok(r.alloc.longestStall <= MAX_STALL_STEPS, ("progress bar stood still for %d steps, at most %d"):format(
 		r.alloc.longestStall, MAX_STALL_STEPS))
 	local plan = r.plan
@@ -381,6 +483,37 @@ local function check(rt, planFn, name)
 		return
 	end
 	t.ok(plan.ok, "plans: " .. tostring(plan.failure) .. " " .. table.concat(plan.failureTowns or {}, ", "))
+	-- The existing stations the route joins (rt.existing, by name) are joined, not replaced by a station of ours.
+	-- A route recorded with its junction on a curve (rt.curvedAt, a town): that station's end in use has places, and
+	-- the junction in use doesn't lie wholly on straight midline (milestone 4c stage 3).
+	if rt.curvedAt ~= nil then
+		local curved = false
+		for __, st in ipairs(plan.stations) do
+			if st.town.name == rt.curvedAt then
+				for k, j in pairs(st.junctions or {}) do
+					t.ok(st.places ~= nil and st.places[k] ~= nil, rt.curvedAt .. ": places at end " .. k)
+					local first = math.huge
+					for __, c in ipairs(j.cuts) do
+						first = math.min(first, c.x)
+					end
+					curved = curved or midline.straightUntil(st.ends[k].frame, first, 0.005) < j.approachX + 50
+				end
+			end
+		end
+		t.ok(curved, rt.curvedAt .. "'s junction in use on a curve")
+	end
+	for __, name in ipairs(rt.existing or {}) do
+		for __, st in ipairs(plan.stations) do
+			if st.town.name == name then
+				t.ok(st.existing ~= nil, name .. "'s existing station joined")
+			end
+		end
+		for __, note in ipairs(plan.notes) do
+			-- (Where a leg joins its line is told, milestone 4c stage 3: not a station that couldn't be used.)
+			t.ok(not note:find(name, 1, true) or note:find("Joins the existing line", 1, true) ~= nil,
+				"no note about " .. name .. "'s station: " .. note)
+		end
+	end
 	local s = plan.summary
 	local sweep = 0
 	for __, v in ipairs(lib.sweep(plan)) do
@@ -494,6 +627,12 @@ local function check(rt, planFn, name)
 		end
 	end
 	t.ok(#net.chunks > 0, "some chunks")
+	-- Every chunk builds as it is: no junction cut on no existing piece, no existing piece split by two chunks.
+	for k, c in ipairs(net.chunks) do
+		t.ok(c.problem == nil, ("chunk %d: %s"):format(k, tostring(c.problem)))
+	end
+	-- A capture records no track type; its weights' top speed (at most the track's) stands in for it.
+	haltFans(plan, r.track ~= nil and r.track.speed or r.weights.topSpeed)
 	local b = rt.base
 	noWorse("widest sweep of a leg (a loop or a hook?)", sweep, b.sweep, 0, SWEEP_SLACK)
 	noWorse("length", s.length, b.length, TOLERANCE.length)
@@ -521,11 +660,26 @@ for _, rt in ipairs(ROUTES) do
 		t.test("regression: " .. routeName(rt), function()
 			check(rt, function()
 				return lib.planOnMap(loadMap(rt.map), { from = rt.from, to = rt.to, mode = rt.mode, track = rt.track,
-					stops = rt.stops })
+					stops = rt.stops, existing = rt.existing })
 			end, routeName(rt))
 		end)
 	end
 end
+
+-- Planned as the window plans for Halt 2+2 (its platform, and the straight its fan and crossovers need at each end,
+-- approachFor): the in-game route whose fan at Antelope's south end was left out, and the one other route where a
+-- sample beside a merge did the same (leg 4's end). The routes above are planned without an approach.
+t.test("regression: Halt 2+2 fans on routes planned with the window's approach", function()
+	local track = "Standard Tracks"
+	local approach = network.fanLength(network.turnoutLength(300)) + 100
+	for __, rt in ipairs({ { from = "Bangor", to = "Aloha", stops = { "Antelope" }, platform = 320 },
+			{ from = "Bangor", to = "Imperial Beach" } }) do
+		local r = lib.planOnMap(loadMap(TEST_MAP), { from = rt.from, to = rt.to, mode = "cheapest", track = track,
+			stops = rt.stops, platform = rt.platform, approach = approach })
+		t.ok(r.plan.ok, rt.from .. " to " .. rt.to .. ": plans")
+		haltFans(r.plan, r.track.speed)
+	end
+end)
 
 -- The route captures planned as they are (lib.planCapture), on the save as it was then.
 if full then
